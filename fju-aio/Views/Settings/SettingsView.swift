@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(AuthenticationManager.self) private var authManager
     @State private var versionTapCount = 0
     @State private var showDebugScreen = false
+    @State private var showLogoutAlert = false
     
     var body: some View {
         List {
@@ -17,6 +19,15 @@ struct SettingsView: View {
                         Text("410XXXXXX")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                
+                Button(role: .destructive) {
+                    showLogoutAlert = true
+                } label: {
+                    HStack {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                        Text("登出")
                     }
                 }
             }
@@ -41,6 +52,24 @@ struct SettingsView: View {
         .navigationTitle("設定")
         .navigationDestination(isPresented: $showDebugScreen) {
             DebugView()
+        }
+        .alert("確認登出", isPresented: $showLogoutAlert) {
+            Button("取消", role: .cancel) {}
+            Button("登出", role: .destructive) {
+                Task {
+                    await performLogout()
+                }
+            }
+        } message: {
+            Text("登出後將清除所有已儲存的帳號密碼和 Session 資訊")
+        }
+    }
+    
+    private func performLogout() async {
+        do {
+            try await authManager.logout()
+        } catch {
+            print("登出失敗: \(error)")
         }
     }
 }
@@ -212,7 +241,7 @@ struct DebugView: View {
                         Text(assignment.courseName)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-        Text("截止: \(assignment.dueDate.formatted(date: .abbreviated, time: .shortened))")
+                        Text("截止: \(assignment.dueDate.formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
