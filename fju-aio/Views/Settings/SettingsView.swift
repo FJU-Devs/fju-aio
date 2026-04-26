@@ -1,10 +1,15 @@
 import SwiftUI
+import UserNotifications
+import ActivityKit
 
 struct SettingsView: View {
     @Environment(AuthenticationManager.self) private var authManager
     @State private var versionTapCount = 0
     @State private var showDebugScreen = false
     @State private var showLogoutAlert = false
+    @State private var sisSession: SISSession?
+    @State private var isLoadingSession = false
+    private let notificationManager = CourseNotificationManager.shared
     
     var body: some View {
         List {
@@ -14,11 +19,17 @@ struct SettingsView: View {
                         .font(.largeTitle)
                         .foregroundStyle(.gray)
                     VStack(alignment: .leading) {
-                        Text("學生姓名")
+                        Text(sisSession?.userName ?? "學生姓名")
                             .font(.headline)
-                        Text("410XXXXXX")
+                        Text(sisSession?.empNo ?? "410XXXXXX")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    
+                    if isLoadingSession {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.small)
                     }
                 }
                 
@@ -30,6 +41,45 @@ struct SettingsView: View {
                         Text("登出")
                     }
                 }
+            }
+
+            Section("課程通知") {
+                Toggle("啟用課程提醒", isOn: Binding(
+                    get: { notificationManager.isEnabled },
+                    set: { notificationManager.isEnabled = $0 }
+                ))
+
+                if notificationManager.isEnabled {
+                    Toggle("上課前橫幅提醒", isOn: Binding(
+                        get: { notificationManager.notifyBefore },
+                        set: { notificationManager.notifyBefore = $0 }
+                    ))
+
+                    if notificationManager.notifyBefore {
+                        Picker("提前時間", selection: Binding(
+                            get: { notificationManager.minutesBefore },
+                            set: { notificationManager.minutesBefore = $0 }
+                        )) {
+                            Text("5 分鐘").tag(5)
+                            Text("10 分鐘").tag(10)
+                            Text("15 分鐘").tag(15)
+                            Text("30 分鐘").tag(30)
+                        }
+                    }
+
+                    Toggle("上課時靈動島顯示", isOn: Binding(
+                        get: { notificationManager.notifyStart },
+                        set: { notificationManager.notifyStart = $0 }
+                    ))
+
+                    Toggle("下課提醒（靈動島）", isOn: Binding(
+                        get: { notificationManager.notifyEnd },
+                        set: { notificationManager.notifyEnd = $0 }
+                    ))
+                }
+            }
+            .task {
+                await notificationManager.refreshPermissionStatus()
             }
 
             Section("關於") {
@@ -63,6 +113,23 @@ struct SettingsView: View {
         } message: {
             Text("登出後將清除所有已儲存的帳號密碼和 Session 資訊")
         }
+        .task {
+            await loadSISSession()
+        }
+        .refreshable {
+            await loadSISSession()
+        }
+    }
+    
+    private func loadSISSession() async {
+        isLoadingSession = true
+        do {
+            sisSession = try await authManager.getValidSISSession()
+        } catch {
+            print("無法載入 SIS Session: \(error)")
+            sisSession = nil
+        }
+        isLoadingSession = false
     }
     
     private func performLogout() async {
@@ -81,7 +148,7 @@ struct DebugView: View {
     @State private var grades: [Grade] = []
     @State private var gpaSummary: GPASummary?
     @State private var quickLinks: [QuickLink] = []
-    @State private var leaveRequests: [LeaveRequest] = []
+    @State private var leaveRecordCount: Int = 0
     @State private var attendanceRecords: [AttendanceRecord] = []
     @State private var calendarEvents: [CalendarEvent] = []
     @State private var assignments: [Assignment] = []
@@ -89,7 +156,11 @@ struct DebugView: View {
     @State private var isLoading = false
     @State private var checkInEnabled = ModuleRegistry.isCheckInFeatureEnabled
     @State private var tronClassSession: TronClassSession?
+    @State private var sisSession: SISSession?
+    @State private var estuSession: EstuSession?
     @State private var hasStoredCredentials = false
+    @State private var sessionLoadError: String?
+    @State private var notificationLog: [String] = []
     
     var body: some View {
         List {
@@ -107,6 +178,12 @@ struct DebugView: View {
                     InfoRow(label: "用戶 ID", value: "\(userId)")
                 }
                 InfoRow(label: "儲存的憑證", value: hasStoredCredentials ? "存在" : "不存在")
+                
+                if let error = sessionLoadError {
+                    Text("Session 載入錯誤: \(error)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             
             // TronClass Session
@@ -145,16 +222,149 @@ struct DebugView: View {
                         InfoRow(label: "剩餘時間", value: "\(hours)小時 \(minutes)分鐘")
                     }
                 }
+            } else {
+                Section("TronClass Session") {
+                    Text("無 Session 資料")
+                        .foregroundStyle(.secondary)
+                }
             }
             
-            // Placeholder for future sessions
-            Section("其他 API Sessions") {
-                Text("校務系統 Session - 尚未實作")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("圖書館系統 Session - 尚未實作")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // SIS Session
+            if let session = sisSession {
+                Section("SIS (校務系統) Session") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("JWT Token (完整)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            Text(session.token)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(.vertical, 4)
+                        }
+                        .frame(height: 80)
+                    }
+                    
+                    InfoRow(label: "用戶 ID", value: "\(session.userId)")
+                    InfoRow(label: "用戶名稱", value: session.userName)
+                    InfoRow(label: "學號", value: session.empNo)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("過期時間")
+                            Spacer()
+                            Text(session.expiresAt.formatted(date: .abbreviated, time: .shortened))
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Text("狀態")
+                            Spacer()
+                            Text(session.isExpired ? "已過期" : "有效")
+                                .foregroundStyle(session.isExpired ? .red : .green)
+                        }
+                    }
+                    
+                    if !session.isExpired {
+                        let timeRemaining = session.expiresAt.timeIntervalSince(Date())
+                        let hours = Int(timeRemaining) / 3600
+                        let minutes = (Int(timeRemaining) % 3600) / 60
+                        InfoRow(label: "剩餘時間", value: "\(hours)小時 \(minutes)分鐘")
+                    }
+                    
+                    if let payload = decodeJWTPayload(session.token) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("JWT Payload (解碼)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ScrollView(.horizontal, showsIndicators: true) {
+                                Text(payload)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(.vertical, 4)
+                            }
+                            .frame(height: 120)
+                        }
+                    }
+                }
+            } else {
+                Section("SIS (校務系統) Session") {
+                    Text("無 Session 資料")
+                        .foregroundStyle(.secondary)
+                    Text("提示: 需要先登入才會有 SIS Session")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            
+            // ESTU Session
+            if let session = estuSession {
+                Section("ESTU (選課系統) Session") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ASP.NET Session ID")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(session.sessionId)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ViewState (前 100 字元)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            Text(String(session.viewState.prefix(100)) + "...")
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(.vertical, 4)
+                        }
+                        .frame(height: 60)
+                    }
+                    
+                    InfoRow(label: "ViewStateGenerator", value: session.viewStateGenerator)
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("EventValidation (前 100 字元)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            Text(String(session.eventValidation.prefix(100)) + "...")
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(.vertical, 4)
+                        }
+                        .frame(height: 60)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("過期時間")
+                            Spacer()
+                            Text(session.expiresAt.formatted(date: .abbreviated, time: .shortened))
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Text("狀態")
+                            Spacer()
+                            Text(session.isExpired ? "已過期" : "有效")
+                                .foregroundStyle(session.isExpired ? .red : .green)
+                        }
+                    }
+                    
+                    if !session.isExpired {
+                        let timeRemaining = session.expiresAt.timeIntervalSince(Date())
+                        let minutes = Int(timeRemaining) / 60
+                        InfoRow(label: "剩餘時間", value: "\(minutes)分鐘")
+                    }
+                }
+            } else {
+                Section("ESTU (選課系統) Session") {
+                    Text("無 Session 資料")
+                        .foregroundStyle(.secondary)
+                    Text("提示: 需要先登入並訪問課表才會有 ESTU Session")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
             
             Section("服務狀態") {
@@ -183,7 +393,7 @@ struct DebugView: View {
                 InfoRow(label: "課程數量", value: "\(courses.count)")
                 InfoRow(label: "成績數量", value: "\(grades.count)")
                 InfoRow(label: "快速連結", value: "\(quickLinks.count)")
-                InfoRow(label: "請假記錄", value: "\(leaveRequests.count)")
+                InfoRow(label: "請假記錄", value: "\(leaveRecordCount)")
                 InfoRow(label: "出缺席記錄", value: "\(attendanceRecords.count)")
                 InfoRow(label: "行事曆事件", value: "\(calendarEvents.count)")
                 InfoRow(label: "作業數量", value: "\(assignments.count)")
@@ -235,8 +445,6 @@ struct DebugView: View {
                             Text(assignment.title)
                                 .font(.headline)
                             Spacer()
-                            Image(systemName: assignment.isCompleted ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(assignment.isCompleted ? .green : .secondary)
                         }
                         Text(assignment.courseName)
                             .font(.subheadline)
@@ -281,6 +489,119 @@ struct DebugView: View {
                 }
             }
             
+            Section("通知與 Live Activity 測試") {
+                let nm = CourseNotificationManager.shared
+
+                InfoRow(label: "通知權限", value: {
+                    switch nm.permissionStatus {
+                    case .authorized:   return "已授權"
+                    case .denied:       return "已拒絕"
+                    case .provisional:  return "暫時授權"
+                    default:            return "未決定"
+                    }
+                }())
+                InfoRow(label: "待處理 Banner", value: "\(nm.pendingCount) 則")
+
+                Button("申請通知權限") {
+                    log("▶ 申請通知權限...")
+                    Task {
+                        let granted = await nm.requestPermission()
+                        await nm.refreshPendingCount()
+                        log(granted ? "✅ 已授權" : "❌ 被拒絕")
+                    }
+                }
+
+                Button("觸發測試 Banner (1 秒後)") {
+                    log("▶ 觸發測試 Banner...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        await nm.fireTestBanner(course: sample)
+                        log("✅ Banner 已排入")
+                    }
+                }
+
+                Button("排程所有課程 Banner") {
+                    log("▶ 排程 Banner (\(courses.count) 門課)...")
+                    Task {
+                        await nm.scheduleAll(for: courses)
+                        log("✅ 完成，待處理: \(nm.pendingCount) 則")
+                    }
+                }
+                .disabled(courses.isEmpty)
+
+                Button("取消所有 Banner") {
+                    log("▶ 取消所有 Banner...")
+                    nm.cancelAllBannerNotifications()
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        await nm.refreshPendingCount()
+                        log("✅ 已取消，剩餘: \(nm.pendingCount) 則")
+                    }
+                }
+                .foregroundStyle(.red)
+
+                Divider()
+
+                Button("Live Activity — 上課前") {
+                    log("▶ 測試 Live Activity (before)...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        await nm.fireTestLiveActivity(course: sample, phase: .before)
+                        log("✅ Live Activity 已啟動 (before)")
+                    }
+                }
+
+                Button("Live Activity — 上課中") {
+                    log("▶ 測試 Live Activity (during)...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        await nm.fireTestLiveActivity(course: sample, phase: .during)
+                        log("✅ Live Activity 已啟動 (during)")
+                    }
+                }
+
+                Button("Live Activity — 已結束") {
+                    log("▶ 測試 Live Activity (ended)...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        await nm.fireTestLiveActivity(course: sample, phase: .ended)
+                        log("✅ Live Activity 已啟動 (ended)")
+                    }
+                }
+
+                Button("結束全部 Live Activities") {
+                    log("▶ 結束全部 Live Activities...")
+                    Task {
+                        await nm.endAllLiveActivities()
+                        log("✅ 全部結束")
+                    }
+                }
+                .foregroundStyle(.red)
+
+                if !notificationLog.isEmpty {
+                    Button("清除紀錄", role: .destructive) {
+                        notificationLog.removeAll()
+                    }
+                    .font(.caption)
+                }
+            }
+            .task {
+                await CourseNotificationManager.shared.refreshPermissionStatus()
+                await CourseNotificationManager.shared.refreshPendingCount()
+            }
+
+            if !notificationLog.isEmpty {
+                Section("通知紀錄") {
+                    ForEach(notificationLog.indices, id: \.self) { i in
+                        Text(notificationLog[i])
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(notificationLog[i].hasPrefix("✅") ? .green :
+                                             notificationLog[i].hasPrefix("❌") ? .red : .primary)
+                            .listRowBackground(Color(.systemGroupedBackground))
+                    }
+                }
+            }
+
             Section("操作") {
                 Button("重新載入所有資料") {
                     Task {
@@ -289,19 +610,30 @@ struct DebugView: View {
                 }
                 .disabled(isLoading)
                 
-                Button("重新載入 TronClass Session") {
+                Button("重新載入所有 Sessions") {
                     Task {
-                        await loadTronClassSession()
+                        await loadAllSessions()
                     }
                 }
                 .disabled(isLoading)
+                
+                Button("創建測試 SIS Session") {
+                    createMockSISSession()
+                }
+                
+                Button("清除所有 Sessions") {
+                    tronClassSession = nil
+                    sisSession = nil
+                    estuSession = nil
+                    sessionLoadError = nil
+                }
             }
         }
         .navigationTitle("除錯資訊")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await loadAllData()
-            await loadTronClassSession()
+            await loadAllSessions()
             checkCredentials()
         }
         .overlay {
@@ -314,6 +646,26 @@ struct DebugView: View {
         }
     }
     
+    private func decodeJWTPayload(_ token: String) -> String? {
+        let segments = token.components(separatedBy: ".")
+        guard segments.count == 3 else { return nil }
+        
+        var base64 = segments[1]
+        let remainder = base64.count % 4
+        if remainder > 0 {
+            base64 += String(repeating: "=", count: 4 - remainder)
+        }
+        
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data),
+              let jsonData = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
+              let jsonString = String(data: jsonData, encoding: .utf8) else {
+            return nil
+        }
+        
+        return jsonString
+    }
+    
     private func loadAllData() async {
         isLoading = true
         
@@ -321,7 +673,7 @@ struct DebugView: View {
         async let gradesTask = service.fetchGrades(semester: "113-2")
         async let gpaTask = service.fetchGPASummary(semester: "113-2")
         async let quickLinksTask = service.fetchQuickLinks()
-        async let leaveRequestsTask = service.fetchLeaveRequests()
+        async let leaveRequestsTask = LeaveService.shared.fetchLeaveRecords(academicYear: 114, semester: 2)
         async let attendanceTask = service.fetchAttendanceRecords(semester: "113-2")
         async let calendarTask = service.fetchCalendarEvents(semester: "113-2")
         async let assignmentsTask = service.fetchAssignments()
@@ -332,7 +684,7 @@ struct DebugView: View {
             grades = try await gradesTask
             gpaSummary = try await gpaTask
             quickLinks = try await quickLinksTask
-            leaveRequests = try await leaveRequestsTask
+            leaveRecordCount = try await leaveRequestsTask.count
             attendanceRecords = try await attendanceTask
             calendarEvents = try await calendarTask
             assignments = try await assignmentsTask
@@ -344,17 +696,89 @@ struct DebugView: View {
         isLoading = false
     }
     
+    private func loadAllSessions() async {
+        sessionLoadError = nil
+        await loadTronClassSession()
+        await loadSISSession()
+        await loadEstuSession()
+    }
+    
     private func loadTronClassSession() async {
         do {
+            print("🔍 Loading TronClass session...")
             tronClassSession = try await authManager.getValidSession()
+            print("✅ TronClass session loaded")
         } catch {
-            print("無法載入 TronClass Session: \(error)")
+            print("❌ 無法載入 TronClass Session: \(error)")
+            sessionLoadError = "TronClass: \(error.localizedDescription)"
             tronClassSession = nil
         }
     }
     
+    private func loadSISSession() async {
+        do {
+            print("🔍 Loading SIS session...")
+            sisSession = try await authManager.getValidSISSession()
+            print("✅ SIS session loaded: \(sisSession?.userName ?? "nil")")
+        } catch {
+            print("❌ 無法載入 SIS Session: \(error)")
+            if sessionLoadError == nil {
+                sessionLoadError = "SIS: \(error.localizedDescription)"
+            } else {
+                sessionLoadError? += " | SIS: \(error.localizedDescription)"
+            }
+            sisSession = nil
+        }
+    }
+    
+    private func loadEstuSession() async {
+        do {
+            print("🔍 Loading ESTU session...")
+            estuSession = try await EstuAuthService.shared.getValidSession()
+            print("✅ ESTU session loaded")
+        } catch {
+            print("❌ 無法載入 ESTU Session: \(error)")
+            if sessionLoadError == nil {
+                sessionLoadError = "ESTU: \(error.localizedDescription)"
+            } else {
+                sessionLoadError? += " | ESTU: \(error.localizedDescription)"
+            }
+            estuSession = nil
+        }
+    }
+    
+    private func createMockSISSession() {
+        sisSession = SISSession(
+            token: "xxxx.xxxxx.xxxx",
+            userId: 111111111,
+            userName: "測試學生",
+            empNo: "111111111",
+            expiresAt: Date().addingTimeInterval(20 * 60)
+        )
+        sessionLoadError = nil
+        print("✅ 已創建測試 SIS Session")
+    }
+    
     private func checkCredentials() {
         hasStoredCredentials = CredentialStore.shared.hasLDAPCredentials()
+    }
+
+    private func log(_ message: String) {
+        let time = Date().formatted(.dateTime.hour().minute().second())
+        notificationLog.insert("[\(time)] \(message)", at: 0)
+    }
+
+    private func sampleCourse() -> Course {
+        Course(
+            id: "TEST001",
+            name: "測試課程",
+            instructor: "測試教師",
+            location: "測試教室",
+            dayOfWeek: 1,
+            startPeriod: 1,
+            endPeriod: 2,
+            color: "#007AFF"
+        )
     }
 }
 
@@ -376,7 +800,7 @@ struct InfoRow: View {
 #Preview {
     NavigationStack {
         SettingsView()
-            .environment(\.fjuService, MockFJUService())
+            .environment(\.fjuService, FJUService.shared)
             .environment(AuthenticationManager())
     }
 }

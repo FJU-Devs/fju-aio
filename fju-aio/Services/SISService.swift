@@ -21,6 +21,7 @@ actor SISService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
         
         let (data, httpResponse) = try await networkService.performRequest(request)
@@ -33,28 +34,46 @@ actor SISService {
         logger.info("📋 Fetching student profile...")
         let session = try await authService.getValidSession()
         
-        let url = URL(string: "\(baseURL)/Education/api/Student/GetProfile")!
+        let url = URL(string: "\(baseURL)/Score/api/GradesInquiry/StuBaseInfo?lcId=1028")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
         
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
         
-        return try JSONDecoder().decode(StudentProfile.self, from: data)
+        let response = try JSONDecoder().decode(StuBaseInfoResponse.self, from: data)
+        
+        return StudentProfile(
+            studentId: response.result.stuNo,
+            name: response.result.stuCna,
+            englishName: response.result.stuEna,
+            idNumber: "",
+            birthday: "",
+            gender: "",
+            email: "",
+            phone: "",
+            address: "",
+            department: response.result.dptGrdNa,
+            grade: response.result.grd ?? "1",
+            status: "在學",
+            admissionYear: "\(response.result.entAcaYear)"
+        )
     }
     
     // MARK: - Scores
     
     func queryScores(academicYear: String, semester: Int) async throws -> ScoreQueryResponse {
-        logger.info("📊 Querying scores for \(academicYear)-\(semester)...")
+        logger.info("📊 Querying scores for \(academicYear, privacy: .public)-\(semester, privacy: .public)...")
         let session = try await authService.getValidSession()
         
-        var components = URLComponents(string: "\(baseURL)/Education/api/Score/Query")!
+        var components = URLComponents(string: "\(baseURL)/Score/api/GradesInquiry/Grades")!
         components.queryItems = [
-            URLQueryItem(name: "academicYear", value: academicYear),
-            URLQueryItem(name: "semester", value: "\(semester)")
+            URLQueryItem(name: "SortBy", value: ""),
+            URLQueryItem(name: "Descending", value: "true"),
+            URLQueryItem(name: "LcId", value: "1028")
         ]
         
         guard let url = components.url else {
@@ -64,269 +83,159 @@ actor SISService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
         
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
         
-        return try JSONDecoder().decode(ScoreQueryResponse.self, from: data)
+        let response = try JSONDecoder().decode(GradesInquiryResponse.self, from: data)
+        
+        let filteredCourses = response.result.filter { 
+            $0.hy == Int(academicYear) && $0.htPeriod == semester 
+        }
+        
+        let courses = filteredCourses.map { grade in
+            ScoreCourse(
+                courseId: "\(grade.avaCouSn ?? 0)",
+                courseName: grade.couCNa,
+                credits: grade.credit,
+                score: parseScore(grade.scoreDisplay),
+                grade: grade.scoreDisplay,
+                gpa: 0.0,
+                instructor: ""
+            )
+        }
+        
+        let totalCredits = courses.reduce(0) { $0 + $1.credits }
+        let semesterGPA = calculateGPA(courses)
+        
+        return ScoreQueryResponse(
+            academicYear: academicYear,
+            semester: "\(semester)",
+            courses: courses,
+            semesterGPA: semesterGPA,
+            totalCredits: totalCredits
+        )
+    }
+    
+    private func parseScore(_ scoreDisplay: String) -> Double {
+        if let score = Double(scoreDisplay) {
+            return score
+        }
+        return 0.0
+    }
+    
+    private func calculateGPA(_ courses: [ScoreCourse]) -> Double {
+        let validCourses = courses.filter { $0.score > 0 }
+        guard !validCourses.isEmpty else { return 0.0 }
+        
+        let totalPoints = validCourses.reduce(0.0) { sum, course in
+            let gradePoint = convertScoreToGradePoint(course.score)
+            return sum + (gradePoint * Double(course.credits))
+        }
+        let totalCredits = validCourses.reduce(0) { $0 + $1.credits }
+        
+        return totalCredits > 0 ? totalPoints / Double(totalCredits) : 0.0
+    }
+    
+    private func convertScoreToGradePoint(_ score: Double) -> Double {
+        switch score {
+        case 90...100: return 4.0
+        case 85..<90: return 3.7
+        case 80..<85: return 3.3
+        case 77..<80: return 3.0
+        case 73..<77: return 2.7
+        case 70..<73: return 2.3
+        case 67..<70: return 2.0
+        case 63..<67: return 1.7
+        case 60..<63: return 1.3
+        default: return 0.0
+        }
     }
     
     // MARK: - Certificates
-    
-    func getCertificateTypes() async throws -> [CertType] {
-        logger.info("📜 Fetching certificate types...")
+
+    /// Step 1: Fetch available semester records for the digital enrollment certificate.
+    /// GET /Education/api/OnlineStuStatusCertApply/GetStuInfo?stuNo={stuNo}&lcId=1028
+    func getStuStatusCertInfo() async throws -> StuStatusCertInfo {
+        logger.info("📜 Fetching StuStatusCertInfo...")
         let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/GetCertTypeDdl")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        let response = try JSONDecoder().decode(CertTypesResponse.self, from: data)
-        return response.data
-    }
-    
-    func applyCertificate(certType: String, purpose: String, copies: Int, language: String) async throws -> CertApplyResponse {
-        logger.info("📝 Applying for certificate type: \(certType)...")
-        let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/Apply")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let applyRequest = CertApplyRequest(certType: certType, purpose: purpose, copies: copies, language: language)
-        request.httpBody = try JSONEncoder().encode(applyRequest)
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(CertApplyResponse.self, from: data)
-    }
-    
-    func queryCertificateApplications(startDate: String? = nil, endDate: String? = nil, status: String? = nil) async throws -> [CertApplyRecord] {
-        logger.info("📋 Querying certificate applications...")
-        let session = try await authService.getValidSession()
-        
-        var components = URLComponents(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/QueryApplyList")!
-        var queryItems: [URLQueryItem] = []
-        
-        if let startDate = startDate {
-            queryItems.append(URLQueryItem(name: "startDate", value: startDate))
-        }
-        if let endDate = endDate {
-            queryItems.append(URLQueryItem(name: "endDate", value: endDate))
-        }
-        if let status = status {
-            queryItems.append(URLQueryItem(name: "status", value: status))
-        }
-        
-        components.queryItems = queryItems.isEmpty ? nil : queryItems
-        
-        guard let url = components.url else {
-            throw SISError.invalidResponse
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        let response = try JSONDecoder().decode(CertApplyListResponse.self, from: data)
-        return response.data
-    }
-    
-    func downloadCertificate(applyId: String) async throws -> Data {
-        logger.info("⬇️ Downloading certificate: \(applyId)...")
-        let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/Download/\(applyId)")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/pdf", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        return data
-    }
-    
-    func verifyCertificate(certId: String, verifyCode: String) async throws -> CertVerifyResponse {
-        logger.info("✅ Verifying certificate: \(certId)...")
-        
-        let url = URL(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/Verify")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        
-        let verifyRequest = CertVerifyRequest(certId: certId, verifyCode: verifyCode)
-        request.httpBody = try JSONEncoder().encode(verifyRequest)
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(CertVerifyResponse.self, from: data)
-    }
-    
-    // MARK: - Leave
-    
-    func getLeaveTypes() async throws -> [LeaveType] {
-        logger.info("📋 Fetching leave types...")
-        let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/Leave/GetLeaveTypes")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        let response = try JSONDecoder().decode(LeaveTypesResponse.self, from: data)
-        return response.data
-    }
-    
-    func applyLeave(leaveType: String, startDate: String, endDate: String, startTime: String, endTime: String, reason: String, proofFile: Data? = nil) async throws -> LeaveApplyResponse {
-        logger.info("📝 Applying for leave...")
-        let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/Leave/Apply")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        
-        let boundary = UUID().uuidString
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        var body = Data()
-        
-        func appendFormField(name: String, value: String) {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(value)\r\n".data(using: .utf8)!)
-        }
-        
-        appendFormField(name: "leaveType", value: leaveType)
-        appendFormField(name: "startDate", value: startDate)
-        appendFormField(name: "endDate", value: endDate)
-        appendFormField(name: "startTime", value: startTime)
-        appendFormField(name: "endTime", value: endTime)
-        appendFormField(name: "reason", value: reason)
-        
-        if let proofFile = proofFile {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"proofFile\"; filename=\"proof.pdf\"\r\n".data(using: .utf8)!)
-            body.append("Content-Type: application/pdf\r\n\r\n".data(using: .utf8)!)
-            body.append(proofFile)
-            body.append("\r\n".data(using: .utf8)!)
-        }
-        
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        request.httpBody = body
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(LeaveApplyResponse.self, from: data)
-    }
-    
-    func queryLeaveRecords(academicYear: String? = nil, semester: Int? = nil, status: String? = nil, pageNumber: Int = 1, pageSize: Int = 20) async throws -> LeaveListResponse {
-        logger.info("📋 Querying leave records...")
-        let session = try await authService.getValidSession()
-        
-        var components = URLComponents(string: "\(baseURL)/Education/api/Leave/QueryLeaveList")!
-        var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "pageNumber", value: "\(pageNumber)"),
-            URLQueryItem(name: "pageSize", value: "\(pageSize)")
+
+        var components = URLComponents(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/GetStuInfo")!
+        components.queryItems = [
+            URLQueryItem(name: "stuNo", value: session.empNo),
+            URLQueryItem(name: "lcId", value: "1028")
         ]
-        
-        if let academicYear = academicYear {
-            queryItems.append(URLQueryItem(name: "academicYear", value: academicYear))
-        }
-        if let semester = semester {
-            queryItems.append(URLQueryItem(name: "semester", value: "\(semester)"))
-        }
-        if let status = status {
-            queryItems.append(URLQueryItem(name: "status", value: status))
-        }
-        
-        components.queryItems = queryItems
-        
-        guard let url = components.url else {
-            throw SISError.invalidResponse
-        }
-        
+
+        guard let url = components.url else { throw SISError.invalidResponse }
+
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(LeaveListResponse.self, from: data)
+
+        let response = try JSONDecoder().decode(StuStatusCertInfoResponse.self, from: data)
+        logger.info("✅ Got \(response.result.hisStuStatusInfo.count, privacy: .public) semester records")
+        return response.result
     }
-    
-    func cancelLeave(leaveId: String) async throws -> LeaveCancelResponse {
-        logger.info("❌ Cancelling leave: \(leaveId)...")
+
+    /// Step 2: Download the digital enrollment certificate PDF.
+    /// GET /Education/api/OnlineStuStatusCertApply/Download?stuNO=...&entAcaYear=...&entAcaTerm=...&version=...
+    /// - Parameters:
+    ///   - record: The semester record from GetStuInfo to download the certificate for.
+    ///   - version: 1 = 中文版, 2 = 英文版
+    func downloadEnrollmentCertificate(record: StuStatusRecord, version: Int) async throws -> Data {
+        let label = record.semesterLabel
+        logger.info("⬇️ Downloading enrollment certificate for \(label, privacy: .public) version=\(version, privacy: .public)...")
         let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/Education/api/Leave/Cancel/\(leaveId)")!
+
+        var components = URLComponents(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/Download")!
+        components.queryItems = [
+            URLQueryItem(name: "stuNO", value: record.stuNo),
+            URLQueryItem(name: "entAcaYear", value: "\(record.hy)"),
+            URLQueryItem(name: "entAcaTerm", value: "\(record.ht)"),
+            URLQueryItem(name: "version", value: "\(version)")
+        ]
+
+        guard let url = components.url else { throw SISError.invalidResponse }
+
         var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpMethod = "GET"
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(LeaveCancelResponse.self, from: data)
+
+        logger.info("✅ Certificate PDF downloaded (\(data.count, privacy: .public) bytes)")
+        return data
     }
     
     // MARK: - Schedule
     
     func getCourseSchedule(academicYear: String, semester: Int) async throws -> CourseScheduleResponse {
-        logger.info("📅 Fetching course schedule for \(academicYear)-\(semester)...")
+        logger.info("📅 Fetching course schedule for \(academicYear, privacy: .public)-\(semester, privacy: .public)...")
         let session = try await authService.getValidSession()
         
-        var components = URLComponents(string: "\(baseURL)/Education/api/Course/GetSchedule")!
-        components.queryItems = [
-            URLQueryItem(name: "academicYear", value: academicYear),
-            URLQueryItem(name: "semester", value: "\(semester)")
-        ]
-        
-        guard let url = components.url else {
-            throw SISError.invalidResponse
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
-        try handleHTTPError(httpResponse)
-        
-        return try JSONDecoder().decode(CourseScheduleResponse.self, from: data)
+        // Note: The docs don't show a course schedule endpoint
+        // This might need to be obtained from a different source or endpoint
+        // For now, returning empty response
+        return CourseScheduleResponse(
+            academicYear: academicYear,
+            semester: "\(semester)",
+            courses: []
+        )
     }
     
     // MARK: - Announcements
     
     func getAnnouncements(announceType: String? = nil, pageNumber: Int = 1, pageSize: Int = 25, sortBy: String? = nil, descending: Bool = false) async throws -> AnnouncementResponse {
         logger.info("📢 Fetching announcements...")
+        let session = try await authService.getValidSession()
         
         var components = URLComponents(string: "\(baseURL)/FjuBase/api/Announcement/InEffectPagedList")!
         var queryItems: [URLQueryItem] = [
@@ -337,7 +246,10 @@ actor SISService {
         
         if let announceType = announceType {
             queryItems.append(URLQueryItem(name: "AnnounceType", value: announceType))
+        } else {
+            queryItems.append(URLQueryItem(name: "AnnounceType", value: "200"))
         }
+        
         if let sortBy = sortBy {
             queryItems.append(URLQueryItem(name: "sortBy", value: sortBy))
         }
@@ -354,6 +266,8 @@ actor SISService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
         
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)

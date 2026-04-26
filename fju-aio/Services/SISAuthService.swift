@@ -13,13 +13,13 @@ actor SISAuthService {
     private var currentSession: SISSession?
     
     private init() {
-        loadSession()
+        Task { await loadSession() }
     }
     
     // MARK: - Public API
     
     func login(username: String, password: String) async throws -> SISSession {
-        logger.info("🔐 Starting SIS login for user: \(username)")
+        logger.info("🔐 Starting SIS login for user: \(username, privacy: .private)")
         
         do {
             try credentialStore.saveLDAPCredentials(username: username, password: password)
@@ -29,22 +29,23 @@ actor SISAuthService {
             let loginResponse = try await performLDAPLogin(username: username, password: password)
             
             guard loginResponse.success,
-                  let token = loginResponse.token,
-                  let userId = loginResponse.userId,
-                  let userName = loginResponse.userName,
-                  let empNo = loginResponse.empNo else {
-                logger.error("❌ Login failed: \(loginResponse.message ?? "Unknown error")")
+                  let token = loginResponse.token else {
+                logger.error("❌ Login failed: \(loginResponse.errorMessage.joined(separator: ", "), privacy: .public)")
                 throw SISError.invalidCredentials
             }
             
             logger.info("✅ LDAP login successful")
             
-            let expiresAt = Date().addingTimeInterval(24 * 60 * 60)
+            let (userId, userName) = try parseJWTToken(token)
+            
+            let expiresIn = loginResponse.result?.expires_in ?? 1200
+            let expiresAt = Date().addingTimeInterval(TimeInterval(expiresIn))
+            
             let session = SISSession(
                 token: token,
                 userId: userId,
                 userName: userName,
-                empNo: empNo,
+                empNo: username,
                 expiresAt: expiresAt
             )
             
@@ -54,7 +55,7 @@ actor SISAuthService {
             
             return session
         } catch {
-            logger.error("❌ Login failed: \(error.localizedDescription)")
+            logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
     }
@@ -78,7 +79,7 @@ actor SISAuthService {
         return try await login(username: credentials.username, password: credentials.password)
     }
     
-    func logout() throws {
+    func logout() async throws {
         logger.info("👋 Logging out from SIS...")
         currentSession = nil
         try credentialStore.deleteLDAPCredentials()
@@ -92,7 +93,7 @@ actor SISAuthService {
             return true
         }
         let hasCredentials = credentialStore.hasLDAPCredentials()
-        logger.info("🔍 Has stored credentials: \(hasCredentials)")
+        logger.info("🔍 Has stored credentials: \(hasCredentials, privacy: .public)")
         return hasCredentials
     }
     
@@ -118,7 +119,7 @@ actor SISAuthService {
             }
             
             guard httpResponse.statusCode == 200 else {
-                logger.error("❌ Unexpected status code: \(httpResponse.statusCode)")
+                logger.error("❌ Unexpected status code: \(httpResponse.statusCode, privacy: .public)")
                 throw SISError.invalidResponse
             }
             
@@ -129,6 +130,32 @@ actor SISAuthService {
         } catch {
             throw SISError.networkError(error)
         }
+    }
+    
+    private func parseJWTToken(_ token: String) throws -> (userId: Int, userName: String) {
+        let segments = token.components(separatedBy: ".")
+        guard segments.count == 3 else {
+            throw SISError.invalidResponse
+        }
+        
+        var base64 = segments[1]
+        let remainder = base64.count % 4
+        if remainder > 0 {
+            base64 += String(repeating: "=", count: 4 - remainder)
+        }
+        
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SISError.invalidResponse
+        }
+        
+        let userIdString = json["sub"] as? String ?? ""
+        let userName = json["CName"] as? String ?? "Unknown"
+        let userId = Int(userIdString) ?? 0
+        
+        logger.info("📋 Parsed JWT - User ID: \(userId, privacy: .public), Name: \(userName, privacy: .private)")
+        
+        return (userId, userName)
     }
     
     // MARK: - Session Persistence

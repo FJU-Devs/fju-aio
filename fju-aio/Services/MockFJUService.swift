@@ -90,27 +90,6 @@ final class MockFJUService: FJUServiceProtocol, @unchecked Sendable {
         ]
     }
 
-    // MARK: - Leave Request
-
-    func submitLeaveRequest(_ request: LeaveRequest) async throws -> LeaveRequest {
-        try await Task.sleep(for: .milliseconds(500))
-        var submitted = request
-        submitted.status = .pending
-        return submitted
-    }
-
-    func fetchLeaveRequests() async throws -> [LeaveRequest] {
-        try await Task.sleep(for: .milliseconds(300))
-        let calendar = Calendar.current
-        let now = Date()
-        return [
-            LeaveRequest(id: "lr1", leaveType: .sick, startDate: calendar.date(byAdding: .day, value: -10, to: now)!,
-                         endDate: calendar.date(byAdding: .day, value: -10, to: now)!, reason: "身體不適，發燒", status: .approved),
-            LeaveRequest(id: "lr2", leaveType: .personal, startDate: calendar.date(byAdding: .day, value: -3, to: now)!,
-                         endDate: calendar.date(byAdding: .day, value: -3, to: now)!, reason: "家中有事需處理", status: .pending),
-        ]
-    }
-
     // MARK: - Attendance
 
     func fetchAttendanceRecords(semester: String) async throws -> [AttendanceRecord] {
@@ -158,49 +137,34 @@ final class MockFJUService: FJUServiceProtocol, @unchecked Sendable {
 
     // MARK: - Assignments
 
-    private var assignments: [Assignment] = {
+    func fetchAssignments() async throws -> [Assignment] {
+        try await Task.sleep(for: .milliseconds(300))
         let calendar = Calendar.current
         let now = Date()
         return [
             Assignment(id: "t1", title: "HW3: Binary Search Tree 實作", courseName: "資料結構",
-                       dueDate: calendar.date(byAdding: .day, value: 3, to: now)!, isCompleted: false,
+                       dueDate: calendar.date(byAdding: .day, value: 3, to: now)!,
                        description: "實作 BST 的 insert、delete、search 操作", source: .tronclass),
             Assignment(id: "t2", title: "Lab5: MIPS Assembly", courseName: "計算機組織",
-                       dueDate: calendar.date(byAdding: .day, value: 5, to: now)!, isCompleted: false,
+                       dueDate: calendar.date(byAdding: .day, value: 5, to: now)!,
                        description: "使用 MIPS 組合語言完成排序程式", source: .tronclass),
             Assignment(id: "t3", title: "作文：論科技與人文", courseName: "大學國文",
-                       dueDate: calendar.date(byAdding: .day, value: 7, to: now)!, isCompleted: false,
+                       dueDate: calendar.date(byAdding: .day, value: 7, to: now)!,
                        description: "1500字以上", source: .tronclass),
             Assignment(id: "t4", title: "HW2: 矩陣運算", courseName: "線性代數",
-                       dueDate: calendar.date(byAdding: .day, value: -1, to: now)!, isCompleted: false,
+                       dueDate: calendar.date(byAdding: .day, value: -1, to: now)!,
                        description: "課本習題 3.1-3.5", source: .tronclass),
             Assignment(id: "t5", title: "Reading Report Ch.5", courseName: "英文閱讀與寫作",
-                       dueDate: calendar.date(byAdding: .day, value: 10, to: now)!, isCompleted: false,
-                       description: nil, source: .tronclass),
-            Assignment(id: "t6", title: "HW1: Process Scheduling", courseName: "作業系統",
-                       dueDate: calendar.date(byAdding: .day, value: -5, to: now)!, isCompleted: true,
-                       description: "實作 FCFS、SJF、Priority 排程演算法", source: .tronclass),
-            Assignment(id: "t7", title: "HW2: 遞迴練習", courseName: "資料結構",
-                       dueDate: calendar.date(byAdding: .day, value: -7, to: now)!, isCompleted: true,
+                       dueDate: calendar.date(byAdding: .day, value: 10, to: now)!,
                        description: nil, source: .tronclass),
         ]
-    }()
-
-    func fetchAssignments() async throws -> [Assignment] {
-        try await Task.sleep(for: .milliseconds(300))
-        return assignments
     }
 
     func toggleAssignmentCompletion(id: String) async throws -> Assignment {
-        try await Task.sleep(for: .milliseconds(200))
-        guard let index = assignments.firstIndex(where: { $0.id == id }) else {
-            throw NSError(domain: "MockFJUService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Assignment not found"])
-        }
-        assignments[index].isCompleted.toggle()
-        return assignments[index]
+        throw SISError.notFound
     }
     
-    // MARK: - Check-in (簽到)
+    // MARK: - Check-in
     
     func performCheckIn(courseId: String, location: String?) async throws -> CheckInResult {
         try await Task.sleep(for: .milliseconds(800))
@@ -210,15 +174,10 @@ final class MockFJUService: FJUServiceProtocol, @unchecked Sendable {
             throw NSError(domain: "MockFJUService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Course not found"])
         }
         
-        // Simulate check-in logic
         let now = Date()
         let calendar = Calendar.current
-        let currentHour = calendar.component(.hour, from: now)
         let currentMinute = calendar.component(.minute, from: now)
-        
-        // Determine if late (after 10 minutes of class start)
         let isLate = currentMinute > 10
-        
         let status: CheckInResult.CheckInStatus = isLate ? .late : .success
         let message = isLate ? "簽到成功，但已遲到" : "簽到成功"
         
@@ -231,5 +190,126 @@ final class MockFJUService: FJUServiceProtocol, @unchecked Sendable {
             status: status,
             message: message
         )
+    }
+    
+    // MARK: - User Profile
+    
+    func fetchUserProfile() async throws -> StudentProfile {
+        try await Task.sleep(for: .milliseconds(300))
+        return StudentProfile(
+            studentId: "410XXXXXX",
+            name: "學生姓名",
+            englishName: "Student Name",
+            idNumber: "A123456789",
+            birthday: "2000-01-01",
+            gender: "M",
+            email: "student@mail.fju.edu.tw",
+            phone: "0912345678",
+            address: "新北市新莊區中正路510號",
+            department: "資訊工程學系",
+            grade: "2",
+            status: "在學",
+            admissionYear: "113"
+        )
+    }
+    
+    // MARK: - Certificates
+    
+    func fetchCertificateTypes() async throws -> [CertificateType] {
+        try await Task.sleep(for: .milliseconds(200))
+        return [
+            CertificateType(id: "1", name: "在學證明", description: "證明目前在學狀態", processingDays: 3),
+            CertificateType(id: "2", name: "成績單", description: "歷年成績單", processingDays: 5),
+            CertificateType(id: "3", name: "畢業證明", description: "證明已畢業", processingDays: 3),
+            CertificateType(id: "4", name: "學位證明", description: "證明已取得學位", processingDays: 3),
+        ]
+    }
+    
+    func applyCertificate(type: CertificateType, purpose: String, copies: Int, language: String) async throws -> CertificateApplication {
+        try await Task.sleep(for: .milliseconds(500))
+        let calendar = Calendar.current
+        let estimatedDate = calendar.date(byAdding: .day, value: type.processingDays, to: Date())
+        
+        return CertificateApplication(
+            id: "A\(Date().timeIntervalSince1970)",
+            certificateType: type,
+            purpose: purpose,
+            copies: copies,
+            language: language,
+            status: .pending,
+            appliedDate: Date(),
+            estimatedCompletionDate: estimatedDate,
+            downloadURL: nil
+        )
+    }
+    
+    func fetchCertificateApplications() async throws -> [CertificateApplication] {
+        try await Task.sleep(for: .milliseconds(300))
+        let types = try await fetchCertificateTypes()
+        let calendar = Calendar.current
+        
+        return [
+            CertificateApplication(
+                id: "A202604260001",
+                certificateType: types[0],
+                purpose: "求職使用",
+                copies: 1,
+                language: "zh-TW",
+                status: .completed,
+                appliedDate: calendar.date(byAdding: .day, value: -5, to: Date())!,
+                estimatedCompletionDate: calendar.date(byAdding: .day, value: -2, to: Date())!,
+                downloadURL: "https://example.com/cert.pdf"
+            ),
+            CertificateApplication(
+                id: "A202604250001",
+                certificateType: types[1],
+                purpose: "申請獎學金",
+                copies: 2,
+                language: "zh-TW",
+                status: .pending,
+                appliedDate: calendar.date(byAdding: .day, value: -2, to: Date())!,
+                estimatedCompletionDate: calendar.date(byAdding: .day, value: 3, to: Date())!,
+                downloadURL: nil
+            ),
+        ]
+    }
+    
+    func downloadCertificate(applicationId: String) async throws -> Data {
+        try await Task.sleep(for: .milliseconds(500))
+        return Data()
+    }
+    
+    // MARK: - Announcements
+    
+    func fetchAnnouncements(type: String?, page: Int, pageSize: Int) async throws -> [Announcement] {
+        try await Task.sleep(for: .milliseconds(300))
+        let calendar = Calendar.current
+        
+        return [
+            Announcement(
+                id: "1",
+                title: "113學年度第二學期加退選公告",
+                content: "加退選時間為3月1日至3月7日，請同學把握時間。",
+                publishDate: calendar.date(byAdding: .day, value: -5, to: Date())!,
+                category: "academic",
+                isImportant: true
+            ),
+            Announcement(
+                id: "2",
+                title: "期中考試時間公告",
+                content: "期中考試週為4月13日至4月17日。",
+                publishDate: calendar.date(byAdding: .day, value: -3, to: Date())!,
+                category: "exam",
+                isImportant: true
+            ),
+            Announcement(
+                id: "3",
+                title: "校慶活動通知",
+                content: "5月10日為本校校慶日，當天停課。",
+                publishDate: calendar.date(byAdding: .day, value: -1, to: Date())!,
+                category: "activity",
+                isImportant: false
+            ),
+        ]
     }
 }

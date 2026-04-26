@@ -6,14 +6,75 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		52FB830D2F9EDAE500BC5EAE /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 52FB82AA2F9ED94000BC5EAE /* WidgetKit.framework */; };
+		52FB830E2F9EDAE500BC5EAE /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 52FB82AC2F9ED94000BC5EAE /* SwiftUI.framework */; };
+		52FB831B2F9EDAE600BC5EAE /* CourseWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 52FB830C2F9EDAE500BC5EAE /* CourseWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		52FB83192F9EDAE600BC5EAE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 52D5DFEC2F693F22002EE05C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 52FB830B2F9EDAE500BC5EAE;
+			remoteInfo = CourseWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		52FB82C32F9ED94100BC5EAE /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				52FB831B2F9EDAE600BC5EAE /* CourseWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		52D5DFF42F693F22002EE05C /* fju-aio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "fju-aio.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		52FB82AA2F9ED94000BC5EAE /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		52FB82AC2F9ED94000BC5EAE /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		52FB830C2F9EDAE500BC5EAE /* CourseWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CourseWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		526AF1182F9E97AB005E7FB8 /* Exceptions for "fju-aio" folder in "fju-aio" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 52D5DFF32F693F22002EE05C /* fju-aio */;
+		};
+		52FB831F2F9EDAE600BC5EAE /* Exceptions for "CourseWidget" folder in "CourseWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 52FB830B2F9EDAE500BC5EAE /* CourseWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		52D5DFF62F693F22002EE05C /* fju-aio */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				526AF1182F9E97AB005E7FB8 /* Exceptions for "fju-aio" folder in "fju-aio" target */,
+			);
 			path = "fju-aio";
+			sourceTree = "<group>";
+		};
+		52FB830F2F9EDAE500BC5EAE /* CourseWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				52FB831F2F9EDAE600BC5EAE /* Exceptions for "CourseWidget" folder in "CourseWidgetExtension" target */,
+			);
+			path = CourseWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -26,6 +87,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		52FB83092F9EDAE500BC5EAE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				52FB830E2F9EDAE500BC5EAE /* SwiftUI.framework in Frameworks */,
+				52FB830D2F9EDAE500BC5EAE /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -33,6 +103,8 @@
 			isa = PBXGroup;
 			children = (
 				52D5DFF62F693F22002EE05C /* fju-aio */,
+				52FB830F2F9EDAE500BC5EAE /* CourseWidget */,
+				52FB82A92F9ED94000BC5EAE /* Frameworks */,
 				52D5DFF52F693F22002EE05C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,8 +113,18 @@
 			isa = PBXGroup;
 			children = (
 				52D5DFF42F693F22002EE05C /* fju-aio.app */,
+				52FB830C2F9EDAE500BC5EAE /* CourseWidgetExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		52FB82A92F9ED94000BC5EAE /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				52FB82AA2F9ED94000BC5EAE /* WidgetKit.framework */,
+				52FB82AC2F9ED94000BC5EAE /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -55,10 +137,12 @@
 				52D5DFF02F693F22002EE05C /* Sources */,
 				52D5DFF12F693F22002EE05C /* Frameworks */,
 				52D5DFF22F693F22002EE05C /* Resources */,
+				52FB82C32F9ED94100BC5EAE /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				52FB831A2F9EDAE600BC5EAE /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				52D5DFF62F693F22002EE05C /* fju-aio */,
@@ -69,6 +153,28 @@
 			productName = "fju-aio";
 			productReference = 52D5DFF42F693F22002EE05C /* fju-aio.app */;
 			productType = "com.apple.product-type.application";
+		};
+		52FB830B2F9EDAE500BC5EAE /* CourseWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 52FB831C2F9EDAE600BC5EAE /* Build configuration list for PBXNativeTarget "CourseWidgetExtension" */;
+			buildPhases = (
+				52FB83082F9EDAE500BC5EAE /* Sources */,
+				52FB83092F9EDAE500BC5EAE /* Frameworks */,
+				52FB830A2F9EDAE500BC5EAE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				52FB830F2F9EDAE500BC5EAE /* CourseWidget */,
+			);
+			name = CourseWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = CourseWidgetExtension;
+			productReference = 52FB830C2F9EDAE500BC5EAE /* CourseWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +187,9 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					52D5DFF32F693F22002EE05C = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					52FB830B2F9EDAE500BC5EAE = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -100,12 +209,20 @@
 			projectRoot = "";
 			targets = (
 				52D5DFF32F693F22002EE05C /* fju-aio */,
+				52FB830B2F9EDAE500BC5EAE /* CourseWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		52D5DFF22F693F22002EE05C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		52FB830A2F9EDAE500BC5EAE /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +239,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		52FB83082F9EDAE500BC5EAE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		52FB831A2F9EDAE600BC5EAE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 52FB830B2F9EDAE500BC5EAE /* CourseWidgetExtension */;
+			targetProxy = 52FB83192F9EDAE600BC5EAE /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		52D5DFFD2F693F23002EE05C /* Debug */ = {
@@ -254,6 +386,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "fju-aio/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "輔大 All In One";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -264,7 +398,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -301,6 +435,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "fju-aio/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "輔大 All In One";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -311,7 +447,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -335,6 +471,71 @@
 			};
 			name = Release;
 		};
+		52FB831D2F9EDAE600BC5EAE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G4LXL97NF9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CourseWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CourseWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nelsongx.apps.fju-aio.CourseWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		52FB831E2F9EDAE600BC5EAE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G4LXL97NF9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CourseWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = CourseWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nelsongx.apps.fju-aio.CourseWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -352,6 +553,15 @@
 			buildConfigurations = (
 				52D5E0002F693F23002EE05C /* Debug */,
 				52D5E0012F693F23002EE05C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		52FB831C2F9EDAE600BC5EAE /* Build configuration list for PBXNativeTarget "CourseWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				52FB831D2F9EDAE600BC5EAE /* Debug */,
+				52FB831E2F9EDAE600BC5EAE /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

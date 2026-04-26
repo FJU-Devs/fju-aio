@@ -13,13 +13,13 @@ actor TronClassAuthService {
     private var currentSession: TronClassSession?
     
     private init() {
-        loadSession()
+        Task { await loadSession() }
     }
     
     // MARK: - Public API
     
     func login(username: String, password: String) async throws -> TronClassSession {
-        logger.info("🔐 Starting login for user: \(username)")
+        logger.info("🔐 Starting login for user: \(username, privacy: .private)")
         
         do {
             // Save credentials
@@ -29,17 +29,17 @@ actor TronClassAuthService {
             // Step 1: Get TGT
             logger.info("📝 Step 1: Fetching TGT...")
             let tgt = try await fetchTGT(username: username, password: password)
-            logger.info("✅ TGT received: \(tgt.prefix(20))...")
+            logger.info("✅ TGT received: \(tgt.prefix(20), privacy: .private)...")
             
             // Step 2: Get Service Ticket
             logger.info("📝 Step 2: Fetching Service Ticket...")
             let serviceTicket = try await fetchServiceTicket(tgt: tgt)
-            logger.info("✅ Service Ticket received: \(serviceTicket.prefix(20))...")
+            logger.info("✅ Service Ticket received: \(serviceTicket.prefix(20), privacy: .private)...")
             
             // Step 3: Exchange for Session
             logger.info("📝 Step 3: Exchanging for Session...")
             let session = try await exchangeForSession(serviceTicket: serviceTicket)
-            logger.info("✅ Session created - User ID: \(session.userId), Expires: \(session.expiresAt)")
+            logger.info("✅ Session created - User ID: \(session.userId, privacy: .public), Expires: \(session.expiresAt, privacy: .public)")
             
             // Store session
             currentSession = session
@@ -48,7 +48,7 @@ actor TronClassAuthService {
             
             return session
         } catch {
-            logger.error("❌ Login failed: \(error.localizedDescription)")
+            logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
     }
@@ -74,7 +74,7 @@ actor TronClassAuthService {
         return try await login(username: credentials.username, password: credentials.password)
     }
     
-    func logout() throws {
+    func logout() async throws {
         logger.info("👋 Logging out...")
         currentSession = nil
         try credentialStore.deleteLDAPCredentials()
@@ -88,7 +88,7 @@ actor TronClassAuthService {
             return true
         }
         let hasCredentials = credentialStore.hasLDAPCredentials()
-        logger.info("🔍 Has stored credentials: \(hasCredentials)")
+        logger.info("🔍 Has stored credentials: \(hasCredentials, privacy: .public)")
         return hasCredentials
     }
     
@@ -193,7 +193,7 @@ actor TronClassAuthService {
             }
             
             guard httpResponse.statusCode == 200 else {
-                logger.error("❌ Unexpected status code: \(httpResponse.statusCode)")
+                logger.error("❌ Unexpected status code: \(httpResponse.statusCode, privacy: .public)")
                 throw AuthenticationError.invalidResponse
             }
             
@@ -207,7 +207,7 @@ actor TronClassAuthService {
             // Parse expiration time from session ID
             // Format: V2-1-{uuid}.{base64}.{timestamp}.{signature}
             let expiresAt = parseExpirationFromSessionId(sessionId)
-            logger.info("📅 Session expires at: \(expiresAt)")
+            logger.info("📅 Session expires at: \(expiresAt, privacy: .public)")
             
             return TronClassSession(
                 sessionId: sessionId,
@@ -217,7 +217,7 @@ actor TronClassAuthService {
         } catch let error as AuthenticationError {
             throw error
         } catch {
-            logger.error("❌ Decoding error: \(error.localizedDescription)")
+            logger.error("❌ Decoding error: \(error.localizedDescription, privacy: .public)")
             throw AuthenticationError.networkError(error)
         }
     }
@@ -260,6 +260,7 @@ actor TronClassAuthService {
         logger.info("✅ Session loaded from storage")
     }
 }
+
 // MARK: - Array Safe Subscript
 
 private extension Array {

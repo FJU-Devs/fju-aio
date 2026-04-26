@@ -6,6 +6,7 @@ struct HomeView: View {
     @State private var todayCourses: [Course] = []
     @State private var isLoading = true
     @State private var isEditing = false
+    @State private var selectedCourse: Course?
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -29,6 +30,10 @@ struct HomeView: View {
         .navigationTitle("FJU AIO")
         .sheet(isPresented: $isEditing) {
             HomeEditView()
+        }
+        .sheet(item: $selectedCourse) { course in
+            CourseDetailSheet(course: course)
+                .presentationDetents([.medium])
         }
         .task {
             await loadTodayCourses()
@@ -75,6 +80,7 @@ struct HomeView: View {
                 HStack(spacing: 12) {
                     ForEach(todayCourses) { course in
                         todayCourseCard(course)
+                            .onTapGesture { selectedCourse = course }
                     }
                 }
             }
@@ -89,7 +95,7 @@ struct HomeView: View {
             Text(course.location)
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.8))
-            Text("第\(course.startPeriod)-\(course.endPeriod)節")
+            Text(course.timeSlot)
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.7))
             Text(FJUPeriod.startTime(for: course.startPeriod))
@@ -143,10 +149,28 @@ struct HomeView: View {
 
     private func loadTodayCourses() async {
         do {
-            let all = try await service.fetchCourses(semester: "113-2")
+            let semesters = try await service.fetchAvailableSemesters()
+            let currentSemester = semesters.first ?? "114-2"
+            let all = try await service.fetchCourses(semester: currentSemester)
             let todayWeekday = Calendar.current.component(.weekday, from: Date())
-            let fjuDay = todayWeekday == 1 ? 0 : todayWeekday - 1
-            todayCourses = all.filter { $0.dayOfWeek == fjuDay }.sorted { $0.startPeriod < $1.startPeriod }
+            
+            // Convert weekday to Chinese day string
+            // weekday: 1=Sunday, 2=Monday, ..., 7=Saturday
+            // FJU: 1=Monday(一), 2=Tuesday(二), ..., 5=Friday(五)
+            let todayDayString: String
+            switch todayWeekday {
+            case 2: todayDayString = "一" // Monday
+            case 3: todayDayString = "二" // Tuesday
+            case 4: todayDayString = "三" // Wednesday
+            case 5: todayDayString = "四" // Thursday
+            case 6: todayDayString = "五" // Friday
+            case 7: todayDayString = "六" // Saturday
+            case 1: todayDayString = "日" // Sunday
+            default: todayDayString = ""
+            }
+            
+            todayCourses = all.filter { $0.dayOfWeek == todayDayString }
+                .sorted { $0.startPeriod < $1.startPeriod }
             isLoading = false
         } catch {
             isLoading = false

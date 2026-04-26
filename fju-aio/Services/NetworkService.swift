@@ -1,12 +1,12 @@
 import Foundation
 
-final class NetworkService {
-    static let shared = NetworkService()
+final class NetworkService: Sendable {
+    nonisolated(unsafe) static let shared = NetworkService()
     private let logger = NetworkLogger.shared
     
     private init() {}
     
-    func performRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    nonisolated func performRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         logger.logRequest(request)
         
         do {

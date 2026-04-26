@@ -16,6 +16,8 @@ enum ModuleRegistry {
                   color: .teal, category: .academic, type: .inApp(.attendance)),
         AppModule(id: "checkIn", name: "課程簽到", icon: "hand.raised.fill",
                   color: .pink, category: .academic, type: .inApp(.checkIn), isHidden: true),
+        AppModule(id: "enrollmentCertificate", name: "在學證明", icon: "doc.richtext.fill",
+                  color: .orange, category: .academic, type: .inApp(.enrollmentCertificate)),
 
         // In-app features (tools)
         AppModule(id: "semesterCalendar", name: "學期行事曆", icon: "calendar.badge.clock",
@@ -24,34 +26,28 @@ enum ModuleRegistry {
                   color: .indigo, category: .tools, type: .inApp(.assignments)),
 
         // Web links (academic)
-        AppModule(id: "webAdmin", name: "校務行政系統", icon: "building.columns.fill",
-                  color: .blue, category: .academic,
-                  type: .webLink(URL(string: "https://signnew.fju.edu.tw")!)),
         AppModule(id: "webTronClass", name: "TronClass", icon: "laptopcomputer",
                   color: .cyan, category: .academic,
-                  type: .webLink(URL(string: "https://fju.tronclass.com.tw")!)),
+                  type: .webLink(URL(string: "tronclass://")!)),
         AppModule(id: "webCourseSelect", name: "選課系統", icon: "list.bullet.rectangle",
                   color: .orange, category: .academic,
-                  type: .webLink(URL(string: "https://signnew.fju.edu.tw")!)),
+                  type: .webLink(URL(string: "https://signcourse.fju.edu.tw")!)),
 
         // Web links (life)
-        AppModule(id: "webMail", name: "學生信箱", icon: "envelope.fill",
-                  color: .blue, category: .life,
-                  type: .webLink(URL(string: "https://mail.fju.edu.tw")!)),
         AppModule(id: "webMap", name: "校園地圖", icon: "map.fill",
                   color: .green, category: .life,
                   type: .webLink(URL(string: "https://www.fju.edu.tw/campusMap.jsp")!)),
         AppModule(id: "webDorm", name: "宿舍系統", icon: "house.fill",
                   color: .brown, category: .life,
-                  type: .webLink(URL(string: "https://dorm.fju.edu.tw")!)),
+                  type: .webLink(URL(string: "https://dorm.fju.edu.tw/dormstu/#/")!)),
 
         // Web links (library)
         AppModule(id: "webLibrary", name: "圖書館", icon: "books.vertical.fill",
                   color: .orange, category: .library,
-                  type: .webLink(URL(string: "https://library.fju.edu.tw")!)),
+                  type: .webLink(URL(string: "https://home.lib.fju.edu.tw/TC/")!)),
 
         // Web links (other)
-        AppModule(id: "webAnnouncements", name: "校園公告", icon: "megaphone.fill",
+        AppModule(id: "webAnnouncements", name: "學校官網", icon: "globe.fill",
                   color: .red, category: .other,
                   type: .webLink(URL(string: "https://www.fju.edu.tw")!)),
     ]

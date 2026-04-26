@@ -24,7 +24,7 @@ final class KeychainManager: Sendable {
     
     // MARK: - Save
     
-    func save(_ data: Data, for key: String) throws {
+    nonisolated func save(_ data: Data, for key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
@@ -41,7 +41,7 @@ final class KeychainManager: Sendable {
         }
     }
     
-    func save(_ string: String, for key: String) throws {
+    nonisolated func save(_ string: String, for key: String) throws {
         guard let data = string.data(using: .utf8) else {
             throw KeychainError.invalidData
         }
@@ -50,7 +50,7 @@ final class KeychainManager: Sendable {
     
     // MARK: - Retrieve
     
-    func retrieve(for key: String) throws -> Data {
+    nonisolated func retrieve(for key: String) throws -> Data {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
@@ -75,7 +75,7 @@ final class KeychainManager: Sendable {
         return data
     }
     
-    func retrieveString(for key: String) throws -> String {
+    nonisolated func retrieveString(for key: String) throws -> String {
         let data = try retrieve(for: key)
         guard let string = String(data: data, encoding: .utf8) else {
             throw KeychainError.invalidData
@@ -85,7 +85,7 @@ final class KeychainManager: Sendable {
     
     // MARK: - Update
     
-    private func update(_ data: Data, for key: String) throws {
+    private nonisolated func update(_ data: Data, for key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key
@@ -104,7 +104,7 @@ final class KeychainManager: Sendable {
     
     // MARK: - Delete
     
-    func delete(for key: String) throws {
+    nonisolated func delete(for key: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key
@@ -119,7 +119,7 @@ final class KeychainManager: Sendable {
     
     // MARK: - Clear All
     
-    func clearAll() throws {
+    nonisolated func clearAll() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword
         ]

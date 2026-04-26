@@ -5,7 +5,6 @@ struct Assignment: Identifiable {
     let title: String
     let courseName: String
     let dueDate: Date
-    var isCompleted: Bool
     let description: String?
     let source: AssignmentSource
 

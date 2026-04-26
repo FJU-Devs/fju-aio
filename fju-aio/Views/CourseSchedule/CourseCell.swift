@@ -5,23 +5,44 @@ struct CourseCell: View {
     let periodHeight: CGFloat
 
     private var cellHeight: CGFloat {
-        CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight
+        CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
+    }
+
+    private var baseColor: Color {
+        Color(hex: course.color)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(course.name)
-                .font(.caption2.weight(.bold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
-            Text(course.location)
-                .font(.system(size: 9))
-                .foregroundStyle(.white.opacity(0.8))
-                .lineLimit(1)
+                .lineLimit(cellHeight > periodHeight ? 2 : 1)
+
+            if cellHeight > periodHeight * 0.9 {
+                Text(course.location)
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+            }
         }
-        .padding(4)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: cellHeight)
-        .background(Color(hex: course.color), in: RoundedRectangle(cornerRadius: 6))
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [baseColor, baseColor.opacity(0.85)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+        )
     }
 }

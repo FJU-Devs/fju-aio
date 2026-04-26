@@ -6,7 +6,7 @@ struct LDAPCredentials: Codable, Sendable {
 }
 
 final class CredentialStore: Sendable {
-    static let shared = CredentialStore()
+    nonisolated(unsafe) static let shared = CredentialStore()
     
     private let keychain = KeychainManager.shared
     private let credentialsKey = "com.fju.ldap.credentials"
@@ -15,22 +15,22 @@ final class CredentialStore: Sendable {
     
     // MARK: - LDAP Credentials
     
-    func saveLDAPCredentials(username: String, password: String) throws {
+    nonisolated func saveLDAPCredentials(username: String, password: String) throws {
         let credentials = LDAPCredentials(username: username, password: password)
         let data = try JSONEncoder().encode(credentials)
         try keychain.save(data, for: credentialsKey)
     }
     
-    func retrieveLDAPCredentials() throws -> LDAPCredentials {
+    nonisolated func retrieveLDAPCredentials() throws -> LDAPCredentials {
         let data = try keychain.retrieve(for: credentialsKey)
         return try JSONDecoder().decode(LDAPCredentials.self, from: data)
     }
     
-    func deleteLDAPCredentials() throws {
+    nonisolated func deleteLDAPCredentials() throws {
         try keychain.delete(for: credentialsKey)
     }
     
-    func hasLDAPCredentials() -> Bool {
+    nonisolated func hasLDAPCredentials() -> Bool {
         do {
             _ = try retrieveLDAPCredentials()
             return true

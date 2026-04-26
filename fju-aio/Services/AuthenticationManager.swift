@@ -7,7 +7,9 @@ final class AuthenticationManager {
     private(set) var currentUserId: Int?
     private(set) var isLoading = false
     
-    private let authService = TronClassAuthService.shared
+    private let tronClassAuthService = TronClassAuthService.shared
+    private let sisAuthService = SISAuthService.shared
+    private let fjuService = FJUService.shared
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.fju.aio", category: "AuthManager")
     
     init() {
@@ -19,9 +21,10 @@ final class AuthenticationManager {
     @MainActor
     private func checkInitialAuthState() async {
         logger.info("🔍 Checking initial auth state...")
-        let loggedIn = await authService.isLoggedIn()
-        isAuthenticated = loggedIn
-        logger.info("Initial auth state: \(loggedIn ? "logged in" : "logged out")")
+        let tronClassLoggedIn = await tronClassAuthService.isLoggedIn()
+        let sisLoggedIn = await sisAuthService.isLoggedIn()
+        isAuthenticated = tronClassLoggedIn || sisLoggedIn
+        logger.info("Initial auth state: \(self.isAuthenticated ? "logged in" : "logged out")")
     }
     
     @MainActor
@@ -29,11 +32,27 @@ final class AuthenticationManager {
         logger.info("🔐 Login attempt for: \(username)")
         isLoading = true
         
-        do {
-            let session = try await authService.login(username: username, password: password)
+        // Update FJU service mode based on credentials
+        fjuService.updateMode(username: username, password: password)
+        
+        // For demo/demo, skip actual authentication
+        if username == "demo" && password == "demo" {
+            logger.info("✅ Demo login successful (mock mode)")
             isAuthenticated = true
-            currentUserId = session.userId
-            logger.info("✅ Login successful - User ID: \(session.userId)")
+            currentUserId = 999999
+            isLoading = false
+            return
+        }
+        
+        do {
+            async let tronClassLogin = tronClassAuthService.login(username: username, password: password)
+            async let sisLogin = sisAuthService.login(username: username, password: password)
+            
+            let (tronClassSession, sisSession) = try await (tronClassLogin, sisLogin)
+            
+            isAuthenticated = true
+            currentUserId = sisSession.userId
+            logger.info("✅ Login successful - TronClass User ID: \(tronClassSession.userId), SIS User ID: \(sisSession.userId)")
         } catch {
             logger.error("❌ Login failed: \(error.localizedDescription)")
             throw error
@@ -48,7 +67,8 @@ final class AuthenticationManager {
         isLoading = true
         
         do {
-            try await authService.logout()
+            try await tronClassAuthService.logout()
+            try await sisAuthService.logout()
             isAuthenticated = false
             currentUserId = nil
             logger.info("✅ Logout successful")
@@ -61,6 +81,10 @@ final class AuthenticationManager {
     }
     
     func getValidSession() async throws -> TronClassSession {
-        return try await authService.getValidSession()
+        return try await tronClassAuthService.getValidSession()
+    }
+    
+    func getValidSISSession() async throws -> SISSession {
+        return try await sisAuthService.getValidSession()
     }
 }

@@ -10,6 +10,7 @@ enum AppDestination: Hashable {
     case semesterCalendar
     case assignments
     case checkIn
+    case enrollmentCertificate
 }
 
 // MARK: - Tab Enum
@@ -62,13 +63,14 @@ struct ContentView: View {
         case .attendance:       AttendanceView()
         case .semesterCalendar: SemesterCalendarView()
         case .assignments:      AssignmentsView()
-        case .checkIn:          CheckInView()
+        case .checkIn:                  CheckInView()
+        case .enrollmentCertificate:    EnrollmentCertificateView()
         }
     }
 }
 
 #Preview {
     ContentView()
-        .environment(\.fjuService, MockFJUService())
+        .environment(\.fjuService, FJUService.shared)
         .environment(HomePreferences())
 }
