@@ -430,16 +430,71 @@ final class CourseNotificationManager {
                     startDate: state.classStartDate,
                     endDate: state.classEndDate
                 )
-                scheduleLocalEndIfPossible(for: activity, state: state)
+                scheduleLocalPhaseUpdates(for: activity, state: state)
             }
         }
     }
 
-    private func scheduleLocalEndIfPossible(
+    private func scheduleLocalPhaseUpdates(
         for activity: Activity<CourseActivityAttributes>,
         state: CourseActivityAttributes.ContentState
     ) {
-        let dismissalDate = state.classEndDate.addingTimeInterval(liveActivityDismissalDelay)
+        scheduleLocalUpdate(
+            for: activity,
+            phase: .during,
+            startDate: state.classStartDate,
+            endDate: state.classEndDate,
+            at: state.classStartDate
+        )
+        scheduleLocalUpdate(
+            for: activity,
+            phase: .ended,
+            startDate: state.classStartDate,
+            endDate: state.classEndDate,
+            at: state.classEndDate
+        )
+        scheduleLocalEnd(
+            for: activity,
+            startDate: state.classStartDate,
+            endDate: state.classEndDate,
+            at: state.classEndDate.addingTimeInterval(liveActivityDismissalDelay)
+        )
+    }
+
+    private func scheduleLocalUpdate(
+        for activity: Activity<CourseActivityAttributes>,
+        phase: CoursePhase,
+        startDate: Date,
+        endDate: Date,
+        at date: Date
+    ) {
+        let delay = date.timeIntervalSinceNow
+
+        Task {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+
+            let updatedState = CourseActivityAttributes.ContentState(
+                phase: phase,
+                classStartDate: startDate,
+                classEndDate: endDate
+            )
+            let content = ActivityContent(
+                state: updatedState,
+                staleDate: endDate.addingTimeInterval(liveActivityDismissalDelay)
+            )
+            await activity.update(content)
+            print("[CourseNotification] ✅ 本機切換遠端啟動 Live Activity: \(activity.id) phase=\(phase.rawValue)")
+        }
+    }
+
+    private func scheduleLocalEnd(
+        for activity: Activity<CourseActivityAttributes>,
+        startDate: Date,
+        endDate: Date,
+        at dismissalDate: Date
+    ) {
         let delay = dismissalDate.timeIntervalSinceNow
         guard delay > 0 else { return }
 
@@ -447,8 +502,8 @@ final class CourseNotificationManager {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             let finalState = CourseActivityAttributes.ContentState(
                 phase: .ended,
-                classStartDate: state.classStartDate,
-                classEndDate: state.classEndDate
+                classStartDate: startDate,
+                classEndDate: endDate
             )
             let content = ActivityContent(state: finalState, staleDate: dismissalDate)
             await activity.end(content, dismissalPolicy: .immediate)
