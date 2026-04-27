@@ -190,7 +190,7 @@ final class CourseNotificationManager {
     func endAllLiveActivities() async {
         for activity in Activity<CourseActivityAttributes>.activities {
             let activityId = activity.id
-            await activity.end(dismissalPolicy: .immediate)
+            await activity.end(activity.content, dismissalPolicy: .immediate)
             Task {
                 await unregisterActivity(id: activityId)
             }
@@ -561,7 +561,7 @@ final class CourseNotificationManager {
         Task {
             for await activity in Activity<CourseActivityAttributes>.activityUpdates {
                 let state = activity.content.state
-                await registerActivity(
+                _ = await registerActivity(
                     activity,
                     courseId: activity.attributes.courseId,
                     startDate: state.classStartDate,
@@ -708,7 +708,7 @@ final class CourseNotificationManager {
         return true
     }
 
-    private func firstPushToken(
+    nonisolated private func firstPushToken(
         for activity: Activity<CourseActivityAttributes>,
         timeoutSeconds: UInt64
     ) async -> Data? {
@@ -763,7 +763,7 @@ final class CourseNotificationManager {
         endDate: Date
     ) async -> ActivityRegistrationPayload {
         let identity = await notificationIdentity()
-        ActivityRegistrationPayload(
+        return ActivityRegistrationPayload(
             userId: identity.userId,
             deviceId: identity.deviceId,
             activityId: activity.id,
@@ -787,7 +787,7 @@ final class CourseNotificationManager {
 
         return NotificationIdentity(
             userId: userId,
-            deviceId: await deviceIdentifier()
+            deviceId: deviceIdentifier()
         )
     }
 
