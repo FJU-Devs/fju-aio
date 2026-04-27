@@ -192,34 +192,19 @@ struct HomeView: View {
 
     private func scheduleCourseNotifications(for courses: [Course], calendarEvents: [CalendarEvent]) {
         let snapshot = courses
-        let semesterWindow = semesterWindow(from: calendarEvents)
+        let semester = courses.first { !$0.semester.isEmpty }?.semester ?? ""
+        let window = SemesterCalendarResolver.notificationWindow(
+            for: semester,
+            events: calendarEvents
+        )
+        print("[CourseNotification] calendar window semester=\(window.semester), start=\(String(describing: window.startDate)), end=\(String(describing: window.endDate)), source=\(window.source)")
         Task(priority: .background) {
             await CourseNotificationManager.shared.scheduleAll(
                 for: snapshot,
-                semesterStartDate: semesterWindow.start,
-                semesterEndDate: semesterWindow.end
+                semesterStartDate: window.startDate,
+                semesterEndDate: window.endDate
             )
         }
-    }
-
-    private func semesterWindow(from events: [CalendarEvent]) -> (start: Date?, end: Date?) {
-        let now = Date()
-        let futureClassStart = events
-            .filter {
-                $0.title.localizedStandardContains("開始上課日")
-                    && $0.startDate > now
-            }
-            .map(\.startDate)
-            .min()
-        let relevantStart = futureClassStart ?? now
-        let semesterEnd = events
-            .filter {
-                $0.title.localizedStandardContains("彈性多元學習週")
-                    && $0.startDate > relevantStart
-            }
-            .map(\.startDate)
-            .min()
-        return (futureClassStart, semesterEnd)
     }
 
     private func todayDayString() -> String {

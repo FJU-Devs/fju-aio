@@ -493,13 +493,14 @@ final class CourseNotificationManager {
         var date = calendar.startOfDay(for: max(now, semesterStartDate))
         let finalDate = calendar.startOfDay(for: semesterEndDate)
 
-        while date <= finalDate {
+        while date < finalDate {
             let weekday = calendar.component(.weekday, from: date)
             if course.dayOfWeekNumber == weekdayToCourseDay(weekday),
                shouldInclude(course: course, on: date, calendar: calendar),
                let startDate = courseDate(for: course, on: date, calendar: calendar, useEndTime: false),
                let endDate = courseDate(for: course, on: date, calendar: calendar, useEndTime: true),
-               endDate > startDate {
+               endDate > startDate,
+               startDate < semesterEndDate {
                 occurrences.append((startDate, endDate))
             }
 
