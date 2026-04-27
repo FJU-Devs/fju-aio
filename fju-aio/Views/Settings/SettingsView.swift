@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 import ActivityKit
 
 struct SettingsView: View {
@@ -50,7 +49,7 @@ struct SettingsView: View {
                 ))
 
                 if notificationManager.isEnabled {
-                    Toggle("上課前橫幅提醒", isOn: Binding(
+                    Toggle("上課前顯示靈動島", isOn: Binding(
                         get: { notificationManager.notifyBefore },
                         set: { notificationManager.notifyBefore = $0 }
                     ))
@@ -67,21 +66,17 @@ struct SettingsView: View {
                         }
                     }
 
-                    Toggle("上課時靈動島顯示", isOn: Binding(
+                    Toggle("上課中顯示靈動島", isOn: Binding(
                         get: { notificationManager.notifyStart },
                         set: { notificationManager.notifyStart = $0 }
                     ))
 
-                    Toggle("下課提醒（靈動島）", isOn: Binding(
+                    Toggle("下課後顯示靈動島", isOn: Binding(
                         get: { notificationManager.notifyEnd },
                         set: { notificationManager.notifyEnd = $0 }
                     ))
                 }
             }
-            .task {
-                await notificationManager.refreshPermissionStatus()
-            }
-
             Section("關於") {
                 HStack {
                     Text("版本")
@@ -489,58 +484,8 @@ struct DebugView: View {
                 }
             }
             
-            Section("通知與 Live Activity 測試") {
+            Section("Live Activity 測試") {
                 let nm = CourseNotificationManager.shared
-
-                InfoRow(label: "通知權限", value: {
-                    switch nm.permissionStatus {
-                    case .authorized:   return "已授權"
-                    case .denied:       return "已拒絕"
-                    case .provisional:  return "暫時授權"
-                    default:            return "未決定"
-                    }
-                }())
-                InfoRow(label: "待處理 Banner", value: "\(nm.pendingCount) 則")
-
-                Button("申請通知權限") {
-                    log("▶ 申請通知權限...")
-                    Task {
-                        let granted = await nm.requestPermission()
-                        await nm.refreshPendingCount()
-                        log(granted ? "✅ 已授權" : "❌ 被拒絕")
-                    }
-                }
-
-                Button("觸發測試 Banner (1 秒後)") {
-                    log("▶ 觸發測試 Banner...")
-                    Task {
-                        let sample = courses.first ?? sampleCourse()
-                        await nm.fireTestBanner(course: sample)
-                        log("✅ Banner 已排入")
-                    }
-                }
-
-                Button("排程所有課程 Banner") {
-                    log("▶ 排程 Banner (\(courses.count) 門課)...")
-                    Task {
-                        await nm.scheduleAll(for: courses)
-                        log("✅ 完成，待處理: \(nm.pendingCount) 則")
-                    }
-                }
-                .disabled(courses.isEmpty)
-
-                Button("取消所有 Banner") {
-                    log("▶ 取消所有 Banner...")
-                    nm.cancelAllBannerNotifications()
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(300))
-                        await nm.refreshPendingCount()
-                        log("✅ 已取消，剩餘: \(nm.pendingCount) 則")
-                    }
-                }
-                .foregroundStyle(.red)
-
-                Divider()
 
                 Button("Live Activity — 上課前") {
                     log("▶ 測試 Live Activity (before)...")
@@ -584,10 +529,6 @@ struct DebugView: View {
                     }
                     .font(.caption)
                 }
-            }
-            .task {
-                await CourseNotificationManager.shared.refreshPermissionStatus()
-                await CourseNotificationManager.shared.refreshPendingCount()
             }
 
             if !notificationLog.isEmpty {

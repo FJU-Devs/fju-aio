@@ -8,6 +8,8 @@ struct GradesView: View {
     @State private var selectedSemester = "113-1"
     @State private var isLoading = true
 
+    private let cache = AppCache.shared
+
     var body: some View {
         List {
             if let summary = gpaSummary {
@@ -60,23 +62,50 @@ struct GradesView: View {
             }
         }
         .task {
-            await loadData()
+            await loadData(forceRefresh: false)
+        }
+        .refreshable {
+            await loadData(forceRefresh: true)
         }
         .onChange(of: selectedSemester) {
-            Task { await loadData() }
+            Task { await loadData(forceRefresh: false) }
         }
     }
 
-    private func loadData() async {
+    private func loadData(forceRefresh: Bool) async {
+        // Show cached data immediately if available
+        if !forceRefresh {
+            if semesters.isEmpty, let cached = cache.getSemesters() {
+                semesters = cached
+                if selectedSemester.isEmpty, let first = cached.first {
+                    selectedSemester = first
+                }
+            }
+            if let cachedGrades = cache.getGrades(semester: selectedSemester) {
+                grades = cachedGrades
+                gpaSummary = cache.getGPASummary(semester: selectedSemester)
+                isLoading = false
+                return
+            }
+        }
+
         isLoading = true
         do {
             async let fetchedSemesters = service.fetchAvailableSemesters()
             async let fetchedGrades = service.fetchGrades(semester: selectedSemester)
             async let fetchedSummary = service.fetchGPASummary(semester: selectedSemester)
 
-            semesters = try await fetchedSemesters
-            grades = try await fetchedGrades
-            gpaSummary = try await fetchedSummary
+            let newSemesters = try await fetchedSemesters
+            let newGrades = try await fetchedGrades
+            let newSummary = try await fetchedSummary
+
+            semesters = newSemesters
+            grades = newGrades
+            gpaSummary = newSummary
+
+            cache.setSemesters(newSemesters)
+            cache.setGrades(newGrades, semester: selectedSemester)
+            cache.setGPASummary(newSummary, semester: selectedSemester)
         } catch {}
         isLoading = false
     }

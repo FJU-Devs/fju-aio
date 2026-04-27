@@ -6,6 +6,9 @@ struct AttendanceView: View {
     @State private var isLoading = true
     @State private var selectedCourse = "全部"
 
+    private let semester = "113-2"
+    private let cache = AppCache.shared
+
     private var courseNames: [String] {
         let names = Set(records.map(\.courseName))
         return ["全部"] + names.sorted()
@@ -65,11 +68,27 @@ struct AttendanceView: View {
             }
         }
         .task {
-            do {
-                records = try await service.fetchAttendanceRecords(semester: "113-2")
-            } catch {}
-            isLoading = false
+            await loadRecords(forceRefresh: false)
         }
+        .refreshable {
+            await loadRecords(forceRefresh: true)
+        }
+    }
+
+    private func loadRecords(forceRefresh: Bool) async {
+        if !forceRefresh, let cached = cache.getAttendance(semester: semester) {
+            records = cached
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        do {
+            let fetched = try await service.fetchAttendanceRecords(semester: semester)
+            records = fetched
+            cache.setAttendance(fetched, semester: semester)
+        } catch {}
+        isLoading = false
     }
 
     private var summaryCard: some View {

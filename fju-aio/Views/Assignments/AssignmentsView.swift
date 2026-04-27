@@ -5,6 +5,8 @@ struct AssignmentsView: View {
     @State private var assignments: [Assignment] = []
     @State private var isLoading = true
 
+    private let cache = AppCache.shared
+
     private var displayedAssignments: [Assignment] {
         assignments.sorted { $0.dueDate < $1.dueDate }
     }
@@ -48,13 +50,25 @@ struct AssignmentsView: View {
             }
         }
         .task {
-            await loadAssignments()
+            await loadAssignments(forceRefresh: false)
+        }
+        .refreshable {
+            await loadAssignments(forceRefresh: true)
         }
     }
 
-    private func loadAssignments() async {
+    private func loadAssignments(forceRefresh: Bool) async {
+        if !forceRefresh, let cached = cache.getAssignments() {
+            assignments = cached
+            isLoading = false
+            return
+        }
+
+        isLoading = true
         do {
-            assignments = try await service.fetchAssignments()
+            let fetched = try await service.fetchAssignments()
+            assignments = fetched
+            cache.setAssignments(fetched)
         } catch {}
         isLoading = false
     }

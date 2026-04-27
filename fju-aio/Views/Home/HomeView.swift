@@ -8,6 +8,8 @@ struct HomeView: View {
     @State private var isEditing = false
     @State private var selectedCourse: Course?
 
+    private let cache = AppCache.shared
+
     private let columns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
@@ -28,6 +30,9 @@ struct HomeView: View {
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("FJU AIO")
+        .refreshable {
+            await loadTodayCourses(forceRefresh: true)
+        }
         .sheet(isPresented: $isEditing) {
             HomeEditView()
         }
@@ -36,7 +41,7 @@ struct HomeView: View {
                 .presentationDetents([.medium])
         }
         .task {
-            await loadTodayCourses()
+            await loadTodayCourses(forceRefresh: false)
         }
     }
 
@@ -147,33 +152,50 @@ struct HomeView: View {
 
     // MARK: - Data Loading
 
-    private func loadTodayCourses() async {
+    private func loadTodayCourses(forceRefresh: Bool) async {
+        // Serve cached courses for today without showing a spinner
+        if !forceRefresh {
+            let todayKey = todayDayString()
+            if let cachedSemesters = cache.getSemesters(),
+               let currentSemester = cachedSemesters.first,
+               let cachedCourses = cache.getCourses(semester: currentSemester) {
+                todayCourses = cachedCourses
+                    .filter { $0.dayOfWeek == todayKey }
+                    .sorted { $0.startPeriod < $1.startPeriod }
+                isLoading = false
+                return
+            }
+        }
+
+        isLoading = true
         do {
             let semesters = try await service.fetchAvailableSemesters()
             let currentSemester = semesters.first ?? "114-2"
             let all = try await service.fetchCourses(semester: currentSemester)
-            let todayWeekday = Calendar.current.component(.weekday, from: Date())
-            
-            // Convert weekday to Chinese day string
-            // weekday: 1=Sunday, 2=Monday, ..., 7=Saturday
-            // FJU: 1=Monday(一), 2=Tuesday(二), ..., 5=Friday(五)
-            let todayDayString: String
-            switch todayWeekday {
-            case 2: todayDayString = "一" // Monday
-            case 3: todayDayString = "二" // Tuesday
-            case 4: todayDayString = "三" // Wednesday
-            case 5: todayDayString = "四" // Thursday
-            case 6: todayDayString = "五" // Friday
-            case 7: todayDayString = "六" // Saturday
-            case 1: todayDayString = "日" // Sunday
-            default: todayDayString = ""
-            }
-            
-            todayCourses = all.filter { $0.dayOfWeek == todayDayString }
+
+            cache.setSemesters(semesters)
+            cache.setCourses(all, semester: currentSemester)
+
+            let todayKey = todayDayString()
+            todayCourses = all.filter { $0.dayOfWeek == todayKey }
                 .sorted { $0.startPeriod < $1.startPeriod }
             isLoading = false
         } catch {
             isLoading = false
+        }
+    }
+
+    private func todayDayString() -> String {
+        let weekday = Calendar.current.component(.weekday, from: Date())
+        switch weekday {
+        case 2: return "一" // Monday
+        case 3: return "二" // Tuesday
+        case 4: return "三" // Wednesday
+        case 5: return "四" // Thursday
+        case 6: return "五" // Friday
+        case 7: return "六" // Saturday
+        case 1: return "日" // Sunday
+        default: return ""
         }
     }
 }

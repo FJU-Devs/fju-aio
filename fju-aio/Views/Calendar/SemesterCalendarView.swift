@@ -7,11 +7,9 @@ struct SemesterCalendarView: View {
     @State private var selectedCategory: CalendarEvent.EventCategory?
     @State private var errorMessage: String?
 
-//    private var filteredEvents: [CalendarEvent] {
-//        let filtered = selectedCategory == nil ? events : events.filter { $0.category == selectedCategory }
-//        return filtered.sorted { $0.startDate < $1.startDate }
-//    }
-    
+    private let semester = "113-2"
+    private let cache = AppCache.shared
+
     private var filteredEvents: [CalendarEvent] {
         let filtered = selectedCategory == nil ? events : events.filter { $0.category == selectedCategory }
         // Show events from 30 days ago onwards
@@ -30,7 +28,6 @@ struct SemesterCalendarView: View {
 
         // Sort by actual date, not string
         return grouped.sorted { first, second in
-            // Get first event from each group to compare dates
             guard let firstEvent = first.value.first,
                   let secondEvent = second.value.first else {
                 return first.key < second.key
@@ -102,36 +99,31 @@ struct SemesterCalendarView: View {
             }
         }
         .task {
-            await loadEvents()
+            await loadEvents(forceRefresh: false)
         }
         .refreshable {
-            await loadEvents()
+            await loadEvents(forceRefresh: true)
         }
     }
 
-    private func loadEvents() async {
+    private func loadEvents(forceRefresh: Bool) async {
+        if !forceRefresh, let cached = cache.getCalendarEvents(semester: semester) {
+            events = cached
+            isLoading = false
+            return
+        }
+
         isLoading = true
         errorMessage = nil
-        
+
         do {
-            print("🔍 Starting calendar fetch...")
-            events = try await service.fetchCalendarEvents(semester: "113-2")
-            print("✅ Fetched \(events.count) calendar events")
-            
-            // Debug: Print date range of events
-            if let earliest = events.min(by: { $0.startDate < $1.startDate }),
-               let latest = events.max(by: { $0.startDate < $1.startDate }) {
-                print("📅 Event date range: \(earliest.startDate) to \(latest.startDate)")
-            }
-            
-            if events.isEmpty {
-                print("⚠️ No events returned from service")
-            }
+            let fetched = try await service.fetchCalendarEvents(semester: semester)
+            events = fetched
+            cache.setCalendarEvents(fetched, semester: semester)
         } catch {
-            print("❌ Calendar fetch error: \(error)")
             errorMessage = "載入失敗: \(error.localizedDescription)"
         }
-        
+
         isLoading = false
     }
 

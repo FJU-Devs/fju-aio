@@ -11,6 +11,7 @@ struct CourseScheduleView: View {
     private let periodHeight: CGFloat = 56
     private let timeColumnWidth: CGFloat = 38
     private let displayPeriods = 1...11
+    private let cache = AppCache.shared
 
     /// The current weekday (1=Mon … 5=Fri), nil on weekends.
     private var todayWeekdayIndex: Int? {
@@ -29,6 +30,9 @@ struct CourseScheduleView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     timetableGrid(screenWidth: geometry.size.width)
                 }
+                .refreshable {
+                    await loadSemesters(forceRefresh: true)
+                }
             }
         }
         .background(Color(.systemGroupedBackground))
@@ -42,7 +46,7 @@ struct CourseScheduleView: View {
                             Button {
                                 if semester != selectedSemester {
                                     selectedSemester = semester
-                                    Task { await loadCourses() }
+                                    Task { await loadCourses(forceRefresh: false) }
                                 }
                             } label: {
                                 HStack {
@@ -69,7 +73,7 @@ struct CourseScheduleView: View {
                 .presentationDetents([.medium])
         }
         .task {
-            await loadSemesters()
+            await loadSemesters(forceRefresh: false)
         }
     }
 
@@ -179,27 +183,48 @@ struct CourseScheduleView: View {
 
     // MARK: - Data Loading
 
-    private func loadSemesters() async {
+    private func loadSemesters(forceRefresh: Bool) async {
+        // Use cached semesters if available
+        if !forceRefresh, let cached = cache.getSemesters() {
+            availableSemesters = cached
+            if selectedSemester.isEmpty, let first = cached.first {
+                selectedSemester = first
+            }
+            await loadCourses(forceRefresh: false)
+            return
+        }
+
         do {
             let semesters = try await service.fetchAvailableSemesters()
             availableSemesters = semesters
+            cache.setSemesters(semesters)
             if selectedSemester.isEmpty, let first = semesters.first {
                 selectedSemester = first
             }
-            await loadCourses()
+            await loadCourses(forceRefresh: forceRefresh)
         } catch {
             if selectedSemester.isEmpty {
                 selectedSemester = "114-2"
             }
-            await loadCourses()
+            await loadCourses(forceRefresh: forceRefresh)
         }
     }
 
-    private func loadCourses() async {
+    private func loadCourses(forceRefresh: Bool) async {
         guard !selectedSemester.isEmpty else { return }
+
+        // Serve from cache without showing spinner
+        if !forceRefresh, let cached = cache.getCourses(semester: selectedSemester) {
+            courses = cached
+            isLoading = false
+            return
+        }
+
         isLoading = true
         do {
-            courses = try await service.fetchCourses(semester: selectedSemester)
+            let fetched = try await service.fetchCourses(semester: selectedSemester)
+            courses = fetched
+            cache.setCourses(fetched, semester: selectedSemester)
         } catch {
             courses = []
         }
@@ -273,7 +298,3 @@ struct CourseScheduleView: View {
         return "\(parts[0])學年 第\(parts[1])學期"
     }
 }
-
-
-
-
