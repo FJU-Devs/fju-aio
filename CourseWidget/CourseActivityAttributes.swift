@@ -3,6 +3,7 @@ import Foundation
 
 struct CourseActivityAttributes: ActivityAttributes {
     let courseName: String
+    let courseId: String
     let location: String
     let instructor: String
 

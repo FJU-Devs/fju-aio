@@ -4,6 +4,10 @@ import SwiftUI
 struct FJUApp: App {
     @State private var authManager = AuthenticationManager()
 
+    init() {
+        _ = CourseNotificationManager.shared
+    }
+
     var body: some Scene {
         WindowGroup {
             if authManager.isAuthenticated {

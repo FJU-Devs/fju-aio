@@ -5,10 +5,16 @@ import Observation
 // MARK: - Server config
 
 private let serverBaseURL = "https://fju-aio-notify.appppple.com"
+private let liveActivityDismissalDelay: TimeInterval = 30
 
 @Observable
 final class CourseNotificationManager {
     static let shared = CourseNotificationManager()
+
+    private init() {
+        observePushToStartTokens()
+        observeActivityUpdates()
+    }
 
     // MARK: - Persisted Preferences
 
@@ -97,6 +103,7 @@ final class CourseNotificationManager {
 
         let attributes = CourseActivityAttributes(
             courseName: course.name,
+            courseId: course.id,
             location: course.location,
             instructor: course.instructor
         )
@@ -116,7 +123,7 @@ final class CourseNotificationManager {
             print("[CourseNotification] ✅ Live Activity 啟動: \(activity.id) phase=\(phase.rawValue)")
             activeActivityIDs[course.id] = activity.id
 
-            return await registerActivity(activity, course: course, startDate: startDate, endDate: endDate)
+            return await registerActivity(activity, courseId: course.id, startDate: startDate, endDate: endDate)
         } catch {
             print("[CourseNotification] ❌ Live Activity 啟動失敗: \(error)")
             return false
@@ -200,6 +207,7 @@ final class CourseNotificationManager {
 
         let attributes = CourseActivityAttributes(
             courseName: course.name,
+            courseId: course.id,
             location: course.location,
             instructor: course.instructor
         )
@@ -217,7 +225,7 @@ final class CourseNotificationManager {
                 pushType: .token
             )
             print("[CourseNotification] ✅ 延遲測試 Live Activity 啟動: \(activity.id), 上課時間: \(startDate)")
-            return await registerActivity(activity, course: course, startDate: startDate, endDate: endDate)
+            return await registerActivity(activity, courseId: course.id, startDate: startDate, endDate: endDate)
         } catch {
             print("[CourseNotification] ❌ 延遲測試 Live Activity 失敗: \(error)")
             return false
@@ -243,6 +251,7 @@ final class CourseNotificationManager {
 
         let attributes = CourseActivityAttributes(
             courseName: course.name,
+            courseId: course.id,
             location: course.location,
             instructor: course.instructor
         )
@@ -260,7 +269,7 @@ final class CourseNotificationManager {
                 pushType: .token
             )
             print("[CourseNotification] ✅ 完整週期測試 Live Activity 啟動: \(activity.id), start=\(startDate), end=\(endDate)")
-            return await registerActivity(activity, course: course, startDate: startDate, endDate: endDate)
+            return await registerActivity(activity, courseId: course.id, startDate: startDate, endDate: endDate)
         } catch {
             print("[CourseNotification] ❌ 完整週期測試 Live Activity 失敗: \(error)")
             return false
@@ -279,6 +288,7 @@ final class CourseNotificationManager {
         let now = Date()
         let attributes = CourseActivityAttributes(
             courseName: course.name,
+            courseId: course.id,
             location: course.location,
             instructor: course.instructor
         )
@@ -308,7 +318,7 @@ final class CourseNotificationManager {
                 pushType: .token
             )
             print("[CourseNotification] ✅ 測試 Live Activity: \(activity.id) phase=\(phase.rawValue)")
-            return await registerActivity(activity, course: course, startDate: startDate, endDate: endDate)
+            return await registerActivity(activity, courseId: course.id, startDate: startDate, endDate: endDate)
         } catch {
             print("[CourseNotification] ❌ 測試 Live Activity 失敗: \(error)")
             return false
@@ -381,14 +391,86 @@ final class CourseNotificationManager {
         let classEndDate: Int
     }
 
+    private struct PushToStartRegistrationPayload: Encodable {
+        let pushToStartToken: String
+    }
+
+    private struct PushToStartFullCyclePayload: Encodable {
+        let courseName: String
+        let courseId: String
+        let location: String
+        let instructor: String
+    }
+
     private struct ServerErrorResponse: Decodable {
         let error: String
+    }
+
+    private func observePushToStartTokens() {
+        Task {
+            for await tokenData in Activity<CourseActivityAttributes>.pushToStartTokenUpdates {
+                let tokenHex = hexString(from: tokenData)
+                let payload = PushToStartRegistrationPayload(pushToStartToken: tokenHex)
+                if await postJSON(to: "\(serverBaseURL)/push-to-start/register", body: payload) {
+                    print("[CourseNotification] ✅ 已向伺服器註冊 push-to-start token")
+                } else {
+                    print("[CourseNotification] ⚠️ push-to-start token 註冊失敗")
+                }
+            }
+        }
+    }
+
+    private func observeActivityUpdates() {
+        Task {
+            for await activity in Activity<CourseActivityAttributes>.activityUpdates {
+                let state = activity.content.state
+                await registerActivity(
+                    activity,
+                    courseId: activity.attributes.courseId,
+                    startDate: state.classStartDate,
+                    endDate: state.classEndDate
+                )
+                scheduleLocalEndIfPossible(for: activity, state: state)
+            }
+        }
+    }
+
+    private func scheduleLocalEndIfPossible(
+        for activity: Activity<CourseActivityAttributes>,
+        state: CourseActivityAttributes.ContentState
+    ) {
+        let dismissalDate = state.classEndDate.addingTimeInterval(liveActivityDismissalDelay)
+        let delay = dismissalDate.timeIntervalSinceNow
+        guard delay > 0 else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let finalState = CourseActivityAttributes.ContentState(
+                phase: .ended,
+                classStartDate: state.classStartDate,
+                classEndDate: state.classEndDate
+            )
+            let content = ActivityContent(state: finalState, staleDate: dismissalDate)
+            await activity.end(content, dismissalPolicy: .immediate)
+            print("[CourseNotification] ✅ 本機結束遠端啟動 Live Activity: \(activity.id)")
+        }
+    }
+
+    @discardableResult
+    func requestRemoteFullCycleTest(course: Course) async -> Bool {
+        let payload = PushToStartFullCyclePayload(
+            courseName: course.name,
+            courseId: course.id,
+            location: course.location,
+            instructor: course.instructor
+        )
+        return await postJSON(to: "\(serverBaseURL)/push-to-start/full-cycle", body: payload)
     }
 
     /// Registers the activity with the server and observes push token updates.
     private func registerActivity(
         _ activity: Activity<CourseActivityAttributes>,
-        course: Course,
+        courseId: String,
         startDate: Date,
         endDate: Date
     ) async -> Bool {
@@ -397,10 +479,10 @@ final class CourseNotificationManager {
             return false
         }
 
-        let tokenHex = tokenData.map { String(format: "%02x", $0) }.joined()
+        let tokenHex = hexString(from: tokenData)
         let payload = registrationPayload(
             activity: activity,
-            course: course,
+            courseId: courseId,
             tokenHex: tokenHex,
             startDate: startDate,
             endDate: endDate
@@ -415,7 +497,7 @@ final class CourseNotificationManager {
         Task {
             await observeTokenRefreshes(
                 activity,
-                course: course,
+                courseId: courseId,
                 startDate: startDate,
                 endDate: endDate
             )
@@ -449,15 +531,15 @@ final class CourseNotificationManager {
 
     private func observeTokenRefreshes(
         _ activity: Activity<CourseActivityAttributes>,
-        course: Course,
+        courseId: String,
         startDate: Date,
         endDate: Date
     ) async {
         for await updatedToken in activity.pushTokenUpdates {
-            let updatedHex = updatedToken.map { String(format: "%02x", $0) }.joined()
+            let updatedHex = hexString(from: updatedToken)
             let update = registrationPayload(
                 activity: activity,
-                course: course,
+                courseId: courseId,
                 tokenHex: updatedHex,
                 startDate: startDate,
                 endDate: endDate
@@ -473,7 +555,7 @@ final class CourseNotificationManager {
 
     private func registrationPayload(
         activity: Activity<CourseActivityAttributes>,
-        course: Course,
+        courseId: String,
         tokenHex: String,
         startDate: Date,
         endDate: Date
@@ -482,7 +564,7 @@ final class CourseNotificationManager {
             activityId: activity.id,
             pushToken: tokenHex,
             courseName: activity.attributes.courseName,
-            courseId: course.id,
+            courseId: courseId,
             classStartDate: unixSeconds(startDate),
             classEndDate: unixSeconds(endDate)
         )
@@ -490,6 +572,10 @@ final class CourseNotificationManager {
 
     private func unixSeconds(_ date: Date) -> Int {
         Int(date.timeIntervalSince1970.rounded(.down))
+    }
+
+    private func hexString(from data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     /// Tells the server to stop tracking this activity.

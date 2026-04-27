@@ -549,12 +549,12 @@ struct DebugView: View {
                     }
                 }
 
-                Button("完整週期測試（30 秒 x 4）") {
-                    log("▶ 啟動完整週期 Live Activity 測試...")
+                Button("遠端完整週期測試（30 秒 x 4）") {
+                    log("▶ 要求伺服器啟動遠端完整週期 Live Activity 測試...")
                     Task {
                         let sample = courses.first ?? sampleCourse()
-                        let registered = await nm.scheduleFullCycleTestLiveActivity(course: sample)
-                        log(registered ? "✅ 已註冊完整週期：30 秒無顯示、30 秒上課前、30 秒上課中、30 秒結束後消失" : "❌ 完整週期測試註冊失敗，請查看 Xcode console")
+                        let scheduled = await nm.requestRemoteFullCycleTest(course: sample)
+                        log(scheduled ? "✅ 伺服器已排程：30 秒無顯示、30 秒上課前、30 秒上課中、30 秒結束後消失" : "❌ 遠端完整週期排程失敗，請確認 push-to-start token 已註冊")
                     }
                 }
 
