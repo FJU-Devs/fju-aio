@@ -1,10 +1,12 @@
 import Foundation
 import ActivityKit
 import Observation
+import UIKit
 
 // MARK: - Server config
 
 private let serverBaseURL = "https://fju-aio-notify.appppple.com"
+private let serverAuthToken: String? = nil
 private let liveActivityDismissalDelay: TimeInterval = 30
 
 @Observable
@@ -23,7 +25,12 @@ final class CourseNotificationManager {
         get { UserDefaults.standard.object(forKey: Keys.enabled) as? Bool ?? true }
         set {
             UserDefaults.standard.set(newValue, forKey: Keys.enabled)
-            if !newValue { Task { await endAllLiveActivities() } }
+            if !newValue {
+                Task {
+                    await endAllLiveActivities()
+                    await cancelRemoteSchedules(deactivateToken: true)
+                }
+            }
         }
     }
 
@@ -190,6 +197,11 @@ final class CourseNotificationManager {
         }
         activeActivityIDs.removeAll()
         print("[CourseNotification] ✅ 全部 Live Activities 結束")
+    }
+
+    func cancelForLogout() async {
+        await endAllLiveActivities()
+        await cancelRemoteSchedules(deactivateToken: true)
     }
 
     // MARK: - Test helpers (DebugView)
@@ -362,7 +374,8 @@ final class CourseNotificationManager {
 
     private func scheduleRemoteCourseActivities(for courses: [Course]) async {
         let now = Date()
-        let schedules = Array(courses.compactMap { remoteSchedule(for: $0, from: now) }.prefix(20))
+        let identity = await notificationIdentity()
+        let schedules = Array(courses.compactMap { remoteSchedule(for: $0, from: now, identity: identity) }.prefix(20))
 
         guard !schedules.isEmpty else {
             print("[CourseNotification] 沒有需要伺服器排程的課程 Live Activity")
@@ -377,7 +390,11 @@ final class CourseNotificationManager {
         }
     }
 
-    private func remoteSchedule(for course: Course, from now: Date) -> RemoteCourseActivitySchedule? {
+    private func remoteSchedule(
+        for course: Course,
+        from now: Date,
+        identity: NotificationIdentity
+    ) -> RemoteCourseActivitySchedule? {
         guard let occurrence = nextOccurrence(for: course, from: now) else { return nil }
 
         let showBefore = notifyBefore
@@ -397,6 +414,8 @@ final class CourseNotificationManager {
         guard dismissalDate.timeIntervalSince(now) > 5 else { return nil }
 
         return RemoteCourseActivitySchedule(
+            userId: identity.userId,
+            deviceId: identity.deviceId,
             courseName: course.name,
             courseId: course.id,
             location: course.location,
@@ -455,6 +474,8 @@ final class CourseNotificationManager {
     // MARK: - Server registration
 
     private struct ActivityRegistrationPayload: Encodable {
+        let userId: String
+        let deviceId: String
         let activityId: String
         let pushToken: String
         let courseName: String
@@ -464,11 +485,15 @@ final class CourseNotificationManager {
     }
 
     private struct PushToStartRegistrationPayload: Encodable {
+        let userId: String
+        let deviceId: String
         let pushToStartToken: String
         let clientUnixTime: Int
     }
 
     private struct PushToStartFullCyclePayload: Encodable {
+        let userId: String
+        let deviceId: String
         let courseName: String
         let courseId: String
         let location: String
@@ -480,6 +505,8 @@ final class CourseNotificationManager {
     }
 
     private struct RemoteCourseActivitySchedule: Encodable {
+        let userId: String
+        let deviceId: String
         let courseName: String
         let courseId: String
         let location: String
@@ -492,6 +519,17 @@ final class CourseNotificationManager {
         let dismissalDate: Int?
     }
 
+    private struct CancelRemoteSchedulesPayload: Encodable {
+        let userId: String
+        let deviceId: String
+        let deactivateToken: Bool
+    }
+
+    private struct NotificationIdentity {
+        let userId: String
+        let deviceId: String
+    }
+
     private struct ServerErrorResponse: Decodable {
         let error: String
     }
@@ -500,7 +538,10 @@ final class CourseNotificationManager {
         Task {
             for await tokenData in Activity<CourseActivityAttributes>.pushToStartTokenUpdates {
                 let tokenHex = hexString(from: tokenData)
+                let identity = await notificationIdentity()
                 let payload = PushToStartRegistrationPayload(
+                    userId: identity.userId,
+                    deviceId: identity.deviceId,
                     pushToStartToken: tokenHex,
                     clientUnixTime: unixSeconds(Date())
                 )
@@ -616,7 +657,10 @@ final class CourseNotificationManager {
 
     @discardableResult
     func requestRemoteFullCycleTest(course: Course) async -> Bool {
+        let identity = await notificationIdentity()
         let payload = PushToStartFullCyclePayload(
+            userId: identity.userId,
+            deviceId: identity.deviceId,
             courseName: course.name,
             courseId: course.id,
             location: course.location,
@@ -638,7 +682,7 @@ final class CourseNotificationManager {
         }
 
         let tokenHex = hexString(from: tokenData)
-        let payload = registrationPayload(
+        let payload = await registrationPayload(
             activity: activity,
             courseId: courseId,
             tokenHex: tokenHex,
@@ -695,7 +739,7 @@ final class CourseNotificationManager {
     ) async {
         for await updatedToken in activity.pushTokenUpdates {
             let updatedHex = hexString(from: updatedToken)
-            let update = registrationPayload(
+            let update = await registrationPayload(
                 activity: activity,
                 courseId: courseId,
                 tokenHex: updatedHex,
@@ -717,8 +761,11 @@ final class CourseNotificationManager {
         tokenHex: String,
         startDate: Date,
         endDate: Date
-    ) -> ActivityRegistrationPayload {
+    ) async -> ActivityRegistrationPayload {
+        let identity = await notificationIdentity()
         ActivityRegistrationPayload(
+            userId: identity.userId,
+            deviceId: identity.deviceId,
             activityId: activity.id,
             pushToken: tokenHex,
             courseName: activity.attributes.courseName,
@@ -726,6 +773,52 @@ final class CourseNotificationManager {
             classStartDate: unixSeconds(startDate),
             classEndDate: unixSeconds(endDate)
         )
+    }
+
+    private func notificationIdentity() async -> NotificationIdentity {
+        let userId: String
+        if let sisSession = try? await SISAuthService.shared.getValidSession() {
+            userId = String(sisSession.userId)
+        } else if let tronClassSession = try? await TronClassAuthService.shared.getValidSession() {
+            userId = String(tronClassSession.userId)
+        } else {
+            userId = "anonymous"
+        }
+
+        return NotificationIdentity(
+            userId: userId,
+            deviceId: await deviceIdentifier()
+        )
+    }
+
+    @MainActor
+    private func deviceIdentifier() -> String {
+        if let vendorId = UIDevice.current.identifierForVendor?.uuidString {
+            UserDefaults.standard.set(vendorId, forKey: "courseNotificationDeviceId")
+            return vendorId
+        }
+
+        if let existing = UserDefaults.standard.string(forKey: "courseNotificationDeviceId") {
+            return existing
+        }
+
+        let generated = UUID().uuidString
+        UserDefaults.standard.set(generated, forKey: "courseNotificationDeviceId")
+        return generated
+    }
+
+    private func cancelRemoteSchedules(deactivateToken: Bool) async {
+        let identity = await notificationIdentity()
+        let payload = CancelRemoteSchedulesPayload(
+            userId: identity.userId,
+            deviceId: identity.deviceId,
+            deactivateToken: deactivateToken
+        )
+        if await postJSON(to: "\(serverBaseURL)/push-to-start/cancel", body: payload) {
+            print("[CourseNotification] ✅ 已取消伺服器未來 Live Activity 排程")
+        } else {
+            print("[CourseNotification] ⚠️ 取消伺服器 Live Activity 排程失敗")
+        }
     }
 
     private func unixSeconds(_ date: Date) -> Int {
@@ -744,6 +837,7 @@ final class CourseNotificationManager {
               let url = URL(string: "\(serverBaseURL)/activity/\(encodedActivityId)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
+        applyServerAuth(to: &request)
         do {
             let (responseData, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
@@ -777,6 +871,7 @@ final class CourseNotificationManager {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyServerAuth(to: &request)
         request.httpBody = data
 
         do {
@@ -804,5 +899,11 @@ final class CourseNotificationManager {
             return errorResponse.error
         }
         return String(data: data.prefix(300), encoding: .utf8) ?? "(unreadable)"
+    }
+
+    private func applyServerAuth(to request: inout URLRequest) {
+        if let serverAuthToken {
+            request.setValue("Bearer \(serverAuthToken)", forHTTPHeaderField: "Authorization")
+        }
     }
 }

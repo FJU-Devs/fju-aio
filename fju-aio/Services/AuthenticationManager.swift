@@ -67,6 +67,7 @@ final class AuthenticationManager {
         isLoading = true
         
         do {
+            await CourseNotificationManager.shared.cancelForLogout()
             try await tronClassAuthService.logout()
             try await sisAuthService.logout()
             isAuthenticated = false
