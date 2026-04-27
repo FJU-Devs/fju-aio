@@ -641,7 +641,7 @@ final class CourseNotificationManager {
                 if await postJSON(to: "\(serverBaseURL)/push-to-start/register", body: payload) {
                     print("[CourseNotification] ✅ 已向伺服器註冊 push-to-start token")
                     if !lastCourseSnapshot.isEmpty {
-                        await scheduleRemoteCourseActivities(for: lastCourseSnapshot)
+                        await scheduleRemoteCourseActivities(for: lastCourseSnapshot, semesterEndDate: nil)
                     }
                 } else {
                     print("[CourseNotification] ⚠️ push-to-start token 註冊失敗")
