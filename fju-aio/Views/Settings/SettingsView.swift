@@ -484,15 +484,15 @@ struct DebugView: View {
                 }
             }
             
-            Section("Live Activity 測試") {
+            Section("Live Activity 測試（即時）") {
                 let nm = CourseNotificationManager.shared
 
                 Button("Live Activity — 上課前") {
                     log("▶ 測試 Live Activity (before)...")
                     Task {
                         let sample = courses.first ?? sampleCourse()
-                        await nm.fireTestLiveActivity(course: sample, phase: .before)
-                        log("✅ Live Activity 已啟動 (before)")
+                        let registered = await nm.fireTestLiveActivity(course: sample, phase: .before)
+                        log(registered ? "✅ Live Activity 已啟動並向伺服器註冊 (before)" : "❌ Live Activity 伺服器註冊失敗 (before)")
                     }
                 }
 
@@ -500,8 +500,8 @@ struct DebugView: View {
                     log("▶ 測試 Live Activity (during)...")
                     Task {
                         let sample = courses.first ?? sampleCourse()
-                        await nm.fireTestLiveActivity(course: sample, phase: .during)
-                        log("✅ Live Activity 已啟動 (during)")
+                        let registered = await nm.fireTestLiveActivity(course: sample, phase: .during)
+                        log(registered ? "✅ Live Activity 已啟動並向伺服器註冊 (during)" : "❌ Live Activity 伺服器註冊失敗 (during)")
                     }
                 }
 
@@ -509,8 +509,8 @@ struct DebugView: View {
                     log("▶ 測試 Live Activity (ended)...")
                     Task {
                         let sample = courses.first ?? sampleCourse()
-                        await nm.fireTestLiveActivity(course: sample, phase: .ended)
-                        log("✅ Live Activity 已啟動 (ended)")
+                        let registered = await nm.fireTestLiveActivity(course: sample, phase: .ended)
+                        log(registered ? "✅ Live Activity 已啟動並向伺服器註冊 (ended)" : "❌ Live Activity 伺服器註冊失敗 (ended)")
                     }
                 }
 
@@ -522,6 +522,53 @@ struct DebugView: View {
                     }
                 }
                 .foregroundStyle(.red)
+            }
+
+            Section("Live Activity 伺服器測試") {
+                let nm = CourseNotificationManager.shared
+
+                Text("啟動後可關閉 App，等待伺服器在指定時間推送狀態更新")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button("排程 1 分鐘後上課（伺服器推送）") {
+                    log("▶ 排程 1 分鐘後的 Live Activity...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        let registered = await nm.scheduleDelayedTestLiveActivity(course: sample, delaySeconds: 60)
+                        log(registered ? "✅ 已啟動並向伺服器註冊，1 分鐘後伺服器將推送「上課中」" : "❌ Live Activity 伺服器註冊失敗，請查看 Xcode console")
+                    }
+                }
+
+                Button("排程 3 分鐘後上課（伺服器推送）") {
+                    log("▶ 排程 3 分鐘後的 Live Activity...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        let registered = await nm.scheduleDelayedTestLiveActivity(course: sample, delaySeconds: 180)
+                        log(registered ? "✅ 已啟動並向伺服器註冊，3 分鐘後伺服器將推送「上課中」" : "❌ Live Activity 伺服器註冊失敗，請查看 Xcode console")
+                    }
+                }
+
+                Button("完整週期測試（30 秒 x 4）") {
+                    log("▶ 啟動完整週期 Live Activity 測試...")
+                    Task {
+                        let sample = courses.first ?? sampleCourse()
+                        let registered = await nm.scheduleFullCycleTestLiveActivity(course: sample)
+                        log(registered ? "✅ 已註冊完整週期：30 秒無顯示、30 秒上課前、30 秒上課中、30 秒結束後消失" : "❌ 完整週期測試註冊失敗，請查看 Xcode console")
+                    }
+                }
+
+                Button("Ping 伺服器") {
+                    log("▶ Ping 伺服器...")
+                    Task {
+                        let (status, body) = await pingServer()
+                        if let status {
+                            log(status == 200 ? "✅ 伺服器正常 (HTTP \(status))" : "❌ 伺服器錯誤 (HTTP \(status))\n\(body ?? "")")
+                        } else {
+                            log("❌ 無法連線至伺服器")
+                        }
+                    }
+                }
 
                 if !notificationLog.isEmpty {
                     Button("清除紀錄", role: .destructive) {
@@ -709,6 +756,26 @@ struct DebugView: View {
         notificationLog.insert("[\(time)] \(message)", at: 0)
     }
 
+    private func pingServer() async -> (Int?, String?) {
+        guard let url = URL(string: "https://fju-aio-notify.appppple.com/activities") else { return (nil, nil) }
+        // Use a session that does NOT follow redirects so we see the real status code
+        let config = URLSessionConfiguration.ephemeral
+        let session = URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        do {
+            let (data, response) = try await session.data(from: url)
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode
+            let finalURL = http?.url?.absoluteString ?? url.absoluteString
+            var body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            if finalURL != url.absoluteString {
+                body = "(重定向至 \(finalURL)) " + body
+            }
+            return (status, body.isEmpty ? nil : body)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
     private func sampleCourse() -> Course {
         Course(
             id: "TEST001",
@@ -720,6 +787,17 @@ struct DebugView: View {
             endPeriod: 2,
             color: "#007AFF"
         )
+    }
+}
+
+private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        nil // block all redirects
     }
 }
 
@@ -745,4 +823,3 @@ struct InfoRow: View {
             .environment(AuthenticationManager())
     }
 }
-
