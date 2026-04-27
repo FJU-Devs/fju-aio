@@ -8,6 +8,7 @@ struct HomeView: View {
     @State private var isLoading = true
     @State private var isEditing = false
     @State private var selectedCourse: Course?
+    @State private var lastNotificationSyncSignature: String?
 
     private let cache = AppCache.shared
 
@@ -42,7 +43,7 @@ struct HomeView: View {
                 .presentationDetents([.medium])
         }
         .task {
-            await loadTodayCourses(forceRefresh: true)
+            await loadTodayCourses(forceRefresh: false)
         }
     }
 
@@ -198,6 +199,14 @@ struct HomeView: View {
             for: semester,
             events: calendarEvents
         )
+        let signature = notificationSyncSignature(
+            courses: snapshot,
+            semester: semester,
+            window: window
+        )
+        guard signature != lastNotificationSyncSignature else { return }
+        lastNotificationSyncSignature = signature
+
         print("[CourseNotification] calendar window semester=\(window.semester), start=\(String(describing: window.startDate)), end=\(String(describing: window.endDate)), source=\(window.source)")
         Task(priority: .background) {
             await CourseNotificationManager.shared.scheduleAll(
@@ -206,6 +215,32 @@ struct HomeView: View {
                 semesterEndDate: window.endDate
             )
         }
+    }
+
+    private func notificationSyncSignature(
+        courses: [Course],
+        semester: String,
+        window: SemesterNotificationWindow
+    ) -> String {
+        let courseSignature = courses
+            .sorted { $0.id < $1.id }
+            .map {
+                [
+                    $0.id,
+                    $0.dayOfWeek,
+                    String($0.startPeriod),
+                    String($0.endPeriod),
+                    $0.location,
+                    $0.weeks
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+        return [
+            semester,
+            String(window.startDate?.timeIntervalSince1970 ?? 0),
+            String(window.endDate?.timeIntervalSince1970 ?? 0),
+            courseSignature
+        ].joined(separator: "#")
     }
 
     private func todayDayString() -> String {
