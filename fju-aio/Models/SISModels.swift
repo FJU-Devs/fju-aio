@@ -125,7 +125,25 @@ struct GradesInquiryResponse: Codable, Sendable {
         let confirmType: String
         let scoTypCNa: String
         let deferNote: String
-        let avaCouSn: Int?
+        let couClassify: [CourseClassify]?
+
+        var courseIdentifier: String {
+            if let avaCouSn = couClassify?.first?.avaCouSn {
+                return "\(avaCouSn)"
+            }
+
+            return "\(hy)-\(htPeriod)-\(couCNa)"
+        }
+    }
+
+    struct CourseClassify: Codable, Sendable {
+        let avaCouSn: Int
+        let couClassifyNo: Int
+        let couClassifyCna: String
+        let couClassifyEna: String
+        let couClassifyNoteCna: String
+        let couClassifyNoteEna: String
+        let displayOrder: Int
     }
 }
 
@@ -135,13 +153,14 @@ struct ScoreQueryResponse: Codable, Sendable {
     let courses: [ScoreCourse]
     let semesterGPA: Double
     let totalCredits: Int
+    let earnedCredits: Int
 }
 
 struct ScoreCourse: Codable, Sendable, Identifiable {
     let courseId: String
     let courseName: String
     let credits: Int
-    let score: Double
+    let score: Double?
     let grade: String
     let gpa: Double
     let instructor: String

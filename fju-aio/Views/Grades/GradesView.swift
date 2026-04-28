@@ -6,7 +6,7 @@ struct GradesView: View {
     @State private var grades: [Grade] = []
     @State private var gpaSummary: GPASummary?
     @State private var semesters: [String] = []
-    @State private var selectedSemester = "113-1"
+    @State private var selectedSemester = ""
     @State private var isLoading = true
 
     private let cache = AppCache.shared
@@ -30,6 +30,7 @@ struct GradesView: View {
                 .pickerStyle(.segmented)
             }
             .listRowBackground(Color.clear)
+            .disabled(semesters.isEmpty)
 
             Section("成績列表") {
                 if grades.isEmpty && !isLoading {
@@ -78,11 +79,11 @@ struct GradesView: View {
         if !forceRefresh {
             if semesters.isEmpty, let cached = cache.getSemesters() {
                 semesters = cached
-                if selectedSemester.isEmpty, let first = cached.first {
+                if !cached.contains(selectedSemester), let first = cached.first {
                     selectedSemester = first
                 }
             }
-            if let cachedGrades = cache.getGrades(semester: selectedSemester) {
+            if !selectedSemester.isEmpty, let cachedGrades = cache.getGrades(semester: selectedSemester) {
                 grades = cachedGrades
                 gpaSummary = cache.getGPASummary(semester: selectedSemester)
                 isLoading = false
@@ -93,21 +94,38 @@ struct GradesView: View {
         isLoading = true
         do {
             try await syncStatus.withSync("正在載入成績…") {
-                async let fetchedSemesters = service.fetchAvailableSemesters()
-                async let fetchedGrades = service.fetchGrades(semester: selectedSemester)
-                async let fetchedSummary = service.fetchGPASummary(semester: selectedSemester)
+                let newSemesters = try await service.fetchAvailableSemesters()
+                let semesterToLoad: String
+                if newSemesters.contains(selectedSemester) {
+                    semesterToLoad = selectedSemester
+                } else if let firstSemester = newSemesters.first {
+                    semesterToLoad = firstSemester
+                } else {
+                    semesterToLoad = ""
+                }
 
-                let newSemesters = try await fetchedSemesters
+                guard !semesterToLoad.isEmpty else {
+                    semesters = []
+                    grades = []
+                    gpaSummary = nil
+                    cache.setSemesters([])
+                    return
+                }
+
+                async let fetchedGrades = service.fetchGrades(semester: semesterToLoad)
+                async let fetchedSummary = service.fetchGPASummary(semester: semesterToLoad)
+
                 let newGrades = try await fetchedGrades
                 let newSummary = try await fetchedSummary
 
                 semesters = newSemesters
+                selectedSemester = semesterToLoad
                 grades = newGrades
                 gpaSummary = newSummary
 
                 cache.setSemesters(newSemesters)
-                cache.setGrades(newGrades, semester: selectedSemester)
-                cache.setGPASummary(newSummary, semester: selectedSemester)
+                cache.setGrades(newGrades, semester: semesterToLoad)
+                cache.setGPASummary(newSummary, semester: semesterToLoad)
             }
         } catch {}
         isLoading = false

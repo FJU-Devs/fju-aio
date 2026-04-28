@@ -79,7 +79,7 @@ struct CourseScheduleView: View {
                     navigateToCampusMap = true
                 }
             })
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         .navigationDestination(isPresented: $navigateToCampusMap) {
             CampusMapView(highlightLocation: mapHighlightLocation)

@@ -127,6 +127,74 @@ struct CompletionCriterion: Codable, Sendable {
     let completion_info: String
 }
 
+// MARK: - Course Outline Models
+
+struct TronClassMyCoursesRequest: Encodable, Sendable {
+    let fields = "id,name,course_code"
+    let page = 1
+    let page_size = 100
+    let conditions = Conditions()
+    let showScorePassedStatus = false
+
+    struct Conditions: Encodable, Sendable {
+        let status = ["ongoing"]
+        let keyword = ""
+        let classify_type = "recently_started"
+        let display_studio_list = false
+    }
+}
+
+struct TronClassMyCoursesResponse: Decodable, Sendable {
+    let courses: [TronClassCourseSummary]
+}
+
+struct TronClassCourseSummary: Decodable, Sendable, Identifiable {
+    let id: Int
+    let name: String
+    let course_code: String
+}
+
+struct TronClassCourseOutlineResponse: Decodable, Sendable {
+    let id: Int
+    let external_url: String?
+    let status: String?
+}
+
+struct OutlineAPIResponse<Result: Decodable>: Decodable {
+    let statusCode: Int
+    let result: Result
+}
+
+struct OutlineCourseInfoAndBook: Decodable, Sendable {
+    let jonCouSn: Int
+    let cm: String?
+    let book: String?
+    let refBook: String?
+    let norms: String?
+    let other: String?
+    let contact: String?
+    let office: String?
+    let courseOfficeHr: String?
+    let dptObj: String?
+}
+
+struct OutlineCourseCP: Decodable, Sendable {
+    let jonCouSn: Int
+    let couHr: Double?
+    let atLeastWeekCnt: Int?
+    let weeklyCP: [OutlineWeeklyCP]
+}
+
+struct OutlineWeeklyCP: Decodable, Sendable {
+    let cweek: Int
+    let unit: String?
+    let theme: String?
+    let other: String?
+    let physicalClassHr: Double?
+    let asyncOnlineClassHr: Double?
+    let syncOnlineClassHr: Double?
+}
+
 // MARK: - TronClass API Errors
 
 enum TronClassAPIError: LocalizedError {

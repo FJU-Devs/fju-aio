@@ -160,7 +160,8 @@ final class HTMLParser: Sendable {
             department: department,
             courseType: courseType,
             schedules: schedules,
-            notes: notes?.isEmpty == false ? notes : nil
+            notes: notes?.isEmpty == false ? notes : nil,
+            outline: nil
         )
     }
     
@@ -339,4 +340,3 @@ final class HTMLParser: Sendable {
         return isError
     }
 }
-
