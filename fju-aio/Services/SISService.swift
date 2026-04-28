@@ -106,6 +106,12 @@ actor SISService {
         }
         
         let totalCredits = courses.reduce(0) { $0 + $1.credits }
+        let earnedCredits = courses.reduce(0) { sum, course in
+            guard let score = course.score, score >= 60 else {
+                return sum
+            }
+            return sum + course.credits
+        }
         let semesterGPA = calculateGPA(courses)
         
         return ScoreQueryResponse(
@@ -113,7 +119,8 @@ actor SISService {
             semester: "\(semester)",
             courses: courses,
             semesterGPA: semesterGPA,
-            totalCredits: totalCredits
+            totalCredits: totalCredits,
+            earnedCredits: earnedCredits
         )
     }
 

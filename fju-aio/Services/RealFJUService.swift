@@ -58,7 +58,7 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
         return GPASummary(
             semesterGPA: scoreResponse.semesterGPA,
             cumulativeGPA: scoreResponse.semesterGPA,
-            totalCreditsEarned: scoreResponse.totalCredits,
+            totalCreditsEarned: scoreResponse.earnedCredits,
             totalCreditsAttempted: scoreResponse.totalCredits,
             semester: semester
         )

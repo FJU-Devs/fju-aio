@@ -179,7 +179,7 @@ struct CourseScheduleView: View {
     }
 
     private func courseBlocks(colWidth: CGFloat) -> some View {
-        ForEach(courses) { course in
+        ForEach(courses.filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5 && displayPeriods.contains($0.startPeriod) }) { course in
             let dayIndex = course.dayOfWeekNumber - 1
             let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5
             let y = CGFloat(course.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
