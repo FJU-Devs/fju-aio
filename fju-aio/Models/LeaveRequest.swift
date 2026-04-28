@@ -34,17 +34,50 @@ struct LeaveRequest: Identifiable, Sendable {
     enum StatusColor { case approved, pending, rejected, draft }
 }
 
-// MARK: - Leave kind from RefList/LeaveKind
-// API shape: {"value": 2, "label": "事假", "lcId": 0}
+// MARK: - Leave reference data
+// API shape: {"value": 1, "label": "一般請假", "lcId": 0}
 
 struct LeaveKind: Identifiable, Codable, Sendable, Hashable {
-    let value: Int              // refLeaveSn
-    let label: String           // e.g. "事假", "病假"
+    let value: Int
+    let label: String
     let lcId: Int
 
     var id: Int { value }
-    var refLeaveSn: Int { value }
     var leaveNa: String { label }
+}
+
+struct RefLeave: Identifiable, Codable, Sendable, Hashable {
+    let refLeaveSn: Int
+    let leaveCna: String
+    let leaveCmemo: String
+    let activeFlag: Int
+    let examActiveFlag: Int
+    let displayOrder: Int
+    let examDisplayOrder: Int
+    let isReqFamType: Bool
+    let isReqFamLevel: Bool
+    let docList: [LeaveDocMapping]
+    let quizDocList: [LeaveDocMapping]
+    let examDocList: [LeaveDocMapping]
+    let isLeaveFlow: Bool
+    let isLeaveFlowQuiz: Bool
+    let isLeaveFlowExam: Bool
+
+    var id: Int { refLeaveSn }
+    var leaveNa: String { leaveCna }
+}
+
+struct LeaveDocMapping: Identifiable, Codable, Sendable, Hashable {
+    let leaveDocMappingSn: Int
+    let leaveKind: Int
+    let examKind: Int
+    let refLeaveSn: Int
+    let refDocSn: Int
+    let isRequired: Bool
+    let memo: String
+    let docCna: String
+
+    var id: Int { leaveDocMappingSn }
 }
 
 // MARK: - Leave stat from StuLeave/Stat
@@ -62,6 +95,88 @@ struct LeaveKindListResponse: Codable, Sendable {
     let result: [LeaveKind]
     let message: AnyCodable?
     let errorMessage: AnyCodable?
+}
+
+struct RefLeaveListResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: [RefLeave]
+    let message: AnyCodable?
+    let errorMessage: AnyCodable?
+}
+
+struct LeaveSectionListResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: [LeaveSection]
+    let message: AnyCodable?
+    let errorMessage: AnyCodable?
+}
+
+struct LeaveSection: Identifiable, Codable, Sendable, Hashable {
+    let refSectionSn: Int
+    let sectNo: Int
+    let sectionNo: String
+    let sectionCna: String
+    let sectionStartTime: String
+    let sectionEndTime: String
+
+    var id: Int { sectNo }
+    var displayName: String {
+        "\(sectionNo) \(sectionCna) \(sectionStartTime)-\(sectionEndTime)"
+    }
+}
+
+struct LeaveDetailResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: LeaveDetail
+    let message: AnyCodable?
+    let errorMessage: AnyCodable?
+}
+
+struct LeaveDetail: Codable, Sendable, Identifiable, Hashable {
+    let leaveApplySn: Int
+    let hy: Int
+    let ht: Int
+    let leaveKind: Int
+    let examKind: Int
+    let refLeaveSn: Int
+    let applyNo: String
+    let stuNo: String
+    let beginDate: String
+    let endDate: String
+    let beginSectNo: Int
+    let endSectNo: Int
+    let leaveReason: String
+    let applyStatus: Int?
+    let applyStatusNa: String?
+    let officialLeaveSn: Int
+    let phoneNumber: String
+    let emailAccount: String
+    let famTypeNo: Int
+    let famLevelNo: Int
+    let leaveKindNa: String
+    let examKindNa: String?
+    let leaveNa: String
+    let beginSectNa: String?
+    let endSectNa: String?
+    let totalDay: Int?
+    let totalSect: Int?
+    let leaveApplyDocs: [LeaveApplyDoc]
+    let snHash: String?
+
+    var id: Int { leaveApplySn }
+}
+
+struct LeaveApplyDoc: Identifiable, Codable, Sendable, Hashable {
+    let leaveApplyDocSn: Int
+    let leaveApplySn: Int
+    let officialLeaveSn: Int
+    let refDocSn: Int
+    let docNa: String?
+    let docMemo: String?
+    let fileRawName: String
+    let checkStatus: Int
+
+    var id: Int { leaveApplyDocSn }
 }
 
 struct LeaveApplyAPIResponse: Codable, Sendable {
@@ -97,20 +212,115 @@ struct LeaveSelCouResponse: Codable, Sendable {
     nonisolated var success: Bool { statusCode == 200 && result }
 }
 
+struct LeaveBoolResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: Bool
+    let message: LeaveMessage?
+    let errorMessage: AnyCodable?
+
+    struct LeaveMessage: Codable, Sendable {
+        let info: String?
+    }
+
+    nonisolated var success: Bool { statusCode == 200 && result }
+}
+
 struct LeaveStatListResponse: Codable, Sendable {
     let statusCode: Int
-    let result: [LeaveStatRecord]
+    let result: LeaveStatResult
     let message: AnyCodable?
     let errorMessage: AnyCodable?
 }
 
-struct LeaveStatRecord: Codable, Sendable, Identifiable {
-    let refLeaveSn: Int
-    let leaveNa: String
-    let totalSect: Int
-    let totalDay: Int
+struct LeaveStatResult: Codable, Sendable {
+    let stuNo: String
+    let sumLeaveSect: Int
+    let sumLeaveSectYes: Int
+    let sumLeaveSectNo: Int
+    let statLeaveCouList: [LeaveStatCourse]
+}
 
-    var id: Int { refLeaveSn }
+struct LeaveStatCourse: Codable, Sendable, Identifiable {
+    let stuNo: String?
+    let cntLeaveSect: Int
+    let cntLeaveSectYes: Int
+    let cntLeaveSectNo: Int
+    let leaveSeqTims: [LeaveStatLeaveSeqTim]
+    let jonCouSn: Int
+    let avaCouSn: Int
+    let hy: Int
+    let ht: Int
+    let scoTyp: Int?
+    let period: Int?
+    let avaDivCn: String?
+    let avaDptCn: String?
+    let javaNo: String?
+    let avaNo: String?
+    let couCna: String?
+    let couEna: String?
+    let reqSel: String?
+    let reqSelCna: String?
+    let credit: Double?
+    let errLab: String?
+    let memo: String?
+    let tchNo: String?
+    let tchCna: String?
+    let tchEna: String?
+    let seqTims: [LeaveStatSeqTim]
+    let sumSect: Int
+
+    var id: Int { jonCouSn }
+    var courseName: String { couCna?.isEmpty == false ? couCna! : (avaNo ?? "未命名課程") }
+    var teacherName: String { tchCna?.isEmpty == false ? tchCna! : (tchEna ?? "") }
+    var scheduleText: String {
+        let items = seqTims.compactMap { item -> String? in
+            guard let section = item.section?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !section.isEmpty else {
+                return nil
+            }
+            if let week = item.couWekNa?.trimmingCharacters(in: .whitespacesAndNewlines), !week.isEmpty {
+                return "\(week) \(section)"
+            }
+            return section
+        }
+        return Array(Set(items)).sorted().joined(separator: "、")
+    }
+}
+
+struct LeaveStatSeqTim: Codable, Sendable, Hashable {
+    let seqTimSn: Int?
+    let avaCouSn: Int?
+    let sda: String?
+    let couWek: String?
+    let couWekCna: String?
+    let couWekEna: String?
+    let couWekNa: String?
+    let section: String?
+    let sect: String?
+    let sectNo: Int?
+    let couDate: String?
+    let weeklyCna: String?
+    let weeklyEna: String?
+    let weeklyNa: String?
+    let romNo: String?
+    let dateTimeGroup: Int?
+    let couCna: String?
+    let isEvenWek: Bool?
+    let holidayName: String?
+    let dayPeriodKind: Int?
+    let holidayDiv: String?
+}
+
+struct LeaveStatLeaveSeqTim: Codable, Sendable, Hashable {
+    let section: String?
+    let leaveSeqTimSn: Int?
+    let leaveApplySn: Int?
+    let jonCouSn: Int?
+    let avaCouSn: Int?
+    let stuNo: String?
+    let couDate: String?
+    let couWek: String?
+    let sectNo: Int?
 }
 
 struct LeaveApplyDeadlineResponse: Codable, Sendable {
