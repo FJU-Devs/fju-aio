@@ -342,20 +342,66 @@ struct LeaveSelCouResponse: Codable, Sendable {
     nonisolated var success: Bool { statusCode == 200 && result }
 }
 
-struct LeaveStatListResponse: Codable, Sendable {
+struct LeaveStatResponse: Codable, Sendable {
     let statusCode: Int
-    let result: [LeaveStatRecord]
+    let result: LeaveStatSummary
     let message: AnyCodable?
     let errorMessage: AnyCodable?
 }
 
-struct LeaveStatRecord: Codable, Sendable, Identifiable {
-    let refLeaveSn: Int
-    let leaveNa: String
-    let totalSect: Int
-    let totalDay: Int
+struct LeaveStatSummary: Codable, Sendable {
+    let stuNo: String
+    let sumLeaveSect: Int
+    let sumLeaveSectYes: Int
+    let sumLeaveSectNo: Int
+    let statLeaveCouList: [LeaveStatRecord]
+}
 
-    var id: Int { refLeaveSn }
+struct LeaveStatRecord: Codable, Sendable, Identifiable {
+    let stuNo: String
+    let cntLeaveSect: Int
+    let cntLeaveSectYes: Int
+    let cntLeaveSectNo: Int
+    let leaveSeqTims: [LeaveStatLeaveSeqTim]
+    let jonCouSn: Int
+    let avaCouSn: Int
+    let hy: Int
+    let ht: Int
+    let avaDptCn: String?
+    let javaNo: String?
+    let avaNo: String?
+    let couCna: String
+    let credit: Double
+    let tchCna: String?
+    let seqTims: [LeaveStatSeqTim]
+    let sumSect: Int
+
+    var id: Int { jonCouSn }
+    var courseCode: String { javaNo ?? avaNo ?? "" }
+}
+
+struct LeaveStatSeqTim: Codable, Sendable, Identifiable {
+    let seqTimSn: Int
+    let couWekCna: String?
+    let section: String
+    let sectNo: Int
+
+    var id: Int { seqTimSn }
+    var displayText: String {
+        if let couWekCna, !couWekCna.isEmpty {
+            return "\(couWekCna) \(section)"
+        }
+        return section
+    }
+}
+
+struct LeaveStatLeaveSeqTim: Codable, Sendable, Identifiable {
+    let section: String
+    let couDate: String?
+    let sectNo: Int
+
+    var id: String { "\(couDate ?? "")-\(section)-\(sectNo)" }
+    var displayDate: String? { couDate.map { String($0.prefix(10)) } }
 }
 
 struct LeaveApplyDeadlineResponse: Codable, Sendable {

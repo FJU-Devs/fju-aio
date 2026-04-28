@@ -1542,10 +1542,14 @@ private struct LeaveStatsView: View {
     @State private var academicYears: [HyRecord] = []
     @State private var selectedHy: HyRecord?
     @State private var selectedHt: Int = 2
-    @State private var stats: [LeaveStatRecord] = []
+    @State private var statSummary: LeaveStatSummary?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var deadline: String?
+
+    private var stats: [LeaveStatRecord] {
+        statSummary?.statLeaveCouList ?? []
+    }
 
     var body: some View {
         Group {
@@ -1581,33 +1585,85 @@ private struct LeaveStatsView: View {
                         }
                     }
 
-                    if stats.isEmpty {
+                    if let statSummary {
+                        Section("請假統計") {
+                            HStack {
+                                Text("總請假節次")
+                                Spacer()
+                                Text("\(statSummary.sumLeaveSect) 節")
+                                    .font(.body.weight(.semibold))
+                            }
+                            HStack {
+                                Text("已核准")
+                                Spacer()
+                                Text("\(statSummary.sumLeaveSectYes) 節")
+                                    .foregroundStyle(.green)
+                            }
+                            HStack {
+                                Text("未核准")
+                                Spacer()
+                                Text("\(statSummary.sumLeaveSectNo) 節")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+
+                    if statSummary?.sumLeaveSect == 0 {
                         Section("請假統計") {
                             Text("尚無請假紀錄").foregroundStyle(.secondary)
                         }
-                    } else {
-                        Section("請假統計") {
+                    } else if !stats.isEmpty {
+                        Section("課程明細") {
                             ForEach(stats) { stat in
-                                HStack {
-                                    Text(stat.leaveNa)
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text("\(stat.totalDay) 天")
-                                            .font(.body.weight(.medium))
-                                        Text("\(stat.totalSect) 節")
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(stat.couCna)
+                                                .font(.body.weight(.medium))
+                                            HStack(spacing: 6) {
+                                                if !stat.courseCode.isEmpty {
+                                                    Text(stat.courseCode)
+                                                }
+                                                if let tchCna = stat.tchCna, !tchCna.isEmpty {
+                                                    Text(tchCna)
+                                                }
+                                            }
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        VStack(alignment: .trailing, spacing: 2) {
+                                            Text("\(stat.cntLeaveSect) / \(stat.sumSect) 節")
+                                                .font(.body.weight(.semibold))
+                                            if stat.cntLeaveSectNo > 0 {
+                                                Text("未核准 \(stat.cntLeaveSectNo)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.orange)
+                                            } else if stat.cntLeaveSectYes > 0 {
+                                                Text("已核准 \(stat.cntLeaveSectYes)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.green)
+                                            }
+                                        }
+                                    }
+
+                                    if !stat.leaveSeqTims.isEmpty {
+                                        ForEach(stat.leaveSeqTims) { tim in
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "calendar")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                Text([tim.displayDate, tim.section].compactMap { $0 }.joined(separator: " "))
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    } else if !stat.seqTims.isEmpty {
+                                        Text(stat.seqTims.map(\.displayText).joined(separator: "、"))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                 }
-                            }
-                        }
-
-                        Section {
-                            HStack {
-                                Text("合計節次")
-                                Spacer()
-                                Text("\(stats.reduce(0) { $0 + $1.totalSect }) 節")
-                                    .font(.body.weight(.semibold))
                             }
                         }
                     }
@@ -1640,8 +1696,9 @@ private struct LeaveStatsView: View {
         guard let hy = selectedHy else { return }
         isLoading = true
         errorMessage = nil
+        statSummary = nil
         do {
-            stats = try await leaveService.fetchLeaveStat(academicYear: hy.hy, semester: selectedHt)
+            statSummary = try await leaveService.fetchLeaveStat(academicYear: hy.hy, semester: selectedHt)
         } catch {
             errorMessage = error.localizedDescription
         }

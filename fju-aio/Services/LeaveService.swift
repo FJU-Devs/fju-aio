@@ -311,7 +311,7 @@ actor LeaveService {
     }
 
     /// GET /StuLeave/Stat — leave statistics for a semester
-    func fetchLeaveStat(academicYear: Int, semester: Int) async throws -> [LeaveStatRecord] {
+    func fetchLeaveStat(academicYear: Int, semester: Int) async throws -> LeaveStatSummary {
         logger.info("📊 Fetching leave stat hy=\(academicYear) ht=\(semester)")
         let session = try await authService.getValidSession()
 
@@ -331,7 +331,8 @@ actor LeaveService {
 
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
-        let decoded = try JSONDecoder().decode(LeaveStatListResponse.self, from: data)
+        logRawJSON(data, label: "StuLeave/Stat")
+        let decoded = try decodeLogged(LeaveStatResponse.self, from: data, label: "LeaveStatResponse")
         return decoded.result
     }
 
@@ -529,5 +530,4 @@ actor LeaveService {
         }
     }
 }
-
 
