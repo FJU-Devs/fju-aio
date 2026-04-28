@@ -457,6 +457,54 @@ actor LeaveService {
         logger.info("✅ Courses selected for leave \(leaveApplySn)")
     }
 
+    // MARK: - Approval Flow
+
+    /// GET /StuLeave/{leaveApplySn}/SelCou/ApplyResult — per-course approval status
+    func fetchApprovalFlow(leaveApplySn: Int) async throws -> [LeaveApplyResult] {
+        logger.info("📋 Fetching approval flow for leave \(leaveApplySn)")
+        let request = try await makeRequest("GET", path: "/StuLeave/\(leaveApplySn)/SelCou/ApplyResult")
+        let (data, response) = try await networkService.performRequest(request)
+        try handleHTTPError(response)
+        logRawJSON(data, label: "SelCou/ApplyResult")
+        let decoded = try decodeLogged(LeaveApplyResultResponse.self, from: data, label: "LeaveApplyResultResponse")
+        return decoded.result
+    }
+
+    // MARK: - Download PDF
+
+    /// GET /StuLeave/{leaveApplySn}/LeaveForm — download leave form as PDF data
+    func downloadLeaveFormPDF(leaveApplySn: Int) async throws -> Data {
+        logger.info("📄 Downloading leave form PDF for \(leaveApplySn)")
+        let request = try await makeRequest("GET", path: "/StuLeave/\(leaveApplySn)/LeaveForm")
+        let (data, response) = try await networkService.performRequest(request)
+        try handleHTTPError(response)
+        logger.info("📄 Downloaded \(data.count) bytes for leave \(leaveApplySn)")
+        return data
+    }
+
+    // MARK: - Revoke Leave
+
+    /// PUT /StuLeave/{leaveApplySn}/Cancel — revoke a submitted leave with a memo
+    func revokeLeave(leaveApplySn: Int, cancelMemo: String) async throws {
+        logger.info("🚫 Revoking leave \(leaveApplySn)")
+        let session = try await authService.getValidSession()
+
+        let url = URL(string: "\(baseURL)/StuLeave/\(leaveApplySn)/Cancel")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+        let body = ["cancelMemo": cancelMemo]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, httpResponse) = try await networkService.performRequest(request)
+        logRawJSON(data, label: "Cancel")
+        try handleHTTPError(httpResponse)
+        logger.info("✅ Leave \(leaveApplySn) revoked")
+    }
+
     // MARK: - Cancel Leave
 
     /// DELETE /StuLeave/{leaveApplySn}

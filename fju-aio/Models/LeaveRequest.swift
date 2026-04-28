@@ -411,6 +411,48 @@ nonisolated struct LeaveApplyDeadlineResponse: Codable, Sendable {
     let errorMessage: AnyCodable?
 }
 
+// MARK: - Approval flow from GET /StuLeave/{sn}/SelCou/ApplyResult
+
+nonisolated struct LeaveApplyResultResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: [LeaveApplyResult]
+    let message: AnyCodable?
+    let errorMessage: AnyCodable?
+}
+
+nonisolated struct LeaveApplyResult: Codable, Sendable, Identifiable {
+    let leaveApplySn: Int
+    let leaveSelCouSn: Int
+    let avaCouSn: Int
+    let javaNo: String?
+    let couCna: String
+    let couEna: String?
+    let tchCna: String?
+    let tchEna: String?
+    let couDates: [String]?
+    let seqTims: [String]?
+    let applyStatus: Int
+    let applyStatusNa: String
+    let auditTime: String?
+    let auditOpinion: String?
+    let flowInstanceSn: Int?
+
+    var id: Int { leaveSelCouSn }
+}
+
+// MARK: - Cancel (revoke) leave response
+
+nonisolated struct LeaveCancelResponse: Codable, Sendable {
+    let statusCode: Int
+    let result: Bool?
+    let message: LeaveCancelMessage?
+    let errorMessage: AnyCodable?
+
+    struct LeaveCancelMessage: Codable, Sendable {
+        let info: String?
+    }
+}
+
 // API shape: {"statusCode":200,"result":[114,113],...}
 nonisolated struct HyListResponse: Codable, Sendable {
     let statusCode: Int

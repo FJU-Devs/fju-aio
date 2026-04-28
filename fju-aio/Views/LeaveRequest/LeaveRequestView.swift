@@ -56,9 +56,6 @@ private struct LeaveHistoryView: View {
     @State private var records: [LeaveRecord] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
-    @State private var recordToCancel: LeaveRecord?
-    @State private var isCancelling = false
-    @State private var cancelErrorMessage: String?
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -105,48 +102,20 @@ private struct LeaveHistoryView: View {
                         Text("尚無請假紀錄").foregroundStyle(.secondary)
                     } else {
                         ForEach(records, id: \.id) { record in
-                            LeaveRecordRow(record: record, dateFormatter: dateFormatter) {
-                                recordToCancel = record
-                            }
+                            LeaveRecordRow(
+                                record: record,
+                                dateFormatter: dateFormatter,
+                                onRevoked: {
+                                    // After a successful revoke, reload the list
+                                    Task { await loadRecords() }
+                                }
+                            )
                         }
                     }
                 }
             }
             .listStyle(.insetGrouped)
             .refreshable { await loadRecords() }
-        }
-    }
-
-    // placeholder to attach modifiers below
-    private var alertModifiers: some View { EmptyView() }
-
-    // keep the alert modifiers on the outer body — re-attach via wrapper below
-    // Actually we'll attach them inline:
-    private var bodyWithAlerts: some View {
-        content
-            .task { await loadInitial() }
-        .alert("確認取消假單", isPresented: Binding(
-            get: { recordToCancel != nil },
-            set: { if !$0 { recordToCancel = nil } }
-        )) {
-            Button("取消假單", role: .destructive) {
-                if let record = recordToCancel {
-                    Task { await cancelRecord(record) }
-                }
-            }
-            Button("返回", role: .cancel) { recordToCancel = nil }
-        } message: {
-            if let record = recordToCancel {
-                Text("確定要取消 \(record.leaveNa) 假單（\(record.applyNo)）嗎？")
-            }
-        }
-        .alert("取消失敗", isPresented: Binding(
-            get: { cancelErrorMessage != nil },
-            set: { if !$0 { cancelErrorMessage = nil } }
-        )) {
-            Button("確定", role: .cancel) { cancelErrorMessage = nil }
-        } message: {
-            Text(cancelErrorMessage ?? "")
         }
     }
 
@@ -181,62 +150,311 @@ private struct LeaveHistoryView: View {
         }
         isLoading = false
     }
-
-    private func cancelRecord(_ record: LeaveRecord) async {
-        isCancelling = true
-        do {
-            try await leaveService.cancelLeave(leaveApplySn: record.leaveApplySn)
-            records.removeAll { $0.leaveApplySn == record.leaveApplySn }
-        } catch {
-            cancelErrorMessage = error.localizedDescription
-        }
-        isCancelling = false
-        recordToCancel = nil
-    }
 }
+
+// MARK: - Leave Record Row
 
 private struct LeaveRecordRow: View {
     let record: LeaveRecord
     let dateFormatter: DateFormatter
-    let onCancel: () -> Void
+    let onRevoked: () -> Void
 
     private var beginDate: Date? { dateFormatter.date(from: record.beginDate) }
     private var endDate: Date? { dateFormatter.date(from: record.endDate) }
 
     private var displayDateRange: String {
-        let display = DateFormatter()
-        display.dateFormat = "M/d"
+        let df = DateFormatter()
+        df.dateFormat = "M/d"
         guard let s = beginDate, let e = endDate else { return record.beginDate }
-        let start = display.string(from: s)
-        let end = display.string(from: e)
-        return start == end ? start : "\(start)–\(end)"
+        let start = df.string(from: s)
+        let end = df.string(from: e)
+        return start == end ? start : "\(start) – \(end)"
     }
 
     private var statusColor: Color {
-        switch record.applyStatus {
-        case 9: return .green
-        case 5: return .red
-        default: return .orange
+        let name = record.applyStatusNa
+        if name.contains("通過") || name.contains("核准") { return .green }
+        if name.contains("撤銷") || name.contains("駁回") || name.contains("拒絕") { return .secondary }
+        return .orange
+    }
+
+    var body: some View {
+        NavigationLink {
+            LeaveDetailView(record: record, onRevoked: onRevoked)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                // ── Title row ──
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(record.leaveNa)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("#\(record.applyNo)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(record.applyStatusNa)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(statusColor)
+                        .background(statusColor.opacity(0.12), in: Capsule())
+                }
+
+                // ── Meta chips ──
+                HStack(spacing: 12) {
+                    Label(displayDateRange, systemImage: "calendar")
+                    Label("\(record.beginSectNa)–\(record.endSectNa)", systemImage: "clock")
+                    Label("\(record.totalDay)天\(record.totalSect)節", systemImage: "square.stack")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                // ── Reason ──
+                if !record.leaveReason.isEmpty {
+                    Text(record.leaveReason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+// MARK: - Leave Detail Page
+
+private struct LeaveDetailView: View {
+    let record: LeaveRecord
+    let onRevoked: () -> Void
+
+    @State private var approvalResults: [LeaveApplyResult] = []
+    @State private var isLoadingFlow = true
+    @State private var isPDFLoading = false
+    @State private var pdfData: Data?
+    @State private var showPDFPreview = false
+    @State private var pdfError: String?
+    @State private var showRevokeSheet = false
+
+    private let isoFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private func formatDate(_ raw: String) -> String {
+        guard let d = isoFormatter.date(from: raw) else { return raw }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/M/d (EEE)"
+        f.locale = Locale(identifier: "zh_TW")
+        return f.string(from: d)
+    }
+
+    private var statusColor: Color {
+        let name = record.applyStatusNa
+        if name.contains("通過") || name.contains("核准") { return .green }
+        if name.contains("撤銷") || name.contains("駁回") || name.contains("拒絕") { return .secondary }
+        return .orange
+    }
+
+    private var canRevoke: Bool {
+        let name = record.applyStatusNa
+        return !name.contains("撤銷") && !name.contains("通過") && !name.contains("核准")
+    }
+
+    var body: some View {
+        List {
+            // ── Header card ──
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(record.leaveNa)
+                                .font(.title3.weight(.bold))
+                            Text(record.leaveKindNa)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(record.applyStatusNa)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .foregroundStyle(statusColor)
+                            .background(statusColor.opacity(0.12), in: Capsule())
+                    }
+
+                    Divider()
+
+                    HStack(spacing: 0) {
+                        summaryCell(label: "開始", value: formatDate(record.beginDate))
+                        Divider().frame(height: 36)
+                        summaryCell(label: "結束", value: formatDate(record.endDate))
+                        Divider().frame(height: 36)
+                        summaryCell(label: "節次", value: "\(record.beginSectNa)–\(record.endSectNa)")
+                        Divider().frame(height: 36)
+                        summaryCell(label: "合計", value: "\(record.totalDay)天\(record.totalSect)節")
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            // ── Details ──
+            Section("基本資訊") {
+                detailRow(label: "假單編號", value: "#\(record.applyNo)")
+                detailRow(label: "學生姓名", value: record.stuCna)
+            }
+
+            Section("請假事由") {
+                Text(record.leaveReason.isEmpty ? "（無）" : record.leaveReason)
+                    .foregroundStyle(record.leaveReason.isEmpty ? .secondary : .primary)
+            }
+
+            // ── Approval flow ──
+            Section("簽核流程") {
+                if isLoadingFlow {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("載入中…").foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } else if approvalResults.isEmpty {
+                    Text("無簽核資料").foregroundStyle(.secondary)
+                } else {
+                    ForEach(approvalResults) { item in
+                        ApprovalResultRow(item: item)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("假單詳細")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 16) {
+                    // 列印假單
+                    Button {
+                        guard !isPDFLoading else { return }
+                        Task { await downloadPDF() }
+                    } label: {
+                        if isPDFLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "printer")
+                        }
+                    }
+                    .disabled(isPDFLoading)
+
+                    // 撤銷假單
+                    if canRevoke {
+                        Button(role: .destructive) {
+                            showRevokeSheet = true
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .tint(.red)
+                    }
+                }
+            }
+        }
+        .navigationDestination(isPresented: $showPDFPreview) {
+            if let data = pdfData {
+                PDFPageView(pdfData: data, title: "假單 \(record.applyNo)")
+            }
+        }
+        .sheet(isPresented: $showRevokeSheet) {
+            RevokeLeaveSheet(record: record, onRevoked: onRevoked)
+        }
+        .alert("下載失敗", isPresented: Binding(
+            get: { pdfError != nil },
+            set: { if !$0 { pdfError = nil } }
+        )) {
+            Button("確定", role: .cancel) { pdfError = nil }
+        } message: {
+            Text(pdfError ?? "")
+        }
+        .task { await loadFlow() }
+    }
+
+    @ViewBuilder
+    private func summaryCell(label: String, value: String) -> some View {
+        VStack(spacing: 3) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func detailRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).multilineTextAlignment(.trailing)
         }
     }
 
-    // Draft (0=編輯中) and pending (1=待審) records can be cancelled
-    private var canCancel: Bool { record.applyStatus == 0 || record.applyStatus == 1 }
+    private func loadFlow() async {
+        isLoadingFlow = true
+        approvalResults = (try? await LeaveService.shared.fetchApprovalFlow(leaveApplySn: record.leaveApplySn)) ?? []
+        isLoadingFlow = false
+    }
+
+    private func downloadPDF() async {
+        isPDFLoading = true
+        pdfError = nil
+        do {
+            pdfData = try await LeaveService.shared.downloadLeaveFormPDF(leaveApplySn: record.leaveApplySn)
+            showPDFPreview = true
+        } catch {
+            pdfError = error.localizedDescription
+        }
+        isPDFLoading = false
+    }
+}
+
+
+private struct ApprovalResultRow: View {
+    let item: LeaveApplyResult
+
+    private var statusColor: Color {
+        switch item.applyStatus {
+        case 9: return .green   // 通過
+        case 5: return .orange  // 待審核
+        case 3: return .red     // 拒絕
+        default: return .secondary
+        }
+    }
+
+    private var auditTimeDisplay: String? {
+        guard let t = item.auditTime, !t.isEmpty else { return nil }
+        // Convert ISO string to readable format
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        if let d = f.date(from: t) {
+            let out = DateFormatter()
+            out.dateFormat = "yyyy/M/d HH:mm"
+            return out.string(from: d)
+        }
+        return String(t.prefix(16)).replacingOccurrences(of: "T", with: " ")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(record.leaveNa)
-                        .font(.body.weight(.semibold))
-                    Text("假單號：\(record.applyNo)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
+                Text(item.couCna)
+                    .font(.subheadline.weight(.medium))
                 Spacer()
-
-                Text(record.applyStatusNa)
+                Text(item.applyStatusNa)
                     .font(.caption.weight(.medium))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -244,35 +462,197 @@ private struct LeaveRecordRow: View {
                     .background(statusColor.opacity(0.12), in: Capsule())
             }
 
-            HStack(spacing: 16) {
-                Label(displayDateRange, systemImage: "calendar")
-                Label("\(record.beginSectNa)–\(record.endSectNa)", systemImage: "clock")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if !record.leaveReason.isEmpty {
-                Text(record.leaveReason)
+            if let tch = item.tchCna {
+                Text("授課教師：\(tch)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
 
-            HStack {
-                Text("共 \(record.totalDay) 天 \(record.totalSect) 節")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            if let seqTims = item.seqTims, !seqTims.isEmpty {
+                Text("節次：\(seqTims.joined(separator: "、"))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-                Spacer()
+            if let opinion = item.auditOpinion, !opinion.isEmpty {
+                Text("簽核意見：\(opinion)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-                if canCancel {
-                    Button("取消假單", role: .destructive, action: onCancel)
-                        .font(.caption)
-                        .buttonStyle(.borderless)
-                }
+            if let timeStr = auditTimeDisplay {
+                Text("簽核時間：\(timeStr)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - PDF Page View (pushed via NavigationLink)
+
+import PDFKit
+
+private struct PDFPageView: View {
+    let pdfData: Data
+    let title: String
+
+    var body: some View {
+        PDFPreviewView(data: pdfData)
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: pdfFileURL(pdfData, name: title)) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
+    }
+
+    private func pdfFileURL(_ data: Data, name: String) -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name).pdf")
+        try? data.write(to: url)
+        return url
+    }
+}
+
+// MARK: - Revoke Leave Sheet (two-step confirmation)
+
+private struct RevokeLeaveSheet: View {
+    let record: LeaveRecord
+    let onRevoked: () -> Void
+
+    @State private var cancelMemo: String = ""
+    @State private var showConfirmAlert = false
+    @State private var isRevoking = false
+    @State private var errorMessage: String?
+    @Environment(\.dismiss) private var dismiss
+
+    private var canSubmit: Bool {
+        !cancelMemo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("假單資訊") {
+                    HStack {
+                        Text("假單編號").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(record.applyNo)
+                    }
+                    HStack {
+                        Text("假別").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(record.leaveNa)
+                    }
+                    HStack {
+                        Text("狀態").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(record.applyStatusNa)
+                    }
+                    if !record.leaveReason.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("請假事由").foregroundStyle(.secondary).font(.caption)
+                            Text(record.leaveReason)
+                        }
+                    }
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("撤銷說明")
+                            .font(.subheadline)
+                        TextEditor(text: $cancelMemo)
+                            .frame(minHeight: 100)
+                            .overlay(
+                                Group {
+                                    if cancelMemo.isEmpty {
+                                        Text("請輸入撤銷說明（必填）")
+                                            .foregroundStyle(.tertiary)
+                                            .allowsHitTesting(false)
+                                            .padding(.top, 8)
+                                            .padding(.leading, 4)
+                                    }
+                                },
+                                alignment: .topLeading
+                            )
+                        Text("\(cancelMemo.count)/500")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("撤銷說明")
+                } footer: {
+                    Text("撤銷後不可復原，請確認後再送出。")
+                        .foregroundStyle(.orange)
+                }
+
+                if let error = errorMessage {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("撤銷假單")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                        .disabled(isRevoking)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("確定") {
+                        showConfirmAlert = true
+                    }
+                    .disabled(!canSubmit || isRevoking)
+                }
+            }
+            .overlay {
+                if isRevoking {
+                    Color.black.opacity(0.15)
+                        .ignoresSafeArea()
+                    ProgressView("撤銷中…")
+                        .padding(24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            // Second-level confirmation alert
+            .alert("確定要撤銷嗎？", isPresented: $showConfirmAlert) {
+                Button("確定", role: .destructive) {
+                    Task { await revokeLeave() }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("再次提醒：確認撤銷後不可復原喔！")
+            }
+        }
+        .onChange(of: cancelMemo) { _, new in
+            if new.count > 500 {
+                cancelMemo = String(new.prefix(500))
+            }
+        }
+    }
+
+    private func revokeLeave() async {
+        isRevoking = true
+        errorMessage = nil
+        do {
+            try await LeaveService.shared.revokeLeave(leaveApplySn: record.leaveApplySn, cancelMemo: cancelMemo)
+            dismiss()
+            onRevoked()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isRevoking = false
     }
 }
 
