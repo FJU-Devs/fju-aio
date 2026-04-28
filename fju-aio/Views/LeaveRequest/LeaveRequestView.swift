@@ -6,7 +6,6 @@ struct LeaveRequestView: View {
 
     enum Tab: String, CaseIterable {
         case history = "歷史假單"
-        case apply = "申請請假"
         case stats = "請假統計"
     }
 
@@ -26,13 +25,24 @@ struct LeaveRequestView: View {
             Group {
                 switch selectedTab {
                 case .history: LeaveHistoryView()
-                case .apply:   LeaveApplyWizard()
                 case .stats:   LeaveStatsView()
                 }
             }
         }
         .navigationTitle("請假申請")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    LeaveApplyWizard()
+                        .navigationTitle("申請假單")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("申請假單")
+            }
+        }
     }
 }
 
