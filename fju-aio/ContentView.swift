@@ -4,6 +4,7 @@ import SwiftUI
 
 enum AppDestination: Hashable {
     case courseSchedule
+    case classroomSchedule
     case grades
     case leaveRequest
     case attendance
@@ -83,6 +84,7 @@ struct ContentView: View {
     private func destinationView(for destination: AppDestination) -> some View {
         switch destination {
         case .courseSchedule:    CourseScheduleView()
+        case .classroomSchedule: ClassroomScheduleView()
         case .grades:           GradesView()
         case .leaveRequest:     LeaveRequestView()
         case .attendance:       AttendanceView()

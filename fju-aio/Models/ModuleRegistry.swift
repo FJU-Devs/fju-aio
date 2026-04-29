@@ -9,6 +9,8 @@ enum ModuleRegistry {
         // In-app features (academic)
         AppModule(id: "courseSchedule", name: "看課表", icon: "calendar",
                   color: .blue, category: .academic, type: .inApp(.courseSchedule)),
+        AppModule(id: "classroomSchedule", name: "教室課表", icon: "door.left.hand.open",
+                  color: .mint, category: .academic, type: .inApp(.classroomSchedule)),
         AppModule(id: "grades", name: "看成績", icon: "chart.bar.fill",
                   color: .green, category: .academic, type: .inApp(.grades)),
         AppModule(id: "leaveRequest", name: "請假申請", icon: "doc.text.fill",
@@ -76,7 +78,7 @@ enum ModuleRegistry {
     // MARK: - Default Homepage
 
     static let defaultHomeModuleIDs: [String] = [
-        "courseSchedule", "grades", "leaveRequest", "assignments",
+        "courseSchedule", "classroomSchedule", "grades", "leaveRequest", "assignments",
     ]
     
     // MARK: - Check-in Feature Toggle

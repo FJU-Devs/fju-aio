@@ -3,6 +3,7 @@ import WebKit
 
 struct BulletinDetailView: View {
     let notification: TronClassNotification
+    @State private var selectedURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -30,7 +31,7 @@ struct BulletinDetailView: View {
                 Divider()
 
                 if let html = notification.bulletinContent, !html.isEmpty {
-                    BulletinWebView(html: html)
+                    BulletinWebView(html: html, selectedURL: $selectedURL)
                 } else {
                     ContentUnavailableView("無內容", systemImage: "doc.text")
                 }
@@ -39,6 +40,15 @@ struct BulletinDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     CloseButton()
+                }
+            }
+            .sheet(isPresented: Binding(
+                get: { selectedURL != nil },
+                set: { if !$0 { selectedURL = nil } }
+            )) {
+                if let url = selectedURL {
+                    InAppBrowserView(url: url)
+                        .ignoresSafeArea()
                 }
             }
         }
@@ -59,15 +69,21 @@ private struct CloseButton: View {
 
 private struct BulletinWebView: UIViewRepresentable {
     let html: String
+    @Binding var selectedURL: URL?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selectedURL: $selectedURL)
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.dataDetectorTypes = [.link, .phoneNumber]
+        config.dataDetectorTypes = [.phoneNumber]
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.scrollView.bounces = true
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
+        webView.navigationDelegate = context.coordinator
         return webView
     }
 
@@ -102,5 +118,28 @@ private struct BulletinWebView: UIViewRepresentable {
         </html>
         """
         webView.loadHTMLString(styledHTML, baseURL: URL(string: "https://elearn2.fju.edu.tw"))
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding var selectedURL: URL?
+
+        init(selectedURL: Binding<URL?>) {
+            _selectedURL = selectedURL
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            // Intercept link taps and open them in the in-app browser
+            if navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url {
+                selectedURL = url
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
     }
 }
