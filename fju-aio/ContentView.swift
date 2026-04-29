@@ -68,7 +68,7 @@ struct ContentView: View {
                 .progressViewStyle(.circular)
                 .controlSize(.mini)
             Text(syncStatus.message)
-                .font(.caption)
+                .font(.system(.caption, design: .rounded))
                 .lineLimit(1)
         }
         .foregroundStyle(.secondary)

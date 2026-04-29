@@ -19,7 +19,7 @@ struct SettingsView: View {
                 HStack {
                     Image(systemName: "person.circle.fill")
                         .font(.largeTitle)
-                        .foregroundStyle(.gray)
+                        .foregroundStyle(AppTheme.accent)
                     VStack(alignment: .leading) {
                         Text(sisSession?.userName ?? "學生姓名")
                             .font(.headline)
@@ -27,14 +27,14 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    
+
                     if isLoadingSession {
                         Spacer()
                         ProgressView()
                             .controlSize(.small)
                     }
                 }
-                
+
                 Button(role: .destructive) {
                     showLogoutAlert = true
                 } label: {

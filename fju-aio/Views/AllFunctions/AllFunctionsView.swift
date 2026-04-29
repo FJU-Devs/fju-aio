@@ -86,7 +86,7 @@ struct AllFunctionsView: View {
         HStack(spacing: 12) {
             Image(systemName: module.icon)
                 .font(.title3)
-                .foregroundStyle(module.color)
+                .foregroundStyle(AppTheme.accent)
                 .frame(width: 32)
             Text(module.name)
                 .foregroundStyle(.primary)

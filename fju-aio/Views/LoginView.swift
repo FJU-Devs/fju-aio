@@ -14,9 +14,9 @@ struct LoginView: View {
                     // Header
                     VStack(spacing: 12) {
                         Image(systemName: "graduationcap.fill")
-                            .font(.system(size: 72))
-                            .foregroundStyle(.blue)
-                            .padding(.top, 60)
+                            .font(.system(size: 64))
+                            .foregroundStyle(AppTheme.accent)
+                            .padding(.top, 64)
                             .padding(.bottom, 8)
 
                         Text("輔大 All In One")
@@ -63,7 +63,7 @@ struct LoginView: View {
                             .padding(.vertical, 14)
                         }
                         .background(Color(.secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
 
                         if let errorMessage {
                             HStack(spacing: 6) {
@@ -77,13 +77,13 @@ struct LoginView: View {
                             .padding(.horizontal, 4)
                         }
 
-                        // Login button — full area tappable
+                        // Login button
                         Button {
                             Task { await performLogin() }
                         } label: {
                             ZStack {
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(loginButtonColor)
+                                RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
+                                    .fill(isButtonDisabled ? AppTheme.accent.opacity(0.35) : AppTheme.accent)
 
                                 if isLoading {
                                     ProgressView()
@@ -98,7 +98,8 @@ struct LoginView: View {
                             .frame(height: 50)
                         }
                         .buttonStyle(.plain)
-                        .disabled(isLoading || username.isEmpty || password.isEmpty)
+                        .disabled(isButtonDisabled)
+                        .animation(.easeInOut(duration: 0.15), value: isButtonDisabled)
                     }
                     .padding(.horizontal, 24)
                 }
@@ -109,8 +110,8 @@ struct LoginView: View {
         }
     }
 
-    private var loginButtonColor: Color {
-        (isLoading || username.isEmpty || password.isEmpty) ? .blue.opacity(0.4) : .blue
+    private var isButtonDisabled: Bool {
+        isLoading || username.isEmpty || password.isEmpty
     }
 
     private func performLogin() async {

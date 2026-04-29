@@ -110,6 +110,7 @@ struct HomeView: View {
             Text(course.name)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
+                .lineLimit(2)
             Text(course.location)
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.8))
@@ -122,7 +123,7 @@ struct HomeView: View {
         }
         .padding(12)
         .frame(width: 140, alignment: .leading)
-        .background(Color(hex: course.color), in: RoundedRectangle(cornerRadius: 12))
+        .background(Color(hex: course.color), in: RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
     }
 
     // MARK: - Module Grid

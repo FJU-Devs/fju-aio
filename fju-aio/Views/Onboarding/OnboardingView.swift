@@ -74,7 +74,7 @@ struct OnboardingView: View {
 
             bottomBar
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
     }
 
     // MARK: - Page 1: Welcome
@@ -85,7 +85,7 @@ struct OnboardingView: View {
 
             Image(systemName: "graduationcap.fill")
                 .font(.system(size: 80))
-                .foregroundStyle(.blue)
+                .foregroundStyle(AppTheme.accent)
 
             VStack(spacing: 12) {
                 Text("歡迎使用輔大 All In One")
@@ -101,9 +101,9 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: 16) {
-                highlightCard(icon: "bolt.fill", color: .yellow, title: "快速存取", description: "所有功能集中一處，隨時查閱")
-                highlightCard(icon: "lock.shield.fill", color: .blue, title: "安全登入", description: "使用學校 LDAP 統一帳號，資料加密儲存")
-                highlightCard(icon: "bell.badge.fill", color: .red, title: "智慧通知", description: "上課前動態島提醒，不再遲到")
+                highlightCard(icon: "bolt.fill", title: "快速存取", description: "所有功能集中一處，隨時查閱")
+                highlightCard(icon: "lock.shield.fill", title: "安全登入", description: "使用學校 LDAP 統一帳號，資料加密儲存")
+                highlightCard(icon: "bell.badge.fill", title: "智慧通知", description: "上課前動態島提醒，不再遲到")
             }
             .padding(.horizontal, 24)
 
@@ -112,15 +112,15 @@ struct OnboardingView: View {
         .padding(.horizontal, 8)
     }
 
-    private func highlightCard(icon: String, color: Color, title: String, description: String) -> some View {
+    private func highlightCard(icon: String, title: String, description: String) -> some View {
         HStack(spacing: 16) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(color.opacity(0.15))
+                    .fill(AppTheme.accent.opacity(0.12))
                     .frame(width: 44, height: 44)
                 Image(systemName: icon)
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(color)
+                    .foregroundStyle(AppTheme.accent)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -135,7 +135,7 @@ struct OnboardingView: View {
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
     }
 
     // MARK: - Page 2: Features
@@ -143,6 +143,7 @@ struct OnboardingView: View {
     private var featuresPage: some View {
         ScrollView {
             VStack(spacing: 0) {
+                // Section header with accent strip
                 VStack(spacing: 8) {
                     Text("主要功能")
                         .font(.largeTitle.bold())
@@ -150,6 +151,7 @@ struct OnboardingView: View {
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.top, 40)
                 .padding(.bottom, 24)
 
@@ -163,7 +165,7 @@ struct OnboardingView: View {
                     }
                 }
                 .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
             }
@@ -182,6 +184,7 @@ struct OnboardingView: View {
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.top, 40)
                 .padding(.bottom, 24)
 
@@ -279,7 +282,7 @@ struct OnboardingView: View {
             HStack(spacing: 8) {
                 ForEach(OnboardingPage.allCases, id: \.rawValue) { page in
                     Capsule()
-                        .fill(currentPage == page ? Color.blue : Color.secondary.opacity(0.3))
+                        .fill(currentPage == page ? AppTheme.accent : Color.secondary.opacity(0.3))
                         .frame(width: currentPage == page ? 20 : 8, height: 8)
                         .animation(.spring(response: 0.3), value: currentPage)
                 }
@@ -299,10 +302,10 @@ struct OnboardingView: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(.blue)
+                    .background(AppTheme.accent)
                     .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .contentShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+                    .contentShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 24)
@@ -315,7 +318,6 @@ struct OnboardingView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             } else {
-                // Placeholder to keep layout stable
                 Color.clear.frame(height: 20)
             }
         }
@@ -334,18 +336,18 @@ private struct FeatureRow: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(item.color)
-                    .frame(width: 34, height: 34)
+                    .fill(AppTheme.accent.opacity(0.12))
+                    .frame(width: 36, height: 36)
                 Image(systemName: item.icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.body)
+                    .font(.system(.body, design: .rounded))
                 Text(item.description)
-                    .font(.caption)
+                    .font(.system(.caption, design: .rounded))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -353,7 +355,7 @@ private struct FeatureRow: View {
             Spacer()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
     }
 }
 

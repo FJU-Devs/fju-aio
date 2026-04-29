@@ -45,15 +45,23 @@ struct ModuleCard: View {
     }
 
     private var cardContent: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Image(systemName: module.icon)
-                .font(.system(size: 28))
-                .foregroundStyle(module.color)
+                .font(.system(size: 26))
+                .foregroundStyle(AppTheme.accent)
+                .frame(width: 50, height: 50)
+                .background(AppTheme.accent.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
             Text(module.name)
-                .font(.subheadline.weight(.medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
         }
         .frame(maxWidth: .infinity, minHeight: 100)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.vertical, 14)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
     }
 }
