@@ -11,6 +11,7 @@ struct SettingsView: View {
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
+    @AppStorage("openLinksInApp") private var openLinksInApp = true
     
     var body: some View {
         List {
@@ -84,6 +85,11 @@ struct SettingsView: View {
                     get: { syncStatus.isEnabled },
                     set: { syncStatus.isEnabled = $0 }
                 ))
+
+                Picker("開啟連結方式", selection: $openLinksInApp) {
+                    Text("App 內瀏覽器").tag(true)
+                    Text("外部瀏覽器").tag(false)
+                }
             }
 
             Section("導航") {
@@ -829,6 +835,7 @@ struct CheckInTestView: View {
         source: "number",
         is_number: true,
         is_radar: false,
+        is_qr: false,
         is_expired: false,
         status: "absent",
         rollcall_time: "2026-04-27T06:00:00Z",

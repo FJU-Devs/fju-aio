@@ -110,6 +110,46 @@ actor RollcallService {
         return status == "on_call" || status == "late"
     }
 
+    // MARK: - QR Check-In
+
+    func qrCheckIn(rollcall: Rollcall, qrContent: String) async throws -> Bool {
+        let data = try Self.parseQRData(from: qrContent)
+        let session = try await authService.getValidSession()
+
+        let url = URL(string: "\(baseURL)/api/rollcall/\(rollcall.rollcall_id)/answer_qr_rollcall")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        Self.applyHeaders(&request, sessionId: session.sessionId)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: String] = ["data": data, "deviceId": Self.generateDeviceId()]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { return false }
+
+        if http.statusCode == 401 || http.statusCode == 403 { throw RollcallError.sessionExpired }
+        guard http.statusCode == 200 else { return false }
+
+        let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        let status = json?["status"] as? String ?? ""
+        return status == "on_call" || status == "late"
+    }
+
+    /// Parses the data payload from a QR code string.
+    /// QR format: /j?p=0~<id>!3~<data>!4~<extra>
+    /// The `data` field sent to the server is the value after "3~" up to the next "!".
+    private static func parseQRData(from qrContent: String) throws -> String {
+        // Split by "!" and find the segment starting with "3~"
+        let segments = qrContent.split(separator: "!", omittingEmptySubsequences: true)
+        for segment in segments {
+            if segment.hasPrefix("3~") {
+                return String(segment.dropFirst(2))
+            }
+        }
+        throw RollcallError.invalidQRCode
+    }
+
     // MARK: - Helpers
 
     private static func applyHeaders(_ request: inout URLRequest, sessionId: String) {

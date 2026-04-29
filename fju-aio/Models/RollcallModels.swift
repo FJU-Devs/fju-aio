@@ -46,9 +46,10 @@ struct Rollcall: Identifiable, Codable, Sendable {
     let course_id: Int
     let course_title: String
     let rollcall_status: String   // "in_progress", "on_call", "late"
-    let source: String             // "number", "radar"
+    let source: String             // "number", "radar", "qr"
     let is_number: Bool
     let is_radar: Bool
+    let is_qr: Bool
     let is_expired: Bool
     let status: String             // student status: "absent", "on_call", "late"
     let rollcall_time: String
@@ -73,11 +74,13 @@ enum RollcallCheckInResult {
 enum RollcallError: LocalizedError {
     case sessionExpired
     case wrongCode
+    case invalidQRCode
 
     var errorDescription: String? {
         switch self {
-        case .sessionExpired: return "登入已過期，請重新登入"
-        case .wrongCode:      return "數字碼錯誤，請再試一次"
+        case .sessionExpired:  return "登入已過期，請重新登入"
+        case .wrongCode:       return "數字碼錯誤，請再試一次"
+        case .invalidQRCode:   return "無效的 QR Code，請重新掃描"
         }
     }
 }
