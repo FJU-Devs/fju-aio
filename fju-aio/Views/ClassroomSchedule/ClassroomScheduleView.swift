@@ -163,14 +163,10 @@ struct ClassroomScheduleView: View {
                     Button {
                         selectedWeekday = weekday
                     } label: {
-                        VStack(spacing: 2) {
-                            Text(weekdayEnglish(weekday))
-                                .font(.caption2)
-                            Text(ClassroomScheduleConstants.shortWeekday(weekday))
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .foregroundStyle(weekday == selectedWeekday ? .white : .primary)
-                        .frame(width: 54, height: 44)
+                        Text(ClassroomScheduleConstants.shortWeekday(weekday))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(weekday == selectedWeekday ? .white : .primary)
+                            .frame(width: 44, height: 36)
                         .background(
                             weekday == selectedWeekday
                                 ? AppTheme.accent
@@ -441,13 +437,6 @@ struct ClassroomScheduleView: View {
     private func generatedText(_ metadata: ClassroomScheduleMetadata) -> String {
         guard let date = metadata.generatedDate else { return metadata.generatedAtUTC }
         return date.formatted(.dateTime.year().month().day().hour().minute())
-    }
-
-    private func weekdayEnglish(_ weekday: String) -> String {
-        guard let start = weekday.firstIndex(of: "("), let end = weekday.firstIndex(of: ")") else {
-            return weekday
-        }
-        return String(weekday[weekday.index(after: start)..<end])
     }
 
     private enum LoadState {
