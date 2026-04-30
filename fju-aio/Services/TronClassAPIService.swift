@@ -18,14 +18,27 @@ actor TronClassAPIService {
         let cachedAt: Date
     }
 
+    private struct AvatarCacheEntry {
+        let avatars: [String: String]
+        let cachedAt: Date
+    }
+
+    private struct UserAvatarCacheEntry {
+        let avatarURL: String
+        let cachedAt: Date
+    }
+
     /// Cached course list from /api/my-courses (one entry for the whole session)
     private var myCoursesCache: [TronClassCourseSummary]? = nil
 
     /// Per-courseCode enrollment + avatar cache
     private var enrollmentCache: [String: EnrollmentCacheEntry] = [:]
+    private var avatarCacheByCourseId: [Int: AvatarCacheEntry] = [:]
+    private var currentUserAvatarCache: [Int: UserAvatarCacheEntry] = [:]
 
     /// How long enrollment data is considered fresh (10 minutes)
     private let enrollmentCacheTTL: TimeInterval = 600
+    private let avatarCacheTTL: TimeInterval = 60 * 60
 
     private init() {}
     
@@ -145,7 +158,7 @@ actor TronClassAPIService {
             return ([], [:])
         }
         async let enrollments = fetchEnrollments(courseId: match.id)
-        async let avatars = fetchAvatars(courseId: match.id)
+        async let avatars = fetchAvatarsCached(courseId: match.id)
         let result = try await (enrollments, avatars)
 
         enrollmentCache[courseCode] = EnrollmentCacheEntry(
@@ -154,6 +167,29 @@ actor TronClassAPIService {
             cachedAt: Date()
         )
         return result
+    }
+
+    func getCurrentUserAvatarURL() async throws -> String? {
+        let session = try await authService.getValidSession()
+        if let entry = currentUserAvatarCache[session.userId],
+           Date().timeIntervalSince(entry.cachedAt) < avatarCacheTTL {
+            logger.info("📦 Returning cached avatar for current user")
+            return entry.avatarURL
+        }
+
+        let courses = try await getMyCourses()
+
+        for course in courses {
+            let avatars = try await fetchAvatarsCached(courseId: course.id)
+            if let avatar = avatars["\(session.userId)"] {
+                currentUserAvatarCache[session.userId] = UserAvatarCacheEntry(
+                    avatarURL: avatar,
+                    cachedAt: Date()
+                )
+                return avatar
+            }
+        }
+        return nil
     }
 
     private func fetchEnrollments(courseId: Int) async throws -> [Enrollment] {
@@ -178,6 +214,21 @@ actor TronClassAPIService {
         return try JSONDecoder().decode(EnrollmentsResponse.self, from: data).enrollments
     }
 
+    private func fetchAvatarsCached(courseId: Int) async throws -> [String: String] {
+        if let entry = avatarCacheByCourseId[courseId],
+           Date().timeIntervalSince(entry.cachedAt) < avatarCacheTTL {
+            logger.info("📦 Returning cached avatars for course \(courseId, privacy: .public)")
+            return entry.avatars
+        }
+
+        let avatars = try await fetchAvatars(courseId: courseId)
+        avatarCacheByCourseId[courseId] = AvatarCacheEntry(
+            avatars: avatars,
+            cachedAt: Date()
+        )
+        return avatars
+    }
+
     private func fetchAvatars(courseId: Int) async throws -> [String: String] {
         let session = try await authService.getValidSession()
 
@@ -194,7 +245,20 @@ actor TronClassAPIService {
         let (data, httpResponse) = try await networkService.performRequest(request)
         try handleHTTPError(httpResponse)
 
-        return try JSONDecoder().decode(AvatarsResponse.self, from: data).avatars
+        let avatars = try JSONDecoder().decode(AvatarsResponse.self, from: data).avatars
+        return avatars.mapValues { Self.avatarURL($0, thumbnail: "64x64") }
+    }
+
+    private static func avatarURL(_ rawValue: String, thumbnail: String) -> String {
+        guard var components = URLComponents(string: rawValue) else { return rawValue }
+        var items = components.queryItems ?? []
+        if let idx = items.firstIndex(where: { $0.name == "thumbnail" }) {
+            items[idx].value = thumbnail
+        } else {
+            items.append(URLQueryItem(name: "thumbnail", value: thumbnail))
+        }
+        components.queryItems = items
+        return components.url?.absoluteString ?? rawValue
     }
 
     private func getMyCourses() async throws -> [TronClassCourseSummary] {

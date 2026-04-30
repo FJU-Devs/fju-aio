@@ -65,6 +65,7 @@ struct Rollcall: Identifiable, Codable, Sendable {
     var isRadar: Bool { is_radar || source == "radar" }
 
     var isActive: Bool { rollcall_status == "in_progress" && !is_expired }
+    var isAlreadyCheckedIn: Bool { status == "on_call_fine" || status == "on_call" || status == "late" }
 }
 
 struct RollcallsResponse: Codable {

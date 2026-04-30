@@ -6,11 +6,19 @@ struct CourseDetailSheet: View {
     var onOpenMap: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthenticationManager.self) private var authManager
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
+    @AppStorage("myProfile.isPublished") private var isMyProfilePublished = false
 
     @State private var enrollments: [Enrollment] = []
     @State private var avatars: [String: String] = [:]
     @State private var enrollmentsLoading = false
+    @State private var publicProfilesByEmpNo: [String: PublicProfile] = [:]
+
+    // Friend data for badge display
+    private var friendStore: FriendStore { FriendStore.shared }
+    /// empNos of friends who have published a profile (cloudKit record exists locally)
+    private var friendEmpNos: Set<String> { Set(friendStore.friends.map(\.empNo)) }
 
     private var matchedBuilding: CampusBuilding? {
         CampusBuildingRegistry.building(for: course.location)
@@ -43,13 +51,16 @@ struct CourseDetailSheet: View {
                         EnrollmentListView(
                             enrollments: enrollments,
                             avatars: avatars,
-                            isLoading: enrollmentsLoading
+                            isLoading: enrollmentsLoading,
+                            friendEmpNos: friendEmpNos,
+                            publicProfilesByEmpNo: publicProfilesByEmpNo
                         )
                     } label: {
                         EnrollmentPreviewBar(
                             enrollments: enrollments,
                             avatars: avatars,
-                            isLoading: enrollmentsLoading
+                            isLoading: enrollmentsLoading,
+                            friendEmpNos: friendEmpNos
                         )
                     }
                 } header: {
@@ -186,10 +197,46 @@ struct CourseDetailSheet: View {
             let (list, avatarMap) = try await TronClassAPIService.shared.getEnrollments(courseCode: course.code)
             enrollments = list
             avatars = avatarMap
+            await loadPublicProfiles(for: list)
         } catch {
             // Silently ignore — preview bar shows empty state
         }
         enrollmentsLoading = false
+    }
+
+    @MainActor
+    private func loadPublicProfiles(for enrollments: [Enrollment]) async {
+        let studentEmpNos = enrollments
+            .filter { $0.primaryRole == .student }
+            .map(\.user.user_no)
+            .filter { !$0.isEmpty }
+
+        let cached = PublicProfileCache.shared.profiles(for: studentEmpNos)
+        if !cached.isEmpty {
+            publicProfilesByEmpNo = cached
+        }
+
+        do {
+            var profiles = try await CloudKitProfileService.shared.fetchProfiles(empNos: studentEmpNos)
+            if isMyProfilePublished,
+               let session = try? await authManager.getValidSISSession(),
+               studentEmpNos.contains(session.empNo),
+               let ownProfile = try? await CloudKitProfileService.shared.fetchProfile(recordName: ProfileQRService.stableDeviceToken()) {
+                profiles.append(ownProfile)
+            }
+            publicProfilesByEmpNo = profiles.reduce(into: [:]) { result, profile in
+                if let existing = result[profile.empNo],
+                   existing.lastUpdated >= profile.lastUpdated {
+                    return
+                }
+                result[profile.empNo] = profile
+            }
+            PublicProfileCache.shared.store(Array(publicProfilesByEmpNo.values))
+        } catch {
+            if cached.isEmpty {
+                publicProfilesByEmpNo = [:]
+            }
+        }
     }
 
     private func openNavApp(building: CampusBuilding) {
@@ -223,52 +270,36 @@ private struct EnrollmentPreviewBar: View {
     let enrollments: [Enrollment]
     let avatars: [String: String]
     let isLoading: Bool
+    var friendEmpNos: Set<String> = []
 
-    /// Up to 5 student avatars shown in the stack
     private var previewStudents: [Enrollment] {
         Array(enrollments.filter { $0.primaryRole == .student }.prefix(5))
     }
-
-    private var studentCount: Int {
-        enrollments.filter { $0.primaryRole == .student }.count
+    private var studentCount: Int { enrollments.filter { $0.primaryRole == .student }.count }
+    private var friendCount: Int {
+        enrollments.filter { $0.primaryRole == .student && friendEmpNos.contains($0.user.user_no) }.count
     }
 
     var body: some View {
         HStack(spacing: 10) {
             if isLoading {
-                ProgressView()
-                    .frame(width: 44, height: 32)
-                Text("載入中...")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                ProgressView().frame(width: 44, height: 32)
+                Text("載入中...").font(.subheadline).foregroundStyle(.secondary)
             } else if enrollments.isEmpty {
-                Image(systemName: "person.2")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 32)
-                Text("查看修課名單")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Image(systemName: "person.2").foregroundStyle(.secondary).frame(width: 44, height: 32)
+                Text("查看修課名單").font(.subheadline).foregroundStyle(.secondary)
             } else {
-                // Overlapping avatar stack
-                OverlappingAvatarStack(
-                    enrollments: previewStudents,
-                    avatars: avatars
-                )
-
+                OverlappingAvatarStack(enrollments: previewStudents, avatars: avatars)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
-                        Text("\(studentCount) 名學生")
-                            .font(.subheadline.weight(.medium))
-                        let staffCount = enrollments.filter { $0.primaryRole != .student }.count
-                        if staffCount > 0 {
-                            Text("· \(staffCount) 名教職")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                        Text("\(studentCount) 名學生").font(.subheadline.weight(.medium))
+                        if friendCount > 0 {
+                            Label("\(friendCount) 位朋友", systemImage: "person.2.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.accent)
                         }
                     }
-                    Text("點擊查看完整名單")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    Text("點擊查看完整名單").font(.caption).foregroundStyle(.tertiary)
                 }
             }
             Spacer()
@@ -338,6 +369,8 @@ struct EnrollmentListView: View {
     let enrollments: [Enrollment]
     let avatars: [String: String]
     let isLoading: Bool
+    var friendEmpNos: Set<String> = []
+    var publicProfilesByEmpNo: [String: PublicProfile] = [:]
 
     @State private var searchText = ""
     @State private var selectedMember: Enrollment? = nil
@@ -355,39 +388,37 @@ struct EnrollmentListView: View {
 
     private var instructors: [Enrollment] { filtered.filter { $0.primaryRole == .instructor } }
     private var tas: [Enrollment] { filtered.filter { $0.primaryRole == .ta } }
-    private var students: [Enrollment] { filtered.filter { $0.primaryRole == .student } }
+    private var allStudents: [Enrollment] { filtered.filter { $0.primaryRole == .student } }
+    private var friendStudents: [Enrollment] { allStudents.filter { friendEmpNos.contains($0.user.user_no) } }
+    private var otherStudents: [Enrollment] { allStudents.filter { !friendEmpNos.contains($0.user.user_no) } }
 
     var body: some View {
         List {
             if isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .listRowBackground(Color.clear)
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .listRowBackground(Color.clear)
             } else if enrollments.isEmpty {
                 ContentUnavailableView("無修課名單資料", systemImage: "person.2.slash")
             } else {
                 if !instructors.isEmpty {
                     Section("教師") {
-                        ForEach(instructors) { enrollment in
-                            enrollmentRow(enrollment)
-                        }
+                        ForEach(instructors) { enrollmentRow($0) }
                     }
                 }
                 if !tas.isEmpty {
                     Section("助教") {
-                        ForEach(tas) { enrollment in
-                            enrollmentRow(enrollment)
-                        }
+                        ForEach(tas) { enrollmentRow($0) }
                     }
                 }
-                if !students.isEmpty {
-                    Section("學生 (\(students.count))") {
-                        ForEach(students) { enrollment in
-                            enrollmentRow(enrollment)
-                        }
+                // Friends section pinned to top of students
+                if !friendStudents.isEmpty {
+                    Section("你的朋友") {
+                        ForEach(friendStudents) { enrollmentRow($0, isFriend: true) }
+                    }
+                }
+                if !otherStudents.isEmpty {
+                    Section("學生 (\(allStudents.count))") {
+                        ForEach(otherStudents) { enrollmentRow($0) }
                     }
                 }
                 if filtered.isEmpty && !searchText.isEmpty {
@@ -402,22 +433,34 @@ struct EnrollmentListView: View {
         .sheet(item: $selectedMember) { member in
             EnrollmentMemberDetailView(
                 enrollment: member,
-                avatarURL: avatars["\(member.user.id)"]
+                avatarURL: avatars["\(member.user.id)"],
+                publicProfile: publicProfilesByEmpNo[member.user.user_no]
             )
         }
     }
 
     @ViewBuilder
-    private func enrollmentRow(_ enrollment: Enrollment) -> some View {
+    private func enrollmentRow(_ enrollment: Enrollment, isFriend: Bool = false) -> some View {
+        let isFriendMatch = isFriend || friendEmpNos.contains(enrollment.user.user_no)
+        let hasPublicProfile = publicProfilesByEmpNo[enrollment.user.user_no] != nil
         Button {
             selectedMember = enrollment
         } label: {
             HStack(spacing: 12) {
-                SmallAvatarView(
-                    name: enrollment.user.name,
-                    url: avatars["\(enrollment.user.id)"].flatMap { URL(string: $0) },
-                    size: 40
-                )
+                // Avatar with optional public-profile badge
+                ZStack(alignment: .bottomTrailing) {
+                    SmallAvatarView(
+                        name: enrollment.user.name,
+                        url: avatars["\(enrollment.user.id)"].flatMap { URL(string: $0) },
+                        size: 40
+                    )
+                    if hasPublicProfile {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white, .green)
+                            .offset(x: 3, y: 3)
+                    }
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -427,27 +470,23 @@ struct EnrollmentListView: View {
                         if enrollment.primaryRole != .student {
                             RoleBadge(role: enrollment.primaryRole)
                         }
+                        if hasPublicProfile {
+                            PublicProfileBadge()
+                        }
+                        if isFriendMatch {
+                            FriendBadge()
+                        }
                     }
                     HStack(spacing: 4) {
                         if !enrollment.user.user_no.isEmpty {
-                            Text(enrollment.user.user_no)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(enrollment.user.user_no).font(.caption).foregroundStyle(.secondary)
                         }
                         if let klass = enrollment.user.klass?.name {
-                            Text("·")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                            Text(klass)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("·").font(.caption).foregroundStyle(.tertiary)
+                            Text(klass).font(.caption).foregroundStyle(.secondary)
                         } else if let dept = enrollment.user.department?.name {
-                            Text("·")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                            Text(dept)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text("·").font(.caption).foregroundStyle(.tertiary)
+                            Text(dept).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -455,11 +494,8 @@ struct EnrollmentListView: View {
                 Spacer()
 
                 if enrollment.primaryRole == .student, let grade = enrollment.user.grade?.name {
-                    Text(grade)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    Text(grade).font(.caption).foregroundStyle(.tertiary)
                 }
-
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
@@ -475,8 +511,10 @@ struct EnrollmentListView: View {
 struct EnrollmentMemberDetailView: View {
     let enrollment: Enrollment
     let avatarURL: String?
+    let publicProfile: PublicProfile?
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showAvatarMessage = false
 
     var body: some View {
         NavigationStack {
@@ -491,15 +529,35 @@ struct EnrollmentMemberDetailView: View {
                                 url: avatarURL.flatMap { URL(string: $0) },
                                 size: 80
                             )
+                            .onTapGesture { showAvatarMessage = true }
                             Text(enrollment.user.name)
                                 .font(.title3.weight(.semibold))
-                            RoleBadge(role: enrollment.primaryRole)
+                            HStack(spacing: 6) {
+                                RoleBadge(role: enrollment.primaryRole)
+                                if publicProfile != nil {
+                                    PublicProfileBadge()
+                                }
+                            }
                         }
                         .padding(.vertical, 8)
                         Spacer()
                     }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
+                }
+
+                if let publicProfile {
+                    Section("公開資料") {
+                        NavigationLink {
+                            PublicProfilePreviewView(
+                                profile: publicProfile,
+                                avatarURL: avatarURL.flatMap { URL(string: $0) }
+                            )
+                        } label: {
+                            Label("查看公開資料", systemImage: "person.crop.circle")
+                        }
+                    }
+                    PublicProfileInfoSections(profile: publicProfile)
                 }
 
                 // Identity
@@ -555,6 +613,11 @@ struct EnrollmentMemberDetailView: View {
                     Button("完成") { dismiss() }
                 }
             }
+            .alert("頭貼", isPresented: $showAvatarMessage) {
+                Button("確定", role: .cancel) {}
+            } message: {
+                Text("請前往 TronClass 更改這個頭貼")
+            }
         }
     }
 }
@@ -573,6 +636,28 @@ private struct RoleBadge: View {
             .background(role == .instructor ? Color.blue : Color.orange, in: Capsule())
     }
 }
+
+private struct PublicProfileBadge: View {
+    var body: some View {
+        Label("公開", systemImage: "checkmark.seal.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.green)
+            .labelStyle(.iconOnly)
+            .accessibilityLabel("已啟用公開資料")
+    }
+}
+
+private struct FriendBadge: View {
+    var body: some View {
+        Text("朋友")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(AppTheme.accent)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(AppTheme.accent.opacity(0.12), in: Capsule())
+    }
+}
+
 
 // MARK: - Detail Text Row
 

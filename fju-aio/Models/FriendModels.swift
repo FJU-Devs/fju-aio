@@ -22,6 +22,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
     case discord
     case line
     case telegram
+    case threads
     case x           // Twitter/X
     case github
     case facebook
@@ -34,6 +35,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
         case .discord:   return "Discord"
         case .line:      return "LINE"
         case .telegram:  return "Telegram"
+        case .threads:   return "Threads"
         case .x:         return "X (Twitter)"
         case .github:    return "GitHub"
         case .facebook:  return "Facebook"
@@ -48,6 +50,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
         case .discord:   return "gamecontroller.fill"
         case .line:      return "message.fill"
         case .telegram:  return "paperplane.fill"
+        case .threads:   return "at"
         case .x:         return "at"
         case .github:    return "chevron.left.forwardslash.chevron.right"
         case .facebook:  return "hand.thumbsup.fill"
@@ -62,6 +65,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
         case .discord:   return "#5865F2"
         case .line:      return "#00C300"
         case .telegram:  return "#2AABEE"
+        case .threads:   return "#000000"
         case .x:         return "#000000"
         case .github:    return "#333333"
         case .facebook:  return "#1877F2"
@@ -76,6 +80,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
         case .discord:   return "用戶名"
         case .line:      return "LINE ID"
         case .telegram:  return "用戶名（不含 @）"
+        case .threads:   return "用戶名（不含 @）"
         case .x:         return "帳號（不含 @）"
         case .github:    return "用戶名"
         case .facebook:  return "個人頁網址或帳號"
@@ -92,6 +97,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
         case .discord:   return nil  // No direct profile URL
         case .line:      return URL(string: "https://line.me/ti/p/~\(h)")
         case .telegram:  return URL(string: "https://t.me/\(h)")
+        case .threads:   return URL(string: "https://threads.net/@\(h.hasPrefix("@") ? String(h.dropFirst()) : h)")
         case .x:         return URL(string: "https://x.com/\(h)")
         case .github:    return URL(string: "https://github.com/\(h)")
         case .facebook:
@@ -109,8 +115,17 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
     func displayHandle(for handle: String) -> String {
         let h = handle.trimmingCharacters(in: .whitespaces)
         switch self {
-        case .instagram, .x, .telegram: return "@\(h)"
+        case .instagram, .threads, .x, .telegram: return "@\(h)"
         default: return h
+        }
+    }
+
+    var assetName: String? {
+        switch self {
+        case .instagram, .discord, .line, .telegram, .threads, .x, .github, .facebook, .youtube:
+            return rawValue
+        case .other:
+            return nil
         }
     }
 }
@@ -190,16 +205,9 @@ struct FriendRecord: Codable, Identifiable, Hashable, Sendable {
     var displayName: String
     var cachedProfile: PublicProfile?
     let addedAt: Date
-}
-
-// MARK: - Friend Group (for group rollcall)
-
-struct FriendGroup: Codable, Identifiable, Hashable, Sendable {
-    var id: String = UUID().uuidString
-    var name: String
-    /// List of cloudKitRecordNames of members
-    var memberIds: [String]
-    let createdAt: Date
+    /// True when LDAP credentials for this friend are stored in Keychain.
+    /// Not persisted in JSON — recomputed from Keychain on load.
+    var hasStoredCredentials: Bool = false
 }
 
 // MARK: - Group Rollcall Credential Payload

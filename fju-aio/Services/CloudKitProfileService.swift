@@ -64,6 +64,45 @@ actor CloudKitProfileService {
         }
     }
 
+    // MARK: - Fetch Profiles by School IDs
+
+    func fetchProfiles(empNos: [String]) async throws -> [PublicProfile] {
+        let normalized = Array(Set(empNos.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }))
+        guard !normalized.isEmpty else { return [] }
+
+        var profiles: [PublicProfile] = []
+        for chunk in normalized.chunked(into: 100) {
+            let query = CKQuery(
+                recordType: PublicProfile.CKField.recordType,
+                predicate: NSPredicate(format: "%K IN %@", PublicProfile.CKField.empNo, chunk)
+            )
+            let (matchResults, cursor) = try await publicDB.records(
+                matching: query,
+                desiredKeys: nil,
+                resultsLimit: CKQueryOperation.maximumResults
+            )
+            profiles.append(contentsOf: matchResults.compactMap { _, result in
+                if case .success(let record) = result { return decode(record: record) }
+                return nil
+            })
+
+            var nextCursor = cursor
+            while let cursor = nextCursor {
+                let (moreResults, moreCursor) = try await publicDB.records(
+                    continuingMatchFrom: cursor,
+                    desiredKeys: nil,
+                    resultsLimit: CKQueryOperation.maximumResults
+                )
+                profiles.append(contentsOf: moreResults.compactMap { _, result in
+                    if case .success(let record) = result { return decode(record: record) }
+                    return nil
+                })
+                nextCursor = moreCursor
+            }
+        }
+        return profiles
+    }
+
     // MARK: - Delete Own Profile
 
     func deleteProfile(recordName: String) async throws {
@@ -102,5 +141,13 @@ actor CloudKitProfileService {
             scheduleSnapshot: snapshot,
             lastUpdated: lastUpdated
         )
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
 }

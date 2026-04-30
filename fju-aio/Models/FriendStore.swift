@@ -2,8 +2,9 @@ import Foundation
 import os.log
 
 // MARK: - FriendStore
-// Persists friend list and groups locally in UserDefaults.
-// No credentials are stored here — only public profile data.
+// Friend list persisted in UserDefaults (public profile data only).
+// LDAP credentials are stored separately in Keychain via CredentialStore,
+// keyed by empNo. hasStoredCredentials is recomputed from Keychain on load.
 
 @Observable
 @MainActor
@@ -11,15 +12,11 @@ final class FriendStore {
     static let shared = FriendStore()
 
     private(set) var friends: [FriendRecord] = []
-    private(set) var groups: [FriendGroup] = []
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.fju.aio", category: "FriendStore")
     private let friendsKey = "com.fju.aio.friends"
-    private let groupsKey = "com.fju.aio.friendGroups"
 
-    private init() {
-        load()
-    }
+    private init() { load() }
 
     // MARK: - Friends
 
@@ -28,13 +25,14 @@ final class FriendStore {
             logger.info("Friend \(payload.empNo) already in list")
             return
         }
-        let record = FriendRecord(
+        var record = FriendRecord(
             id: payload.cloudKitRecordName,
             empNo: payload.empNo,
             displayName: payload.displayName,
             cachedProfile: nil,
             addedAt: Date()
         )
+        record.hasStoredCredentials = CredentialStore.shared.hasFriendCredentials(empNo: payload.empNo)
         friends.append(record)
         save()
         logger.info("Added friend: \(payload.displayName) (\(payload.empNo))")
@@ -48,69 +46,69 @@ final class FriendStore {
     }
 
     func removeFriend(id: String) {
-        friends.removeAll { $0.id == id }
-        // Also remove from any groups
-        for i in groups.indices {
-            groups[i].memberIds.removeAll { $0 == id }
+        if let record = friends.first(where: { $0.id == id }) {
+            try? CredentialStore.shared.deleteFriendCredentials(empNo: record.empNo)
         }
+        friends.removeAll { $0.id == id }
         save()
         logger.info("Removed friend \(id)")
     }
 
-    // MARK: - Groups
+    // MARK: - Credential Management
 
-    func createGroup(name: String, memberIds: [String]) {
-        let group = FriendGroup(name: name, memberIds: memberIds, createdAt: Date())
-        groups.append(group)
-        save()
-        logger.info("Created group: \(name) with \(memberIds.count) members")
-    }
-
-    func updateGroup(_ group: FriendGroup) {
-        guard let idx = groups.firstIndex(where: { $0.id == group.id }) else { return }
-        groups[idx] = group
-        save()
-    }
-
-    func deleteGroup(id: String) {
-        groups.removeAll { $0.id == id }
-        save()
-    }
-
-    func members(of group: FriendGroup) -> [FriendRecord] {
-        group.memberIds.compactMap { memberId in
-            friends.first { $0.id == memberId }
+    func saveCredentials(for friendId: String, username: String, password: String) {
+        guard let idx = friends.firstIndex(where: { $0.id == friendId }) else { return }
+        do {
+            try CredentialStore.shared.saveFriendCredentials(
+                empNo: friends[idx].empNo,
+                username: username,
+                password: password
+            )
+            friends[idx].hasStoredCredentials = true
+            logger.info("Saved credentials for \(self.friends[idx].displayName)")
+        } catch {
+            logger.error("Failed to save credentials: \(error)")
         }
+    }
+
+    func deleteCredentials(for friendId: String) {
+        guard let idx = friends.firstIndex(where: { $0.id == friendId }) else { return }
+        try? CredentialStore.shared.deleteFriendCredentials(empNo: friends[idx].empNo)
+        friends[idx].hasStoredCredentials = false
+        logger.info("Deleted credentials for \(self.friends[idx].displayName)")
+    }
+
+    /// All friends who have stored credentials — used by CheckInView
+    var credentialedFriends: [FriendRecord] {
+        friends.filter { $0.hasStoredCredentials }
     }
 
     // MARK: - Persistence
 
     private func load() {
         if let data = UserDefaults.standard.data(forKey: friendsKey),
-           let decoded = try? JSONDecoder().decode([FriendRecord].self, from: data) {
+           var decoded = try? JSONDecoder().decode([FriendRecord].self, from: data) {
+            // Recompute hasStoredCredentials from Keychain (not persisted in JSON)
+            for i in decoded.indices {
+                decoded[i].hasStoredCredentials = CredentialStore.shared.hasFriendCredentials(empNo: decoded[i].empNo)
+            }
             friends = decoded
         }
-        if let data = UserDefaults.standard.data(forKey: groupsKey),
-           let decoded = try? JSONDecoder().decode([FriendGroup].self, from: data) {
-            groups = decoded
-        }
-        logger.info("Loaded \(self.friends.count) friends, \(self.groups.count) groups")
+        logger.info("Loaded \(self.friends.count) friends")
     }
 
     private func save() {
         if let data = try? JSONEncoder().encode(friends) {
             UserDefaults.standard.set(data, forKey: friendsKey)
         }
-        if let data = try? JSONEncoder().encode(groups) {
-            UserDefaults.standard.set(data, forKey: groupsKey)
-        }
     }
 
     func clearAll() {
+        for friend in friends {
+            try? CredentialStore.shared.deleteFriendCredentials(empNo: friend.empNo)
+        }
         friends = []
-        groups = []
         UserDefaults.standard.removeObject(forKey: friendsKey)
-        UserDefaults.standard.removeObject(forKey: groupsKey)
-        logger.info("Cleared all friends and groups")
+        logger.info("Cleared all friends and credentials")
     }
 }

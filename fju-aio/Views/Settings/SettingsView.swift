@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var showLogoutAlert = false
     @State private var sisSession: SISSession?
     @State private var isLoadingSession = false
+    @State private var friendStore = FriendStore.shared
+    @State private var profileAvatarURL: URL?
+    @State private var showAvatarMessage = false
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
@@ -17,9 +20,13 @@ struct SettingsView: View {
         List {
             Section("帳號") {
                 HStack {
-                    Image(systemName: "person.circle.fill")
-                        .font(.largeTitle)
-                        .foregroundStyle(AppTheme.accent)
+                    ProfileAvatarView(
+                        name: sisSession?.userName ?? "學生姓名",
+                        avatarURL: profileAvatarURL,
+                        size: 52
+                    )
+                    .onTapGesture { showAvatarMessage = true }
+
                     VStack(alignment: .leading) {
                         Text(sisSession?.userName ?? "學生姓名")
                             .font(.headline)
@@ -40,6 +47,10 @@ struct SettingsView: View {
                         Image(systemName: "person.crop.square.fill")
                         Text("我的公開資料")
                     }
+                }
+
+                NavigationLink(destination: FriendListView()) {
+                    SettingsFriendRow(friendCount: friendStore.friends.count)
                 }
 
                 Button(role: .destructive) {
@@ -139,9 +150,16 @@ struct SettingsView: View {
         }
         .task {
             await loadSISSession()
+            await loadProfileAvatar()
         }
         .refreshable {
             await loadSISSession()
+            await loadProfileAvatar()
+        }
+        .alert("頭貼", isPresented: $showAvatarMessage) {
+            Button("確定", role: .cancel) {}
+        } message: {
+            Text("請前往 TronClass 更改這個頭貼")
         }
     }
     
@@ -155,6 +173,13 @@ struct SettingsView: View {
         }
         isLoadingSession = false
     }
+
+    private func loadProfileAvatar() async {
+        if let avatar = try? await TronClassAPIService.shared.getCurrentUserAvatarURL(),
+           let url = URL(string: avatar) {
+            profileAvatarURL = url
+        }
+    }
     
     private func performLogout() async {
         do {
@@ -162,6 +187,30 @@ struct SettingsView: View {
         } catch {
             print("登出失敗: \(error)")
         }
+    }
+}
+
+private struct SettingsFriendRow: View {
+    let friendCount: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.2.fill")
+                .font(.title3)
+                .foregroundStyle(AppTheme.accent)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("好友")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(friendCount == 0 ? "查看與分享個人 QR Code" : "\(friendCount) 位朋友")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

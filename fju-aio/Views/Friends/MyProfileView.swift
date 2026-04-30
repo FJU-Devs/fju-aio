@@ -8,7 +8,7 @@ struct MyProfileView: View {
     @AppStorage("myProfile.displayName") private var displayName = ""
     @AppStorage("myProfile.bio") private var bio = ""
     @AppStorage("myProfile.isPublished") private var isPublished = false
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
+    @AppStorage("myProfile.shareSchedule") private var shareSchedule = false
 
     // Social links are stored as JSON in UserDefaults (AppStorage can't hold [SocialLink])
     @State private var socialLinks: [SocialLink] = []
@@ -17,20 +17,22 @@ struct MyProfileView: View {
     @State private var isLoading = false
     @State private var isPublishing = false
     @State private var publishError: String?
-    @State private var showProfileQR = false
-    @State private var showRollcallQR = false
-    @State private var showRollcallWarning = false
     @State private var showAddLink = false
     @State private var showDisableConfirm = false
+    @State private var profileAvatarURL: URL?
+    @State private var showAvatarMessage = false
 
     var body: some View {
         List {
             // MARK: Identity
             Section {
                 HStack(spacing: 16) {
-                    Image(systemName: "person.circle.fill")
-                        .font(.system(size: 52))
-                        .foregroundStyle(AppTheme.accent)
+                    ProfileAvatarView(
+                        name: sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName),
+                        avatarURL: profileAvatarURL,
+                        size: 52
+                    )
+                    .onTapGesture { showAvatarMessage = true }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName))
@@ -77,6 +79,19 @@ struct MyProfileView: View {
 
             // MARK: Profile fields (only shown when enabled)
             if isPublished {
+                Section {
+                    Toggle("公開我的課表", isOn: $shareSchedule)
+                    if let previewProfile {
+                        NavigationLink {
+                            PublicProfilePreviewView(profile: previewProfile, avatarURL: profileAvatarURL)
+                        } label: {
+                            Label("預覽公開資料", systemImage: "eye.fill")
+                        }
+                    }
+                } footer: {
+                    Text("變更公開課表設定後，請點「發布 / 更新」同步到雲端。")
+                }
+
                 // Bio
                 Section("自我介紹") {
                     TextField("讓朋友認識你（選填）", text: $bio, axis: .vertical)
@@ -131,26 +146,6 @@ struct MyProfileView: View {
                     }
                 }
 
-                // QR Codes
-                Section("QR Code") {
-                    Button {
-                        showProfileQR = true
-                    } label: {
-                        Label("顯示個人 QR Code", systemImage: "qrcode")
-                    }
-                    .disabled(sisSession == nil)
-
-                    // Credential QR only shown when check-in debug feature is enabled
-                    if checkInEnabled {
-                        Button {
-                            showRollcallWarning = true
-                        } label: {
-                            Label("顯示點名 QR Code（含帳密）", systemImage: "person.badge.key.fill")
-                        }
-                        .disabled(sisSession == nil)
-                        .foregroundStyle(.orange)
-                    }
-                }
             }
         }
         .navigationTitle("我的資料")
@@ -161,33 +156,14 @@ struct MyProfileView: View {
         .task {
             await loadSession()
             loadSocialLinks()
+            await loadProfileAvatar()
         }
         .onChange(of: socialLinks) { _, _ in saveSocialLinks() }
-        .sheet(isPresented: $showProfileQR) {
-            if let session = sisSession {
-                ProfileQRSheet(session: session)
-            }
-        }
-        .sheet(isPresented: $showRollcallQR) {
-            if let session = sisSession {
-                RollcallCredentialQRSheet(session: session)
-            }
-        }
         .sheet(isPresented: $showAddLink) {
             AddSocialLinkSheet { newLink in
                 socialLinks.append(newLink)
                 saveSocialLinks()
             }
-        }
-        .confirmationDialog(
-            "注意：安全警告",
-            isPresented: $showRollcallWarning,
-            titleVisibility: .visible
-        ) {
-            Button("我了解風險，繼續顯示", role: .destructive) { showRollcallQR = true }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("注意：這個 QR Code 含有你的帳號密碼，請不要隨意外洩。一旦分享，只有更改 LDAP 帳密才可以停止。")
         }
         .confirmationDialog(
             "確認關閉公開資料",
@@ -200,6 +176,11 @@ struct MyProfileView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("關閉後，你的公開資料（包含課表與社群連結）將從雲端刪除，好友將無法再看到你的資料。")
+        }
+        .alert("頭貼", isPresented: $showAvatarMessage) {
+            Button("確定", role: .cancel) {}
+        } message: {
+            Text("請前往 TronClass 更改這個頭貼")
         }
     }
 
@@ -215,6 +196,13 @@ struct MyProfileView: View {
             }
         } catch {
             sisSession = nil
+        }
+    }
+
+    private func loadProfileAvatar() async {
+        if let avatar = try? await TronClassAPIService.shared.getCurrentUserAvatarURL(),
+           let url = URL(string: avatar) {
+            profileAvatarURL = url
         }
     }
 
@@ -243,7 +231,7 @@ struct MyProfileView: View {
         defer { isPublishing = false }
 
         let effectiveName = displayName.isEmpty ? session.userName : displayName
-        let snapshot = buildSnapshot(session: session)
+        let snapshot = shareSchedule ? buildSnapshot(session: session) : nil
 
         let profile = PublicProfile(
             cloudKitRecordName: ProfileQRService.stableDeviceToken(),
@@ -290,6 +278,20 @@ struct MyProfileView: View {
             updatedAt: Date()
         )
     }
+
+    private var previewProfile: PublicProfile? {
+        guard let session = sisSession else { return nil }
+        return PublicProfile(
+            cloudKitRecordName: ProfileQRService.stableDeviceToken(),
+            userId: session.userId,
+            empNo: session.empNo,
+            displayName: displayName.isEmpty ? session.userName : displayName,
+            bio: bio.isEmpty ? nil : bio,
+            socialLinks: socialLinks,
+            scheduleSnapshot: shareSchedule ? buildSnapshot(session: session) : nil,
+            lastUpdated: Date()
+        )
+    }
 }
 
 // MARK: - Social Link Edit Row (inline editing within the list)
@@ -299,9 +301,7 @@ private struct SocialLinkEditRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: link.platform.icon)
-                .foregroundStyle(Color(hex: link.platform.color))
-                .frame(width: 28)
+            SocialBrandIcon(platform: link.platform)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(link.platform.label)
@@ -331,7 +331,10 @@ private struct AddSocialLinkSheet: View {
                 Section("平台") {
                     Picker("選擇平台", selection: $selectedPlatform) {
                         ForEach(SocialPlatform.allCases, id: \.self) { platform in
-                            Label(platform.label, systemImage: platform.icon)
+                            HStack {
+                                SocialBrandIcon(platform: platform, size: 24)
+                                Text(platform.label)
+                            }
                                 .tag(platform)
                         }
                     }
@@ -341,9 +344,7 @@ private struct AddSocialLinkSheet: View {
 
                 Section("帳號 / 連結") {
                     HStack {
-                        Image(systemName: selectedPlatform.icon)
-                            .foregroundStyle(Color(hex: selectedPlatform.color))
-                            .frame(width: 28)
+                        SocialBrandIcon(platform: selectedPlatform)
                         TextField(selectedPlatform.placeholder, text: $handle)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)

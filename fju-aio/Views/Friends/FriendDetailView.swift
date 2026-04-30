@@ -8,6 +8,16 @@ struct FriendDetailView: View {
     @State private var profile: PublicProfile?
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var friendStore = FriendStore.shared
+
+    // live credential status from store
+    private var currentFriend: FriendRecord {
+        friendStore.friends.first { $0.id == friend.id } ?? friend
+    }
+
+    @State private var showCredentialScanner = false
+    @State private var credentialScanError: String?
+    @State private var showDeleteCredConfirm = false
 
     var body: some View {
         List {
@@ -49,6 +59,58 @@ struct FriendDetailView: View {
                 }
             }
 
+            // MARK: Rollcall Authorisation
+            Section {
+                if currentFriend.hasStoredCredentials {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .foregroundStyle(.green)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("已儲存點名授權")
+                                .font(.body)
+                            Text("你可以在簽到頁面替此朋友點名")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button(role: .destructive) {
+                        showDeleteCredConfirm = true
+                    } label: {
+                        Label("撤銷授權（刪除帳密）", systemImage: "trash")
+                    }
+                } else {
+                    HStack(spacing: 12) {
+                        Image(systemName: "shield.slash")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("尚未授權點名")
+                                .font(.body)
+                            Text("請對方在「我的資料」顯示點名 QR Code，再點下方按鈕掃描")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button {
+                        showCredentialScanner = true
+                    } label: {
+                        Label("掃描對方的點名 QR Code", systemImage: "qrcode.viewfinder")
+                    }
+                    .foregroundStyle(AppTheme.accent)
+                }
+
+                if let err = credentialScanError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("點名授權")
+            } footer: {
+                if !currentFriend.hasStoredCredentials {
+                    Text("對方的帳號密碼僅儲存於你的裝置 Keychain，不會上傳至任何伺服器。")
+                }
+            }
+
             // MARK: Schedule Snapshot
             Section("課表") {
                 if isLoading && profile == nil {
@@ -81,6 +143,30 @@ struct FriendDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadProfile() }
         .refreshable { await loadProfile() }
+        .sheet(isPresented: $showCredentialScanner) {
+            CredentialScannerSheet { payload in
+                showCredentialScanner = false
+                if payload.sharerUserId == (currentFriend.cachedProfile?.userId ?? -1) ||
+                   payload.username == currentFriend.empNo ||
+                   payload.sharerDisplayName == currentFriend.displayName {
+                    friendStore.saveCredentials(
+                        for: currentFriend.id,
+                        username: payload.username,
+                        password: payload.password
+                    )
+                } else {
+                    credentialScanError = "此 QR Code 不屬於 \(currentFriend.displayName)，請讓對方重新顯示。"
+                }
+            }
+        }
+        .confirmationDialog("撤銷點名授權", isPresented: $showDeleteCredConfirm, titleVisibility: .visible) {
+            Button("刪除帳號密碼", role: .destructive) {
+                friendStore.deleteCredentials(for: currentFriend.id)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("刪除後將無法在簽到時替 \(currentFriend.displayName) 代為點名，需要重新掃描授權。")
+        }
     }
 
     private func loadProfile() async {
@@ -174,35 +260,54 @@ private struct FriendCourseRow: View {
     }
 }
 
-// MARK: - Group Detail View
 
-struct GroupDetailView: View {
-    let group: FriendGroup
-    @State private var friendStore = FriendStore.shared
+// MARK: - Credential Scanner Sheet
 
-    var members: [FriendRecord] { friendStore.members(of: group) }
+private struct CredentialScannerSheet: View {
+    let onScanned: (GroupRollcallQRPayload) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var scanError: String?
 
     var body: some View {
-        List {
-            Section("成員") {
-                ForEach(members) { member in
-                    NavigationLink(value: member) {
-                        FriendRow(friend: member)
+        NavigationStack {
+            ZStack {
+                QRScannerView { qrString in
+                    switch ProfileQRService.parse(qrString: qrString) {
+                    case .groupRollcall(let payload):
+                        onScanned(payload)
+                    case .profile:
+                        scanError = "這是個人 QR Code，請讓對方顯示「點名 QR Code」"
+                    case .unknown:
+                        scanError = "無法識別此 QR Code"
                     }
                 }
-            }
+                .ignoresSafeArea()
 
-            Section("功能") {
-                NavigationLink {
-                    GroupRollcallView(group: group)
-                } label: {
-                    Label("群組點名", systemImage: "person.badge.clock.fill")
-                        .foregroundStyle(.orange)
+                VStack {
+                    Spacer()
+                    VStack(spacing: 6) {
+                        Text("掃描對方的點名 QR Code")
+                            .font(.subheadline).foregroundStyle(.white)
+                        if let err = scanError {
+                            Text(err).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    .padding()
+                    .background(.black.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.bottom, 48)
+                }
+            }
+            .navigationTitle("掃描點名授權")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(.black.opacity(0.6), for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }.foregroundStyle(.white)
                 }
             }
         }
-        .navigationTitle(group.name)
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
