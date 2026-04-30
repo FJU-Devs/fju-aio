@@ -43,23 +43,28 @@ struct AttendanceRollcallsResponse: Codable {
 
 struct Rollcall: Identifiable, Codable, Sendable {
     let rollcall_id: Int
-    let course_id: Int
+    let course_id: Int?
     let course_title: String
     let rollcall_status: String   // "in_progress", "on_call", "late"
-    let source: String             // "number", "radar", "qr"
+    let source: String?            // "number", "radar", "qr"
     let is_number: Bool
     let is_radar: Bool
-    let is_qr: Bool
+    let is_qr: Bool?
     let is_expired: Bool
-    let status: String             // student status: "absent", "on_call", "late"
+    let status: String             // student status: "absent", "on_call_fine", "on_call", "late"
     let rollcall_time: String
     let title: String
-    let created_by_name: String
-    let student_rollcall_id: Int
+    let created_by_name: String?
+    let student_rollcall_id: Int?
 
     var id: Int { rollcall_id }
+
+    /// True if this is a QR rollcall — prefer the explicit flag, fall back to source field.
+    var isQR: Bool { is_qr ?? (source == "qr") }
+    var isNumber: Bool { is_number || source == "number" }
+    var isRadar: Bool { is_radar || source == "radar" }
+
     var isActive: Bool { rollcall_status == "in_progress" && !is_expired }
-    var isAlreadyCheckedIn: Bool { status == "on_call" || status == "late" }
 }
 
 struct RollcallsResponse: Codable {

@@ -97,9 +97,9 @@ struct GroupRollcallView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             HStack {
-                                Image(systemName: rollcall.is_number ? "number.circle" : "location.circle")
+                                Image(systemName: rollcall.isNumber ? "number.circle" : "location.circle")
                                     .font(.caption)
-                                Text(rollcall.is_number ? "數字碼點名" : "雷達點名")
+                                Text(rollcall.isNumber ? "數字碼點名" : "雷達點名")
                                     .font(.caption)
                             }
                             .foregroundStyle(.secondary)
@@ -242,7 +242,7 @@ struct GroupRollcallView: View {
                         var anySuccess = false
                         for rollcall in activeRollcalls {
                             let success: Bool
-                            if rollcall.is_number {
+                            if rollcall.isNumber {
                                 // Number rollcalls require a code — skip in group mode
                                 // (user must share via manual code entry)
                                 continue

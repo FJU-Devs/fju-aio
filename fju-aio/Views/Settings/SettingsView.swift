@@ -870,7 +870,7 @@ struct CheckInTestView: View {
                                 .font(.headline)
                             Text(mockRollcall.title)
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text(mockRollcall.created_by_name)
+                            Text(mockRollcall.created_by_name ?? "")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

@@ -6,9 +6,8 @@ struct CheckInView: View {
     @State private var rollcalls: [Rollcall] = []
     @State private var isLoading = false
     @State private var checkInResults: [Int: RollcallCheckInResult] = [:]
-    @State private var showManualEntry = false
-    @State private var showQRScanner = false
-    @State private var selectedRollcall: Rollcall? = nil
+    @State private var manualEntryRollcall: Rollcall? = nil
+    @State private var qrScannerRollcall: Rollcall? = nil
     @State private var errorMessage: String? = nil
 
     var body: some View {
@@ -27,15 +26,13 @@ struct CheckInView: View {
                     rollcall: rollcall,
                     result: checkInResults[rollcall.rollcall_id],
                     onManualEntry: {
-                        selectedRollcall = rollcall
-                        showManualEntry = true
+                        manualEntryRollcall = rollcall
                     },
                     onRadarCheckIn: {
                         Task { await doRadarCheckIn(rollcall: rollcall) }
                     },
                     onQRCheckIn: {
-                        selectedRollcall = rollcall
-                        showQRScanner = true
+                        qrScannerRollcall = rollcall
                     }
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
@@ -56,20 +53,16 @@ struct CheckInView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .sheet(isPresented: $showManualEntry) {
-            if let rollcall = selectedRollcall {
-                ManualCheckInSheet(rollcall: rollcall) { code in
-                    showManualEntry = false
-                    Task { await doManualCheckIn(rollcall: rollcall, code: code) }
-                }
+        .sheet(item: $manualEntryRollcall) { rollcall in
+            ManualCheckInSheet(rollcall: rollcall) { code in
+                manualEntryRollcall = nil
+                Task { await doManualCheckIn(rollcall: rollcall, code: code) }
             }
         }
-        .sheet(isPresented: $showQRScanner) {
-            if let rollcall = selectedRollcall {
-                QRScannerSheet(rollcall: rollcall) { qrContent in
-                    showQRScanner = false
-                    Task { await doQRCheckIn(rollcall: rollcall, qrContent: qrContent) }
-                }
+        .sheet(item: $qrScannerRollcall) { rollcall in
+            QRScannerSheet(rollcall: rollcall) { qrContent in
+                qrScannerRollcall = nil
+                Task { await doQRCheckIn(rollcall: rollcall, qrContent: qrContent) }
             }
         }
     }
@@ -135,40 +128,42 @@ private struct RollcallRowView: View {
                     Text(rollcall.title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(rollcall.created_by_name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if let createdBy = rollcall.created_by_name {
+                        Text(createdBy)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 StatusBadge(rollcall: rollcall)
             }
 
             HStack(spacing: 6) {
-                Image(systemName: rollcall.is_number ? "number.circle.fill" : rollcall.is_qr ? "qrcode.viewfinder" : "location.circle.fill")
+                Image(systemName: rollcall.isNumber ? "number.circle.fill" : rollcall.isQR ? "qrcode.viewfinder" : "location.circle.fill")
                     .font(.caption)
-                Text(rollcall.is_number ? "數字碼點名" : rollcall.is_qr ? "QR Code 點名" : "雷達點名")
+                Text(rollcall.isNumber ? "數字碼點名" : rollcall.isQR ? "QR Code 點名" : "雷達點名")
                     .font(.caption)
             }
             .foregroundStyle(.secondary)
 
-            if rollcall.isActive && !rollcall.isAlreadyCheckedIn {
+            if rollcall.isActive {
                 if let result {
                     resultView(result)
-                } else if rollcall.is_number {
+                } else if rollcall.isNumber {
                     Button(action: onManualEntry) {
                         Label("輸入數字碼", systemImage: "keyboard")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.pink)
-                } else if rollcall.is_qr {
+                } else if rollcall.isQR {
                     Button(action: onQRCheckIn) {
                         Label("掃描 QR Code", systemImage: "qrcode.viewfinder")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.purple)
-                } else if rollcall.is_radar {
+                } else if rollcall.isRadar {
                     Button(action: onRadarCheckIn) {
                         Label("雷達簽到", systemImage: "location.fill")
                             .frame(maxWidth: .infinity)
@@ -208,8 +203,8 @@ private struct StatusBadge: View {
 
     private var label: (text: String, color: Color) {
         switch rollcall.status {
-        case "on_call": return ("已簽到", .green)
-        case "late":    return ("遲到",   .orange)
+        case "on_call", "on_call_fine": return ("已簽到", .green)
+        case "late":                    return ("遲到",   .orange)
         default:
             if rollcall.is_expired { return ("已過期", .gray) }
             if rollcall.rollcall_status == "in_progress" { return ("進行中", .blue) }

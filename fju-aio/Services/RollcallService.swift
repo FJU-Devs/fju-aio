@@ -47,9 +47,15 @@ actor RollcallService {
 
         if http.statusCode == 401 || http.statusCode == 403 { throw RollcallError.sessionExpired }
 
-        let decoded = try JSONDecoder().decode(RollcallsResponse.self, from: data)
-        logger.info("✅ Fetched \(decoded.rollcalls.count) rollcalls")
-        return decoded.rollcalls
+        do {
+            let decoded = try JSONDecoder().decode(RollcallsResponse.self, from: data)
+            logger.info("✅ Fetched \(decoded.rollcalls.count) rollcalls")
+            return decoded.rollcalls
+        } catch {
+            let rawJSON = String(data: data, encoding: .utf8) ?? "<non-UTF8>"
+            logger.error("❌ Rollcall decode error: \(error, privacy: .public)\nRaw response: \(rawJSON, privacy: .private)")
+            throw error
+        }
     }
 
     // MARK: - Manual Check-In
