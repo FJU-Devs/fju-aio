@@ -35,6 +35,13 @@ struct SettingsView: View {
                     }
                 }
 
+                NavigationLink(destination: MyProfileView()) {
+                    HStack {
+                        Image(systemName: "person.crop.square.fill")
+                        Text("我的公開資料")
+                    }
+                }
+
                 Button(role: .destructive) {
                     showLogoutAlert = true
                 } label: {

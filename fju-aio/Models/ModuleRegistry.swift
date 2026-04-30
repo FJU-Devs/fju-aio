@@ -22,6 +22,10 @@ enum ModuleRegistry {
         AppModule(id: "enrollmentCertificate", name: "在學證明", icon: "doc.richtext.fill",
                   color: .orange, category: .academic, type: .inApp(.enrollmentCertificate)),
 
+        // In-app features (social)
+        AppModule(id: "friends", name: "好友", icon: "person.2.fill",
+                  color: .pink, category: .tools, type: .inApp(.friends)),
+
         // In-app features (tools)
         AppModule(id: "semesterCalendar", name: "學期行事曆", icon: "calendar.badge.clock",
                   color: .red, category: .tools, type: .inApp(.semesterCalendar)),
