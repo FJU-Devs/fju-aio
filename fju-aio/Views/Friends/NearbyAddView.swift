@@ -14,6 +14,7 @@ struct NearbyAddView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var nearbyService = NearbyFriendService.shared
+    @State private var friendStore = FriendStore.shared
     @State private var addedIds: Set<String> = []
 
     var body: some View {
@@ -47,12 +48,14 @@ struct NearbyAddView: View {
                 }
 
                 // MARK: Discovered peers (profile already read — ready to add)
-                let pending = nearbyService.discoveredPeers.filter { !addedIds.contains($0.id) }
-                let added   = nearbyService.discoveredPeers.filter {  addedIds.contains($0.id) }
+                let incomingRequests = nearbyService.incomingAddRequests.filter { !friendStore.isFriend(recordName: $0.id) }
+                let visiblePeers = nearbyService.discoveredPeers.filter { !friendStore.isFriend(recordName: $0.id) }
+                let pending = visiblePeers.filter { !addedIds.contains($0.id) }
+                let added = visiblePeers.filter { addedIds.contains($0.id) }
 
-                if !nearbyService.incomingAddRequests.isEmpty {
+                if !incomingRequests.isEmpty {
                     Section("邀請") {
-                        ForEach(nearbyService.incomingAddRequests) { peer in
+                        ForEach(incomingRequests) { peer in
                             incomingRequestRow(peer)
                         }
                     }
@@ -140,6 +143,10 @@ struct NearbyAddView: View {
                     .foregroundStyle(.green)
             } else {
                 Button("加好友") {
+                    guard !friendStore.isFriend(recordName: peer.id) else {
+                        addedIds.insert(peer.id)
+                        return
+                    }
                     addedIds.insert(peer.id)
                     onRequestAddPeer(peer)
                 }
@@ -181,6 +188,11 @@ struct NearbyAddView: View {
             Spacer()
 
             Button("加好友") {
+                guard !friendStore.isFriend(recordName: peer.id) else {
+                    nearbyService.dismissIncomingRequest(id: peer.id)
+                    addedIds.insert(peer.id)
+                    return
+                }
                 addedIds.insert(peer.id)
                 onAcceptIncomingPeer(peer)
                 nearbyService.dismissIncomingRequest(id: peer.id)

@@ -38,6 +38,10 @@ final class FriendStore {
         logger.info("Added friend: \(payload.displayName) (\(payload.empNo))")
     }
 
+    func isFriend(recordName: String) -> Bool {
+        friends.contains { $0.id == recordName }
+    }
+
     func updateCachedProfile(_ profile: PublicProfile, for id: String) {
         guard let idx = friends.firstIndex(where: { $0.id == id }) else { return }
         friends[idx].cachedProfile = profile

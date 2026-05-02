@@ -240,12 +240,20 @@ private struct FriendListContent: View {
                 scanError = "這是你自己的 QR Code，無法加自己為好友。"
                 return
             }
+            guard !friendStore.isFriend(recordName: payload.cloudKitRecordName) else {
+                lastScannedInfo = "\(payload.displayName) 已經在好友列表中。"
+                return
+            }
             friendStore.addFriend(from: payload)
             lastScannedInfo = "已新增好友：\(payload.displayName)（\(payload.empNo)）"
             fetchAndCacheProfile(recordName: payload.cloudKitRecordName)
         case .mutual(let payload):
             if payload.cloudKitRecordName == myToken {
                 scanError = "這是你自己的 QR Code，無法加自己為好友。"
+                return
+            }
+            guard !friendStore.isFriend(recordName: payload.cloudKitRecordName) else {
+                lastScannedInfo = "\(payload.displayName) 已經在好友列表中。"
                 return
             }
             let profilePayload = ProfileQRPayload(
@@ -266,6 +274,7 @@ private struct FriendListContent: View {
                 scanError = "這是你自己的 QR Code，無法加自己為好友。"
                 return
             }
+            let wasAlreadyFriend = friendStore.isFriend(recordName: payload.cloudKitRecordName)
             let profilePayload = ProfileQRPayload(
                 version: payload.version,
                 type: "profile",
@@ -274,11 +283,15 @@ private struct FriendListContent: View {
                 displayName: payload.displayName,
                 userId: payload.userId
             )
-            friendStore.addFriend(from: profilePayload)
+            if !wasAlreadyFriend {
+                friendStore.addFriend(from: profilePayload)
+            }
             if let friendId = friendStore.friends.first(where: { $0.id == payload.cloudKitRecordName })?.id {
                 friendStore.saveCredentials(for: friendId, username: payload.username, password: payload.password)
             }
-            lastScannedInfo = "已新增好友：\(payload.displayName)（\(payload.empNo)）並儲存點名授權"
+            lastScannedInfo = wasAlreadyFriend
+                ? "已更新 \(payload.displayName) 的點名授權"
+                : "已新增好友：\(payload.displayName)（\(payload.empNo)）並儲存點名授權"
             fetchAndCacheProfile(recordName: payload.cloudKitRecordName)
         case .groupRollcall:
             scanError = "這是點名 QR Code，請在簽到頁面使用。"
@@ -298,6 +311,7 @@ private struct FriendListContent: View {
     }
 
     private func addFriend(_ peer: NearbyPeerProfile) {
+        guard !friendStore.isFriend(recordName: peer.id) else { return }
         let payload = ProfileQRPayload(
             version: 1,
             type: "profile",
@@ -375,9 +389,9 @@ private struct MyProfileQRSheet: View {
                     }
                 }
 
-                if !nearbyService.incomingAddRequests.isEmpty {
+                if !pendingIncomingRequests.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(nearbyService.incomingAddRequests) { peer in
+                        ForEach(pendingIncomingRequests) { peer in
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("\(peer.displayName) 已加你為好友")
@@ -440,6 +454,10 @@ private struct MyProfileQRSheet: View {
         }
     }
 
+    private var pendingIncomingRequests: [NearbyPeerProfile] {
+        nearbyService.incomingAddRequests.filter { !friendStore.isFriend(recordName: $0.id) }
+    }
+
     private func makeQRImage(session: SISSession) -> UIImage? {
         if sharesCredentials {
             guard let credentials = try? CredentialStore.shared.retrieveLDAPCredentials() else { return nil }
@@ -478,6 +496,10 @@ private struct MyProfileQRSheet: View {
     }
 
     private func addIncomingPeer(_ peer: NearbyPeerProfile) {
+        guard !friendStore.isFriend(recordName: peer.id) else {
+            nearbyService.dismissIncomingRequest(id: peer.id)
+            return
+        }
         let payload = ProfileQRPayload(
             version: 1,
             type: "profile",
