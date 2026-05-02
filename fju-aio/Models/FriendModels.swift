@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Social Link (dynamic, user-defined)
 
-struct SocialLink: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct SocialLink: Codable, Identifiable, Hashable, Sendable {
     var id: String = UUID().uuidString
     var platform: SocialPlatform
     /// The user-entered handle/value (e.g. "@nelson" or "https://...")
@@ -17,7 +17,7 @@ struct SocialLink: Codable, Identifiable, Hashable, Sendable {
 
 // MARK: - Social Platform
 
-enum SocialPlatform: String, Codable, CaseIterable, Sendable {
+nonisolated enum SocialPlatform: String, Codable, CaseIterable, Sendable {
     case instagram
     case discord
     case line
@@ -132,7 +132,7 @@ enum SocialPlatform: String, Codable, CaseIterable, Sendable {
 
 // MARK: - Public Profile (stored in CloudKit public DB)
 
-struct PublicProfile: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct PublicProfile: Codable, Identifiable, Hashable, Sendable {
     var id: String { cloudKitRecordName }
 
     /// Stable CloudKit record name — derived from deviceToken on first publish
@@ -153,7 +153,7 @@ struct PublicProfile: Codable, Identifiable, Hashable, Sendable {
     var lastUpdated: Date
 
     // MARK: - CloudKit field names
-    enum CKField {
+    nonisolated enum CKField {
         static let recordType = "PublicProfile"
         static let userId = "userId"
         static let empNo = "empNo"
@@ -168,7 +168,7 @@ struct PublicProfile: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Friend Schedule Snapshot
 // Non-sensitive subset of a user's course list — safe to publish
 
-struct FriendScheduleSnapshot: Codable, Hashable, Sendable {
+nonisolated struct FriendScheduleSnapshot: Codable, Hashable, Sendable {
     let ownerUserId: Int
     let ownerDisplayName: String
     let semester: String
@@ -176,7 +176,7 @@ struct FriendScheduleSnapshot: Codable, Hashable, Sendable {
     let updatedAt: Date
 }
 
-struct PublicCourseInfo: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct PublicCourseInfo: Codable, Identifiable, Hashable, Sendable {
     var id: String { "\(dayOfWeek)-\(startPeriod)-\(name)" }
     let name: String
     let instructor: String
@@ -199,7 +199,7 @@ struct PublicCourseInfo: Codable, Identifiable, Hashable, Sendable {
 
 // MARK: - Local Friend Record (stored in UserDefaults)
 
-struct FriendRecord: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct FriendRecord: Codable, Identifiable, Hashable, Sendable {
     let id: String                          // = cloudKitRecordName
     let empNo: String
     var displayName: String

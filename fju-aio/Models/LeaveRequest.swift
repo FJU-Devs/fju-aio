@@ -197,14 +197,14 @@ nonisolated struct CourseSectionRaw: Codable, Sendable {
     var resolvedEndTime: String { sectionEndTime ?? "" }
 }
 
-struct LeaveSectionListResponse: Codable, Sendable {
+nonisolated struct LeaveSectionListResponse: Codable, Sendable {
     let statusCode: Int
     let result: [LeaveSection]
     let message: AnyCodable?
     let errorMessage: AnyCodable?
 }
 
-struct LeaveSection: Identifiable, Codable, Sendable, Hashable {
+nonisolated struct LeaveSection: Identifiable, Codable, Sendable, Hashable {
     let refSectionSn: Int?
     let sectNo: Int
     let sectionNo: String?
@@ -402,21 +402,21 @@ nonisolated struct LeaveCategoryListResponse: Codable, Sendable {
     let errorMessage: AnyCodable?
 }
 
-struct RefLeaveListResponse: Codable, Sendable {
+nonisolated struct RefLeaveListResponse: Codable, Sendable {
     let statusCode: Int
     let result: [RefLeave]
     let message: AnyCodable?
     let errorMessage: AnyCodable?
 }
 
-struct LeaveDetailResponse: Codable, Sendable {
+nonisolated struct LeaveDetailResponse: Codable, Sendable {
     let statusCode: Int
     let result: LeaveDetail
     let message: AnyCodable?
     let errorMessage: AnyCodable?
 }
 
-struct LeaveDetail: Codable, Sendable, Identifiable, Hashable {
+nonisolated struct LeaveDetail: Codable, Sendable, Identifiable, Hashable {
     let leaveApplySn: Int
     let hy: Int
     let ht: Int
@@ -450,7 +450,7 @@ struct LeaveDetail: Codable, Sendable, Identifiable, Hashable {
     var id: Int { leaveApplySn }
 }
 
-struct LeaveApplyDoc: Identifiable, Codable, Sendable, Hashable {
+nonisolated struct LeaveApplyDoc: Identifiable, Codable, Sendable, Hashable {
     let leaveApplyDocSn: Int
     let leaveApplySn: Int
     let officialLeaveSn: Int?
@@ -463,7 +463,7 @@ struct LeaveApplyDoc: Identifiable, Codable, Sendable, Hashable {
     var id: Int { leaveApplyDocSn }
 }
 
-struct LeaveApplyAPIResponse: Codable, Sendable {
+nonisolated struct LeaveApplyAPIResponse: Codable, Sendable {
     let statusCode: Int
     let result: Int?
     let message: LeaveMessage?
@@ -496,7 +496,7 @@ nonisolated struct LeaveSelCouResponse: Codable, Sendable {
     nonisolated var success: Bool { statusCode == 200 && result }
 }
 
-struct LeaveBoolResponse: Codable, Sendable {
+nonisolated struct LeaveBoolResponse: Codable, Sendable {
     let statusCode: Int
     let result: Bool
     let message: LeaveMessage?

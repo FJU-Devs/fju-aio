@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Attendance Rollcall (per-course history)
 
-struct AttendanceRollcall: Identifiable, Codable, Sendable {
+nonisolated struct AttendanceRollcall: Identifiable, Codable, Sendable {
     let rollcall_id: Int
     let title: String
     let rollcall_time: String
@@ -35,13 +35,13 @@ struct AttendanceRollcall: Identifiable, Codable, Sendable {
     }
 }
 
-struct AttendanceRollcallsResponse: Codable {
+nonisolated struct AttendanceRollcallsResponse: Codable, Sendable {
     let rollcalls: [AttendanceRollcall]
 }
 
 // MARK: - Active Rollcall (check-in)
 
-struct Rollcall: Identifiable, Codable, Sendable {
+nonisolated struct Rollcall: Identifiable, Codable, Sendable {
     let rollcall_id: Int
     let course_id: Int?
     let course_title: String
@@ -68,7 +68,7 @@ struct Rollcall: Identifiable, Codable, Sendable {
     var isAlreadyCheckedIn: Bool { status == "on_call_fine" || status == "on_call" || status == "late" }
 }
 
-struct RollcallsResponse: Codable {
+nonisolated struct RollcallsResponse: Codable, Sendable {
     let rollcalls: [Rollcall]
 }
 

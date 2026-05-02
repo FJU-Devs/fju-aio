@@ -41,7 +41,7 @@ final class CredentialStore: Sendable {
 
     // MARK: - Friend Credentials (keyed by empNo)
 
-    private func friendKey(_ empNo: String) -> String { "com.fju.friend.creds.\(empNo)" }
+    private nonisolated func friendKey(_ empNo: String) -> String { "com.fju.friend.creds.\(empNo)" }
 
     nonisolated func saveFriendCredentials(empNo: String, username: String, password: String) throws {
         let creds = LDAPCredentials(username: username, password: password)
