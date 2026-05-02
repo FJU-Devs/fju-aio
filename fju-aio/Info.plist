@@ -41,6 +41,8 @@
 	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>用於將學期行事曆事件加入您的行事曆</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>用於將作業 Todo 加入您的提醒事項</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>用於透過藍牙與附近的朋友交換資料</string>
 	<key>NSCameraUsageDescription</key>

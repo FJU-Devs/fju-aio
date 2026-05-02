@@ -1,13 +1,9 @@
 import SwiftUI
-import EventKit
-import EventKitUI
 
 struct CalendarEventRow: View {
     let event: CalendarEvent
     @State private var calendarAccessDenied = false
     @State private var addResult: AddResult?
-
-    private let eventStore = EKEventStore()
 
     var body: some View {
         HStack(spacing: 12) {
@@ -75,70 +71,22 @@ struct CalendarEventRow: View {
     private func addToFJUCalendar() {
         Task {
             do {
-                let granted = try await eventStore.requestFullAccessToEvents()
-                guard granted else {
-                    await MainActor.run { calendarAccessDenied = true }
-                    return
-                }
-                let calendar = try fjuLocalCalendar()
-                // Skip if duplicate already exists in FJU calendar
-                let end = event.endDate ?? Foundation.Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
-                let predicate = eventStore.predicateForEvents(withStart: event.startDate, end: end, calendars: [calendar])
-                let existing = eventStore.events(matching: predicate)
-                if existing.contains(where: { $0.title == event.title }) {
-                    await MainActor.run {
-                        addResult = AddResult(title: "已存在", message: "「\(event.title)」已在「輔大行事曆」中。")
-                    }
-                    return
-                }
-                let ekEvent = makeEKEvent(calendar: calendar)
-                try eventStore.save(ekEvent, span: .thisEvent)
+                let summary = try await EventKitSyncService.shared.addCalendarEvent(event)
                 await MainActor.run {
-                    addResult = AddResult(title: "已加入", message: "「\(event.title)」已加入「輔大行事曆」。")
+                    if summary.added > 0 {
+                        addResult = AddResult(title: "已加入", message: "「\(event.title)」已加入「\(summary.targetName)」。")
+                    } else {
+                        addResult = AddResult(title: "已存在", message: "「\(event.title)」已在「\(summary.targetName)」中。")
+                    }
                 }
+            } catch EventKitSyncService.SyncError.calendarAccessDenied {
+                await MainActor.run { calendarAccessDenied = true }
             } catch {
                 await MainActor.run {
                     addResult = AddResult(title: "加入失敗", message: error.localizedDescription)
                 }
             }
         }
-    }
-
-    private func fjuLocalCalendar() throws -> EKCalendar {
-        let name = "輔大行事曆"
-        if let existing = eventStore.calendars(for: .event).first(where: { $0.title == name }) {
-            return existing
-        }
-        let source = eventStore.sources.first(where: { $0.sourceType == .calDAV && $0.title.lowercased().contains("icloud") })
-            ?? eventStore.sources.first(where: { $0.sourceType == .local })
-            ?? eventStore.sources.first(where: { !$0.calendars(for: .event).isEmpty })
-            ?? eventStore.defaultCalendarForNewEvents?.source
-        guard let source else { throw CalendarError.noSource }
-        let calendar = EKCalendar(for: .event, eventStore: eventStore)
-        calendar.title = name
-        calendar.source = source
-        calendar.cgColor = UIColor.systemBlue.cgColor
-        try eventStore.saveCalendar(calendar, commit: true)
-        return calendar
-    }
-
-    private func makeEKEvent(calendar: EKCalendar) -> EKEvent {
-        let ekEvent = EKEvent(eventStore: eventStore)
-        ekEvent.title = event.title
-        ekEvent.startDate = event.startDate
-        ekEvent.endDate = event.endDate ?? Foundation.Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
-        ekEvent.notes = event.description
-        ekEvent.calendar = calendar
-        let components = Foundation.Calendar.current.dateComponents([.hour, .minute], from: event.startDate)
-        if components.hour == 0 && components.minute == 0 {
-            ekEvent.isAllDay = true
-        }
-        return ekEvent
-    }
-
-    private enum CalendarError: LocalizedError {
-        case noSource
-        var errorDescription: String? { "找不到可用的行事曆來源。" }
     }
 
     private struct AddResult {

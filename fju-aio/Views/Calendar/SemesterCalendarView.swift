@@ -1,5 +1,4 @@
 import SwiftUI
-import EventKit
 
 struct SemesterCalendarView: View {
     @Environment(\.fjuService) private var service
@@ -8,13 +7,13 @@ struct SemesterCalendarView: View {
     @State private var isLoading = true
     @State private var selectedCategory: CalendarEvent.EventCategory?
     @State private var errorMessage: String?
+    @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
 
     // Bulk-add state
     @State private var isBulkAdding = false
     @State private var bulkAddResult: BulkAddResult?
     @State private var calendarAccessDenied = false
 
-    private let eventStore = EKEventStore()
     private let semester = "113-2"
     private let cache = AppCache.shared
 
@@ -150,44 +149,22 @@ struct SemesterCalendarView: View {
 
     // MARK: - Bulk Add
 
-    private static let localCalendarName = "輔大行事曆"
-
     private func bulkAddToCalendar() {
         Task {
             do {
-                let granted = try await eventStore.requestFullAccessToEvents()
-                guard granted else {
-                    await MainActor.run { calendarAccessDenied = true }
-                    return
-                }
                 await MainActor.run { isBulkAdding = true }
-
-                let targetCalendar = try fjuLocalCalendar()
-                let eventsToAdd = filteredEvents
-                var added = 0
-                var skipped = 0
-
-                for event in eventsToAdd {
-                    // Check for duplicates only within the FJU calendar
-                    let end = event.endDate ?? Calendar.current.date(byAdding: .day, value: 1, to: event.startDate) ?? event.startDate
-                    let predicate = eventStore.predicateForEvents(withStart: event.startDate, end: end, calendars: [targetCalendar])
-                    let existing = eventStore.events(matching: predicate)
-                    if existing.contains(where: { $0.title == event.title }) {
-                        skipped += 1
-                    } else {
-                        let ekEvent = makeEKEvent(from: event, calendar: targetCalendar)
-                        try eventStore.save(ekEvent, span: .thisEvent)
-                        added += 1
-                    }
-                }
-
-                try eventStore.commit()
+                let summary = try await EventKitSyncService.shared.syncCalendarEvents(filteredEvents)
 
                 await MainActor.run {
                     isBulkAdding = false
-                    var message = "已加入「\(Self.localCalendarName)」\(added) 個事件。"
-                    if skipped > 0 { message += "\n略過 \(skipped) 個重複事件。" }
+                    var message = "已加入「\(summary.targetName)」\(summary.added) 個事件。"
+                    if summary.skipped > 0 { message += "\n略過 \(summary.skipped) 個重複事件。" }
                     bulkAddResult = BulkAddResult(title: "加入完成", message: message)
+                }
+            } catch EventKitSyncService.SyncError.calendarAccessDenied {
+                await MainActor.run {
+                    isBulkAdding = false
+                    calendarAccessDenied = true
                 }
             } catch {
                 await MainActor.run {
@@ -198,55 +175,13 @@ struct SemesterCalendarView: View {
         }
     }
 
-    /// Returns the existing "輔大行事曆" calendar, or creates it if it doesn't exist.
-    /// Prefers iCloud > local > any writable source so it works on all devices.
-    private func fjuLocalCalendar() throws -> EKCalendar {
-        let name = Self.localCalendarName
-        // Reuse existing calendar of any type with the same name
-        if let existing = eventStore.calendars(for: .event).first(where: { $0.title == name }) {
-            return existing
-        }
-        // Pick the best available source: iCloud first, then local, then any writable one
-        let preferredSource = eventStore.sources.first(where: { $0.sourceType == .calDAV && $0.title.lowercased().contains("icloud") })
-            ?? eventStore.sources.first(where: { $0.sourceType == .local })
-            ?? eventStore.sources.first(where: { !$0.calendars(for: .event).isEmpty })
-        guard let source = preferredSource ?? eventStore.defaultCalendarForNewEvents?.source else {
-            throw CalendarError.noLocalSource
-        }
-        let calendar = EKCalendar(for: .event, eventStore: eventStore)
-        calendar.title = name
-        calendar.source = source
-        calendar.cgColor = UIColor.systemBlue.cgColor
-        try eventStore.saveCalendar(calendar, commit: true)
-        return calendar
-    }
-
-    private func makeEKEvent(from event: CalendarEvent, calendar: EKCalendar) -> EKEvent {
-        let ekEvent = EKEvent(eventStore: eventStore)
-        ekEvent.title = event.title
-        ekEvent.startDate = event.startDate
-        ekEvent.endDate = event.endDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
-        ekEvent.notes = event.description
-        ekEvent.calendar = calendar
-        let components = Calendar.current.dateComponents([.hour, .minute], from: event.startDate)
-        if components.hour == 0 && components.minute == 0 {
-            ekEvent.isAllDay = true
-        }
-        return ekEvent
-    }
-
-    private enum CalendarError: LocalizedError {
-        case noLocalSource
-        var errorDescription: String? { "找不到本機行事曆來源，無法建立「\(localCalendarName)」行事曆。" }
-        private var localCalendarName: String { SemesterCalendarView.localCalendarName }
-    }
-
     // MARK: - Load
 
     private func loadEvents(forceRefresh: Bool) async {
         if !forceRefresh, let cached = cache.getCalendarEvents(semester: semester) {
             events = cached
             isLoading = false
+            await autoSyncIfNeeded(cached)
             return
         }
 
@@ -258,12 +193,18 @@ struct SemesterCalendarView: View {
                 let fetched = try await service.fetchCalendarEvents(semester: semester)
                 events = fetched
                 cache.setCalendarEvents(fetched, semester: semester)
+                await autoSyncIfNeeded(fetched)
             }
         } catch {
             errorMessage = "載入失敗: \(error.localizedDescription)"
         }
 
         isLoading = false
+    }
+
+    private func autoSyncIfNeeded(_ events: [CalendarEvent]) async {
+        guard autoSyncCalendar else { return }
+        try? await EventKitSyncService.shared.syncCalendarEvents(events)
     }
 
     private func filterChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
@@ -283,4 +224,3 @@ private struct BulkAddResult {
     let title: String
     let message: String
 }
-

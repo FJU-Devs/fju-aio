@@ -10,11 +10,15 @@ struct SettingsView: View {
     @State private var friendStore = FriendStore.shared
     @State private var profileAvatarURL: URL?
     @State private var showAvatarMessage = false
+    @State private var syncSettingsError: String?
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
+    private let cache = AppCache.shared
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @AppStorage("openLinksInApp") private var openLinksInApp = true
     @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
+    @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
+    @AppStorage(EventKitSyncService.autoSyncTodoKey) private var autoSyncTodo = false
     
     var body: some View {
         List {
@@ -98,6 +102,33 @@ struct SettingsView: View {
                     ))
                 }
             }
+
+            Section("自動同步") {
+                Toggle(isOn: Binding(
+                    get: { autoSyncCalendar },
+                    set: { updateAutoCalendarSync($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("自動同步學期行事曆")
+                        Text("載入或更新行事曆時，自動加入系統行事曆並略過重複事件")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Toggle(isOn: Binding(
+                    get: { autoSyncTodo },
+                    set: { updateAutoTodoSync($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("自動同步作業 Todo")
+                        Text("載入或更新作業時，自動加入提醒事項並略過重複待辦")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section("一般") {
                 Toggle("顯示同步狀態列", isOn: Binding(
                     get: { syncStatus.isEnabled },
@@ -184,6 +215,17 @@ struct SettingsView: View {
         } message: {
             Text("請前往 TronClass 更改這個頭貼")
         }
+        .alert(
+            "自動同步失敗",
+            isPresented: Binding(
+                get: { syncSettingsError != nil },
+                set: { if !$0 { syncSettingsError = nil } }
+            )
+        ) {
+            Button("確定", role: .cancel) { syncSettingsError = nil }
+        } message: {
+            Text(syncSettingsError ?? "")
+        }
     }
     
     private var versionString: String {
@@ -207,6 +249,64 @@ struct SettingsView: View {
         if let avatar = try? await TronClassAPIService.shared.getCurrentUserAvatarURL(),
            let url = URL(string: avatar) {
             profileAvatarURL = url
+        }
+    }
+
+    private func updateAutoCalendarSync(_ isEnabled: Bool) {
+        autoSyncCalendar = isEnabled
+        guard isEnabled else { return }
+
+        Task {
+            do {
+                let semester: String
+                if let cachedSemester = cache.getSemesters()?.first {
+                    semester = cachedSemester
+                } else {
+                    let semesters = try await FJUService.shared.fetchAvailableSemesters()
+                    cache.setSemesters(semesters)
+                    semester = semesters.first ?? "113-2"
+                }
+
+                let events: [CalendarEvent]
+                if let cachedEvents = cache.getCalendarEvents(semester: semester) {
+                    events = cachedEvents
+                } else {
+                    events = try await FJUService.shared.fetchCalendarEvents(semester: semester)
+                    cache.setCalendarEvents(events, semester: semester)
+                }
+
+                try await EventKitSyncService.shared.syncCalendarEvents(events)
+            } catch {
+                await MainActor.run {
+                    autoSyncCalendar = false
+                    syncSettingsError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func updateAutoTodoSync(_ isEnabled: Bool) {
+        autoSyncTodo = isEnabled
+        guard isEnabled else { return }
+
+        Task {
+            do {
+                let assignments: [Assignment]
+                if let cachedAssignments = cache.getAssignments() {
+                    assignments = cachedAssignments
+                } else {
+                    assignments = try await FJUService.shared.fetchAssignments()
+                    cache.setAssignments(assignments)
+                    WidgetDataWriter.shared.writeAssignmentData(assignments: assignments)
+                }
+
+                try await EventKitSyncService.shared.syncAssignments(assignments)
+            } catch {
+                await MainActor.run {
+                    autoSyncTodo = false
+                    syncSettingsError = error.localizedDescription
+                }
+            }
         }
     }
     

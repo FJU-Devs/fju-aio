@@ -13,6 +13,7 @@ struct HomeView: View {
     @State private var navigateToCampusMap = false
     @State private var bulletinNotifications: [TronClassNotification] = []
     @State private var selectedBulletin: TronClassNotification?
+    @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
 
     private let cache = AppCache.shared
 
@@ -263,6 +264,7 @@ struct HomeView: View {
                 isLoading = false
                 WidgetDataWriter.shared.writeCourseData(courses: cachedCourses, friends: FriendStore.shared.friends)
                 scheduleCourseNotifications(for: cachedCourses, calendarEvents: cachedCalendarEvents)
+                await autoSyncCalendarIfNeeded(cachedCalendarEvents)
                 return
             }
         }
@@ -284,9 +286,15 @@ struct HomeView: View {
                 todayCourses = all.filter { $0.dayOfWeek == todayKey }
                     .sorted { $0.startPeriod < $1.startPeriod }
                 scheduleCourseNotifications(for: all, calendarEvents: calendarEvents)
+                await autoSyncCalendarIfNeeded(calendarEvents)
             }
         } catch {}
         isLoading = false
+    }
+
+    private func autoSyncCalendarIfNeeded(_ events: [CalendarEvent]) async {
+        guard autoSyncCalendar else { return }
+        try? await EventKitSyncService.shared.syncCalendarEvents(events)
     }
 
     private func scheduleCourseNotifications(for courses: [Course], calendarEvents: [CalendarEvent]) {

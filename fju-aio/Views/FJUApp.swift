@@ -66,9 +66,27 @@ struct FJUApp: App {
                 cache.setCourses(c, semester: current)
                 cache.setCalendarEvents(e, semester: current)
                 WidgetDataWriter.shared.writeCourseData(courses: c, friends: FriendStore.shared.friends)
+                if EventKitSyncService.shared.isAutoCalendarSyncEnabled {
+                    try? await EventKitSyncService.shared.syncCalendarEvents(e)
+                }
+                if EventKitSyncService.shared.isAutoTodoSyncEnabled {
+                    Task { await preloadTodoSyncIfNeeded() }
+                }
             }
         } catch {
             // Non-fatal — HomeView will fetch on its own if cache is empty
+        }
+    }
+
+    @MainActor
+    private func preloadTodoSyncIfNeeded() async {
+        do {
+            let assignments = try await FJUService.shared.fetchAssignments()
+            AppCache.shared.setAssignments(assignments)
+            WidgetDataWriter.shared.writeAssignmentData(assignments: assignments)
+            try await EventKitSyncService.shared.syncAssignments(assignments)
+        } catch {
+            // Non-fatal — AssignmentsView will fetch and sync on its own.
         }
     }
 }
