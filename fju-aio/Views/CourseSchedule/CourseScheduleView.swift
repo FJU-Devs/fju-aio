@@ -1,4 +1,5 @@
 import SwiftUI
+import os.log
 
 struct CourseScheduleView: View {
     @Environment(\.fjuService) private var service
@@ -17,6 +18,7 @@ struct CourseScheduleView: View {
     private let timeColumnWidth: CGFloat = 38
     private let displayPeriods = 1...11
     private let cache = AppCache.shared
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "CourseSchedule")
 
     /// Friends who have a schedule snapshot for the selected semester.
     private var friendsWithSchedule: [FriendRecord] {
@@ -317,16 +319,25 @@ struct CourseScheduleView: View {
     private func loadSemesters(forceRefresh: Bool) async {
         // Use cached semesters if available
         if !forceRefresh, let cached = cache.getSemesters() {
-            availableSemesters = cached
-            if selectedSemester.isEmpty, let first = cached.first {
-                selectedSemester = first
+            logger.info("📅 loadSemesters using cache forceRefresh=\(forceRefresh, privacy: .public), cached=\(cached.description, privacy: .public)")
+            if cached.count > 6 {
+                logger.warning("⚠️ Cached semesters contains unusually many entries: \(cached.description, privacy: .public)")
+            } else {
+                availableSemesters = cached
+                if selectedSemester.isEmpty, let first = cached.first {
+                    selectedSemester = first
+                }
+                await loadCourses(forceRefresh: false)
+                return
             }
-            await loadCourses(forceRefresh: false)
-            return
         }
 
         do {
             let semesters = try await service.fetchAvailableSemesters()
+            logger.info("📅 loadSemesters fetched forceRefresh=\(forceRefresh, privacy: .public), semesters=\(semesters.description, privacy: .public)")
+            if semesters.count > 6 {
+                logger.warning("⚠️ Fetched semesters contains unusually many entries: \(semesters.description, privacy: .public)")
+            }
             availableSemesters = semesters
             cache.setSemesters(semesters)
             if selectedSemester.isEmpty, let first = semesters.first {

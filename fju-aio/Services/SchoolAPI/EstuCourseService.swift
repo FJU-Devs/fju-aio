@@ -54,12 +54,14 @@ actor EstuCourseService {
             guard let freshHTML = freshSession.loginResponseHTML else {
                 throw EstuError.sessionExpired
             }
-            let semesters = extractSemesterOptions(from: freshHTML)
+            let rawSemesters = extractSemesterOptions(from: freshHTML)
+            let semesters = try await filterSemestersWithCourses(rawSemesters, session: freshSession, startingHTML: freshHTML)
             logger.info("✅ Found \(semesters.count, privacy: .public) semesters")
             return semesters
         }
         
-        let semesters = extractSemesterOptions(from: html)
+        let rawSemesters = extractSemesterOptions(from: html)
+        let semesters = try await filterSemestersWithCourses(rawSemesters, session: session, startingHTML: html)
         
         logger.info("✅ Found \(semesters.count, privacy: .public) semesters")
         return semesters
@@ -175,6 +177,48 @@ actor EstuCourseService {
         
         return html
     }
+
+    private func filterSemestersWithCourses(_ semesters: [String], session: EstuSession, startingHTML: String) async throws -> [String] {
+        guard !semesters.isEmpty else { return [] }
+
+        logger.info("📅 Validating ESTU semesters against course rows: \(semesters.description, privacy: .public)")
+
+        var html = startingHTML
+        var validSemesters: [String] = []
+        var foundCourseSemester = false
+
+        for semester in semesters {
+            guard let semesterCode = convertToSemesterCode(semester) else { continue }
+
+            if extractCurrentSemester(from: html) != semester {
+                let viewState = try htmlParser.extractViewState(from: html)
+                html = try await switchSemester(session, to: semesterCode, viewState: viewState)
+            }
+
+            let currentSemester = extractCurrentSemester(from: html) ?? semester
+            let courses = (try? htmlParser.extractCourses(from: html, semester: currentSemester)) ?? []
+            logger.info("📅 Semester validation semester=\(semester, privacy: .public), currentSemester=\(currentSemester, privacy: .public), courseRows=\(courses.count, privacy: .public)")
+
+            if courses.isEmpty {
+                if foundCourseSemester {
+                    logger.info("📅 Stopping semester validation at first older empty semester: \(semester, privacy: .public)")
+                    break
+                }
+                continue
+            }
+
+            foundCourseSemester = true
+            validSemesters.append(semester)
+        }
+
+        if validSemesters.isEmpty {
+            logger.warning("⚠️ Semester validation found no course rows; falling back to raw DDL_YM semesters")
+            return semesters
+        }
+
+        logger.info("📅 Validated ESTU semesters with course rows: \(validSemesters.description, privacy: .public)")
+        return validSemesters
+    }
     
     // MARK: - Helper Methods
     
@@ -185,34 +229,88 @@ actor EstuCourseService {
     }
     
     private func extractCurrentSemester(from html: String) -> String? {
-        let pattern = #"<select[^>]*name="DDL_YM"[^>]*>.*?<option[^>]*selected[^>]*value="(\d+)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-              let range = Range(match.range(at: 1), in: html) else {
+        guard let selectHTML = extractSemesterSelectHTML(from: html) else {
+            logger.warning("⚠️ DDL_YM select not found while extracting current semester")
             return nil
         }
-        
-        let code = String(html[range])
-        guard code.count == 4 else { return nil }
-        let year = String(code.prefix(3))
-        let sem = String(code.suffix(1))
-        return "\(year)-\(sem)"
+
+        let selectedOptionPattern = #"<option\b(?=[^>]*\bselected\b)[^>]*\bvalue\s*=\s*["'](\d{4})["'][^>]*>"#
+        guard let code = firstMatch(in: selectHTML, pattern: selectedOptionPattern) else {
+            logger.warning("⚠️ No selected option found in DDL_YM. ddlCodes=\(self.optionCodes(in: selectHTML).description, privacy: .public)")
+            return nil
+        }
+
+        let semester = semesterIdentifier(from: code)
+        logger.info("📅 Current semester selectedCode=\(code, privacy: .public), semester=\(semester ?? "nil", privacy: .public)")
+        return semester
     }
     
     private func extractSemesterOptions(from html: String) -> [String] {
-        let pattern = #"<option[^>]*value="(\d{4})""#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let selectHTML = extractSemesterSelectHTML(from: html),
+              let regex = try? NSRegularExpression(pattern: #"<option\b[^>]*\bvalue\s*=\s*["'](\d{4})["'][^>]*>"#, options: [.caseInsensitive]) else {
+            logger.warning("⚠️ DDL_YM select not found while extracting available semesters. allFourDigitOptionCodes=\(self.optionCodes(in: html).description, privacy: .public)")
             return []
         }
         
-        let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
-        return matches.compactMap { match in
+        var seen = Set<String>()
+        let matches = regex.matches(in: selectHTML, range: NSRange(selectHTML.startIndex..., in: selectHTML))
+        let rawCodes = optionCodes(in: selectHTML)
+        let semesters = matches.compactMap { (match: NSTextCheckingResult) -> String? in
+            guard let range = Range(match.range(at: 1), in: selectHTML),
+                  let semester = self.semesterIdentifier(from: String(selectHTML[range])),
+                  seen.insert(semester).inserted else {
+                return nil
+            }
+            return semester
+        }
+
+        logger.info("📅 DDL_YM semester options rawCodes=\(rawCodes.description, privacy: .public), parsed=\(semesters.description, privacy: .public)")
+        if semesters.count > 6 {
+            logger.warning("⚠️ Parsed unusually many DDL_YM semesters: \(semesters.description, privacy: .public)")
+        }
+        return semesters
+    }
+
+    private func extractSemesterSelectHTML(from html: String) -> String? {
+        let pattern = #"<select\b(?=[^>]*(?:\bname\s*=\s*["']DDL_YM["']|\bid\s*=\s*["']DDL_YM["']))[^>]*>.*?</select>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range, in: html) else {
+            return nil
+        }
+
+        return String(html[range])
+    }
+
+    private func semesterIdentifier(from code: String) -> String? {
+        guard code.count == 4,
+              let semester = code.last,
+              semester == "1" || semester == "2" else {
+            return nil
+        }
+
+        let year = String(code.prefix(3))
+        return "\(year)-\(semester)"
+    }
+
+    private func firstMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+
+        return String(text[range])
+    }
+
+    private func optionCodes(in html: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"<option\b[^>]*\bvalue\s*=\s*["'](\d{4})["'][^>]*>"#, options: [.caseInsensitive]) else {
+            return []
+        }
+
+        return regex.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { match in
             guard let range = Range(match.range(at: 1), in: html) else { return nil }
-            let code = String(html[range])
-            guard code.count == 4 else { return nil }
-            let year = String(code.prefix(3))
-            let sem = String(code.suffix(1))
-            return "\(year)-\(sem)"
+            return String(html[range])
         }
     }
     
