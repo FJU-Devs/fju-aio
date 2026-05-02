@@ -4,19 +4,23 @@ import os.log
 struct CourseScheduleView: View {
     @Environment(\.fjuService) private var service
     @Environment(SyncStatusManager.self) private var syncStatus
+    @AppStorage("myProfile.displayName") private var myDisplayName = ""
     @State private var courses: [Course] = []
     @State private var isLoading = true
     @State private var availableSemesters: [String] = []
     @State private var selectedSemester: String = ""
-    @State private var selectedCourse: Course?
+    @State private var selectedCourseDetail: CourseDetailSelection?
+    @State private var selectedFriendSlotDetail: FriendSlotDetail?
     @State private var mapHighlightLocation: String? = nil
     @State private var navigateToCampusMap = false
     @State private var showFriendPicker = false
     @State private var visibleFriendIds: Set<String> = []
+    @AppStorage("courseSchedule.showSelfCourses") private var showSelfCourses = true
 
     private let periodHeight: CGFloat = 56
     private let timeColumnWidth: CGFloat = 38
     private let displayPeriods = 1...11
+    private let visibleFriendIdsStoragePrefix = "courseSchedule.visibleFriendIds."
     private let cache = AppCache.shared
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "CourseSchedule")
 
@@ -96,7 +100,7 @@ struct CourseScheduleView: View {
                                 Button {
                                     if semester != selectedSemester {
                                         selectedSemester = semester
-                                        visibleFriendIds = []
+                                        restoreVisibleFriendIds()
                                         Task { await loadCourses(forceRefresh: false) }
                                     }
                                 } label: {
@@ -120,20 +124,28 @@ struct CourseScheduleView: View {
                 }
             }
         }
-        .sheet(item: $selectedCourse) { course in
-            CourseDetailSheet(course: course, onOpenMap: {
-                mapHighlightLocation = course.location
-                selectedCourse = nil
+        .sheet(item: $selectedCourseDetail) { selection in
+            CourseDetailSheet(
+                course: selection.course,
+                overlappingFriendCourses: selection.overlappingFriendCourses,
+                onOpenMap: {
+                mapHighlightLocation = selection.course.location
+                selectedCourseDetail = nil
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                     navigateToCampusMap = true
                 }
             })
             .presentationDetents([.medium, .large])
         }
+        .sheet(item: $selectedFriendSlotDetail) { detail in
+            FriendSlotDetailSheet(detail: detail)
+                .presentationDetents([.medium])
+        }
         .sheet(isPresented: $showFriendPicker) {
             FriendSchedulePickerSheet(
                 friends: friendsWithSchedule,
                 visibleIds: $visibleFriendIds,
+                showSelfCourses: $showSelfCourses,
                 colorForIndex: friendColor
             )
             .presentationDetents([.medium])
@@ -143,6 +155,9 @@ struct CourseScheduleView: View {
         }
         .task {
             await loadSemesters(forceRefresh: false)
+        }
+        .onChange(of: visibleFriendIds) { _, _ in
+            saveVisibleFriendIds()
         }
     }
 
@@ -196,7 +211,9 @@ struct CourseScheduleView: View {
         ZStack(alignment: .topLeading) {
             gridBackground(colWidth: colWidth)
             friendCourseBlocks(colWidth: colWidth)
-            courseBlocks(colWidth: colWidth)
+            if showSelfCourses {
+                courseBlocks(colWidth: colWidth)
+            }
         }
         .frame(
             width: timeColumnWidth + CGFloat(5) * colWidth,
@@ -236,17 +253,45 @@ struct CourseScheduleView: View {
         }
     }
 
+    @ViewBuilder
     private func courseBlocks(colWidth: CGFloat) -> some View {
+        let layouts = activeScheduleLayouts
+
         ForEach(courses.filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5 && displayPeriods.contains($0.startPeriod) }) { course in
             let dayIndex = course.dayOfWeekNumber - 1
-            let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5
+            let blockLayout = ScheduleBlockLayout(
+                id: "self-\(course.id)",
+                isSelf: true,
+                dayIndex: dayIndex,
+                startPeriod: course.startPeriod,
+                endPeriod: course.endPeriod,
+                order: selfCourseLayoutOrder,
+                labelHeight: estimatedSelfLabelHeight(for: course)
+            )
+            let overlap = overlapLayout(for: blockLayout, in: layouts)
+            let metrics = overlapMetrics(for: blockLayout, overlap: overlap, colWidth: colWidth)
+            let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5 + metrics.xOffset
             let y = CGFloat(course.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
 
-            CourseCell(course: course, periodHeight: periodHeight)
+            CourseCell(
+                course: course,
+                periodHeight: periodHeight,
+                contentAlignment: metrics.alignment,
+                contentYOffset: metrics.textYOffset,
+                backgroundOpacity: metrics.backgroundOpacity,
+                contentOpacity: metrics.contentOpacity,
+                contentFrameAlignment: metrics.contentFrameAlignment,
+                ownerBadgeText: visibleFriendIds.isEmpty ? nil : selfCourseBadgeText,
+                ownerBadgeColor: .white
+            )
                 .frame(width: colWidth - 3)
                 .offset(x: x, y: y)
+                .zIndex(metrics.zIndex + 20)
                 .onTapGesture {
-                    selectedCourse = course
+                    selectedCourseDetail = CourseDetailSelection(
+                        course: course,
+                        overlappingFriendCourses: friendOccurrences(overlapping: course)
+                    )
                 }
         }
     }
@@ -255,6 +300,7 @@ struct CourseScheduleView: View {
 
     @ViewBuilder
     private func friendCourseBlocks(colWidth: CGFloat) -> some View {
+        let layouts = activeScheduleLayouts
         let visibleFriends = friendsWithSchedule
             .enumerated()
             .filter { visibleFriendIds.contains($0.element.id) }
@@ -262,7 +308,7 @@ struct CourseScheduleView: View {
         ForEach(Array(visibleFriends), id: \.element.id) { indexedFriend in
             let (friendIndex, friend) = indexedFriend
             let color = friendColor(for: friendIndex)
-            let initials = friendInitials(friend.displayName)
+            let badgeText = ownerBadgeText(friend.displayName, fallback: "?")
 
             if let snapshot = friend.cachedProfile?.scheduleSnapshot {
                 ForEach(snapshot.courses.filter {
@@ -271,34 +317,251 @@ struct CourseScheduleView: View {
                     displayPeriods.contains($0.startPeriod)
                 }) { publicCourse in
                     let dayIndex = publicCourseDayNumber(publicCourse.dayOfWeek) - 1
-                    let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5
+                    let blockLayout = ScheduleBlockLayout(
+                        id: "friend-\(friend.id)-\(publicCourse.id)",
+                        isSelf: false,
+                        dayIndex: dayIndex,
+                        startPeriod: publicCourse.startPeriod,
+                        endPeriod: publicCourse.endPeriod,
+                        order: friendIndex + 1,
+                        labelHeight: estimatedFriendLabelHeight(for: publicCourse)
+                    )
+                    let overlap = overlapLayout(for: blockLayout, in: layouts)
+                    let metrics = overlapMetrics(for: blockLayout, overlap: overlap, colWidth: colWidth)
+                    let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5 + metrics.xOffset
                     let y = CGFloat(publicCourse.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
                     let height = CGFloat(publicCourse.endPeriod - publicCourse.startPeriod + 1) * periodHeight - 2
 
                     FriendCourseCell(
                         course: publicCourse,
-                        friendInitials: initials,
+                        friendInitials: badgeText,
                         color: color,
-                        periodHeight: periodHeight
+                        periodHeight: periodHeight,
+                        contentAlignment: metrics.alignment,
+                        contentYOffset: metrics.textYOffset,
+                        backgroundOpacity: metrics.backgroundOpacity,
+                        contentOpacity: metrics.contentOpacity
                     )
                     .frame(width: colWidth - 3, height: height)
                     .offset(x: x, y: y)
+                    .zIndex(metrics.zIndex)
+                    .onTapGesture {
+                        let occurrence = FriendCourseOccurrence(
+                            friendId: friend.id,
+                            friendName: friend.displayName,
+                            badgeText: badgeText,
+                            color: color,
+                            course: publicCourse
+                        )
+
+                        if let selfCourse = selfCourse(overlapping: publicCourse) {
+                            selectedCourseDetail = CourseDetailSelection(
+                                course: selfCourse,
+                                overlappingFriendCourses: friendOccurrences(overlapping: selfCourse)
+                            )
+                        } else {
+                            selectedFriendSlotDetail = FriendSlotDetail(
+                                title: "這個時段中...",
+                                subtitle: "星期\(publicCourse.dayOfWeek) 第\(FJUPeriod.periodLabel(for: publicCourse.startPeriod))-\(FJUPeriod.periodLabel(for: publicCourse.endPeriod))節",
+                                courses: friendOccurrences(overlapping: occurrence)
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func friendInitials(_ name: String) -> String {
-        // Take last character of Chinese name or first letter of English name
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty { return "?" }
-        // If mostly ASCII, use first letter
-        let asciiCount = trimmed.filter { $0.isASCII && $0.isLetter }.count
-        if asciiCount > trimmed.count / 2 {
-            return String(trimmed.prefix(1)).uppercased()
+    private var activeScheduleLayouts: [ScheduleBlockLayout] {
+        var layouts: [ScheduleBlockLayout] = []
+
+        if showSelfCourses {
+            layouts += courses
+                .filter {
+                    $0.dayOfWeekNumber >= 1 &&
+                    $0.dayOfWeekNumber <= 5 &&
+                    displayPeriods.contains($0.startPeriod)
+                }
+                .map {
+                    ScheduleBlockLayout(
+                        id: "self-\($0.id)",
+                        isSelf: true,
+                        dayIndex: $0.dayOfWeekNumber - 1,
+                        startPeriod: $0.startPeriod,
+                        endPeriod: $0.endPeriod,
+                        order: selfCourseLayoutOrder,
+                        labelHeight: estimatedSelfLabelHeight(for: $0)
+                    )
+                }
         }
-        // Chinese name: last character
-        return String(trimmed.suffix(1))
+
+        for (friendIndex, friend) in friendsWithSchedule.enumerated() where visibleFriendIds.contains(friend.id) {
+            guard let snapshot = friend.cachedProfile?.scheduleSnapshot else { continue }
+            layouts += snapshot.courses
+                .filter {
+                    publicCourseDayNumber($0.dayOfWeek) >= 1 &&
+                    publicCourseDayNumber($0.dayOfWeek) <= 5 &&
+                    displayPeriods.contains($0.startPeriod)
+                }
+                .map {
+                    ScheduleBlockLayout(
+                        id: "friend-\(friend.id)-\($0.id)",
+                        isSelf: false,
+                        dayIndex: publicCourseDayNumber($0.dayOfWeek) - 1,
+                        startPeriod: $0.startPeriod,
+                        endPeriod: $0.endPeriod,
+                        order: friendIndex + 1,
+                        labelHeight: estimatedFriendLabelHeight(for: $0)
+                    )
+                }
+        }
+
+        return layouts
+    }
+
+    private func overlapLayout(
+        for block: ScheduleBlockLayout,
+        in layouts: [ScheduleBlockLayout]
+    ) -> (index: Int, count: Int, laneYOffset: CGFloat) {
+        let overlapping = layouts
+            .filter { $0.dayIndex == block.dayIndex && $0.overlaps(block) }
+            .sorted {
+                if $0.startPeriod != $1.startPeriod { return $0.startPeriod < $1.startPeriod }
+                if $0.endPeriod != $1.endPeriod { return $0.endPeriod < $1.endPeriod }
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.id < $1.id
+            }
+
+        guard overlapping.count > 1,
+              let index = overlapping.firstIndex(where: { $0.id == block.id }) else {
+            return (0, 1, 0)
+        }
+
+        let groupStartPeriod = overlapping.map(\.startPeriod).min() ?? block.startPeriod
+        let absoluteLaneYOffset = overlapping[..<index].reduce(CGFloat(0)) { $0 + $1.labelHeight + 8 }
+        let blockYOffsetFromGroup = CGFloat(block.startPeriod - groupStartPeriod) * periodHeight
+        let relativeLaneYOffset = max(0, absoluteLaneYOffset - blockYOffsetFromGroup)
+        return (index, overlapping.count, relativeLaneYOffset)
+    }
+
+    private func overlapMetrics(
+        for block: ScheduleBlockLayout,
+        overlap: (index: Int, count: Int, laneYOffset: CGFloat),
+        colWidth: CGFloat
+    ) -> OverlapMetrics {
+        let fullWidth = colWidth - 3
+        guard overlap.count > 1 else {
+            return OverlapMetrics(
+                width: fullWidth,
+                xOffset: 0,
+                textYOffset: 0,
+                backgroundOpacity: 1,
+                contentOpacity: 1,
+                contentFrameAlignment: .center,
+                alignment: .leading,
+                zIndex: 0
+            )
+        }
+
+        let blockHeight = CGFloat(block.endPeriod - block.startPeriod + 1) * periodHeight - 2
+        let maxTextYOffset = max(0, blockHeight - block.labelHeight - 4)
+        let textYOffset = block.isSelf ? 0 : min(overlap.laneYOffset, maxTextYOffset)
+
+        return OverlapMetrics(
+            width: fullWidth,
+            xOffset: 0,
+            textYOffset: textYOffset,
+            backgroundOpacity: block.isSelf ? 0.55 : 0.32,
+            contentOpacity: block.isSelf ? 1 : 0.86,
+            contentFrameAlignment: block.isSelf ? .topLeading : .center,
+            alignment: .leading,
+            zIndex: block.isSelf ? 100 : Double(overlap.index)
+        )
+    }
+
+    private var selfCourseLayoutOrder: Int {
+        0
+    }
+
+    private func estimatedSelfLabelHeight(for course: Course) -> CGFloat {
+        let duration = course.endPeriod - course.startPeriod + 1
+        let nameLineCount: CGFloat = course.name.count > 7 && duration > 1 ? 2 : 1
+        let locationHeight: CGFloat = duration > 1 ? 13 : 0
+        return 10 + nameLineCount * 17 + locationHeight
+    }
+
+    private func estimatedFriendLabelHeight(for course: PublicCourseInfo) -> CGFloat {
+        let duration = course.endPeriod - course.startPeriod + 1
+        let locationHeight: CGFloat = duration > 1 && !course.location.isEmpty ? 11 : 0
+        return 10 + 18 + locationHeight
+    }
+
+    private var selfCourseBadgeText: String {
+        ownerBadgeText(myDisplayName, fallback: "我")
+    }
+
+    private func ownerBadgeText(_ name: String, fallback: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return fallback }
+
+        if trimmed.allSatisfy({ $0.isASCII }) {
+            let parts = trimmed.split(separator: " ")
+            let lastName = parts.last.map(String.init) ?? trimmed
+            return String(lastName.prefix(1)).uppercased()
+        }
+
+        return String(trimmed.prefix(1))
+    }
+
+    private func selfCourse(overlapping publicCourse: PublicCourseInfo) -> Course? {
+        guard showSelfCourses else { return nil }
+
+        return courses.first {
+            $0.dayOfWeekNumber == publicCourseDayNumber(publicCourse.dayOfWeek) &&
+            $0.startPeriod <= publicCourse.endPeriod &&
+            $0.endPeriod >= publicCourse.startPeriod
+        }
+    }
+
+    private func friendOccurrences(overlapping selfCourse: Course) -> [FriendCourseOccurrence] {
+        friendOccurrences().filter {
+            publicCourseDayNumber($0.course.dayOfWeek) == selfCourse.dayOfWeekNumber &&
+            $0.course.startPeriod <= selfCourse.endPeriod &&
+            $0.course.endPeriod >= selfCourse.startPeriod
+        }
+    }
+
+    private func friendOccurrences(overlapping occurrence: FriendCourseOccurrence) -> [FriendCourseOccurrence] {
+        friendOccurrences().filter {
+            publicCourseDayNumber($0.course.dayOfWeek) == publicCourseDayNumber(occurrence.course.dayOfWeek) &&
+            $0.course.startPeriod <= occurrence.course.endPeriod &&
+            $0.course.endPeriod >= occurrence.course.startPeriod
+        }
+    }
+
+    private func friendOccurrences() -> [FriendCourseOccurrence] {
+        friendsWithSchedule.enumerated().flatMap { friendIndex, friend -> [FriendCourseOccurrence] in
+            guard visibleFriendIds.contains(friend.id),
+                  let snapshot = friend.cachedProfile?.scheduleSnapshot else { return [] }
+
+            let color = friendColor(for: friendIndex)
+            let badgeText = ownerBadgeText(friend.displayName, fallback: "?")
+            return snapshot.courses
+                .filter {
+                    publicCourseDayNumber($0.dayOfWeek) >= 1 &&
+                    publicCourseDayNumber($0.dayOfWeek) <= 5 &&
+                    displayPeriods.contains($0.startPeriod)
+                }
+                .map {
+                    FriendCourseOccurrence(
+                        friendId: friend.id,
+                        friendName: friend.displayName,
+                        badgeText: badgeText,
+                        color: color,
+                        course: $0
+                    )
+                }
+        }
     }
 
     private func publicCourseDayNumber(_ dayOfWeek: String) -> Int {
@@ -327,6 +590,7 @@ struct CourseScheduleView: View {
                 if selectedSemester.isEmpty, let first = cached.first {
                     selectedSemester = first
                 }
+                restoreVisibleFriendIds()
                 await loadCourses(forceRefresh: false)
                 return
             }
@@ -343,11 +607,13 @@ struct CourseScheduleView: View {
             if selectedSemester.isEmpty, let first = semesters.first {
                 selectedSemester = first
             }
+            restoreVisibleFriendIds()
             await loadCourses(forceRefresh: forceRefresh)
         } catch {
             if selectedSemester.isEmpty {
                 selectedSemester = "114-2"
             }
+            restoreVisibleFriendIds()
             await loadCourses(forceRefresh: forceRefresh)
         }
     }
@@ -391,6 +657,36 @@ struct CourseScheduleView: View {
         guard parts.count == 2 else { return semester }
         return "\(parts[0])學年 第\(parts[1])學期"
     }
+
+    private func restoreVisibleFriendIds() {
+        guard !selectedSemester.isEmpty else { return }
+
+        let availableIds = Set(friendsWithSchedule.map(\.id))
+        let savedIds = loadVisibleFriendIds(for: selectedSemester)
+        visibleFriendIds = savedIds.intersection(availableIds)
+    }
+
+    private func saveVisibleFriendIds() {
+        guard !selectedSemester.isEmpty else { return }
+
+        let ids = Array(visibleFriendIds).sorted()
+        if let data = try? JSONEncoder().encode(ids) {
+            UserDefaults.standard.set(data, forKey: visibleFriendIdsStorageKey(for: selectedSemester))
+        }
+    }
+
+    private func loadVisibleFriendIds(for semester: String) -> Set<String> {
+        guard let data = UserDefaults.standard.data(forKey: visibleFriendIdsStorageKey(for: semester)),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+
+        return Set(ids)
+    }
+
+    private func visibleFriendIdsStorageKey(for semester: String) -> String {
+        visibleFriendIdsStoragePrefix + semester
+    }
 }
 
 // MARK: - Friend Course Cell
@@ -400,28 +696,32 @@ private struct FriendCourseCell: View {
     let friendInitials: String
     let color: Color
     let periodHeight: CGFloat
+    let contentAlignment: HorizontalAlignment
+    let contentYOffset: CGFloat
+    let backgroundOpacity: Double
+    let contentOpacity: Double
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(color.opacity(0.18))
+                .fill(color.opacity(0.18 * backgroundOpacity))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(color.opacity(0.6), lineWidth: 1.5)
+                        .strokeBorder(color.opacity(0.6 * backgroundOpacity), lineWidth: 1.5)
                 )
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: contentAlignment, spacing: 2) {
                 HStack(spacing: 3) {
                     // Friend initial badge
                     Text(friendInitials)
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.white.opacity(contentOpacity))
                         .frame(width: 14, height: 14)
-                        .background(Circle().fill(color))
+                        .background(Circle().fill(color.opacity(contentOpacity)))
 
                     Text(course.name)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(color)
+                        .foregroundStyle(color.opacity(contentOpacity))
                         .lineLimit(1)
                 }
 
@@ -429,15 +729,133 @@ private struct FriendCourseCell: View {
                    CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2 > periodHeight * 0.9 {
                     Text(course.location)
                         .font(.system(size: 8, weight: .regular))
-                        .foregroundStyle(color.opacity(0.8))
+                        .foregroundStyle(color.opacity(0.8 * contentOpacity))
                         .lineLimit(1)
                 }
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: contentAlignment == .trailing ? .trailing : .leading)
+            .offset(y: contentYOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+private struct CourseDetailSelection: Identifiable {
+    let course: Course
+    let overlappingFriendCourses: [FriendCourseOccurrence]
+
+    var id: String {
+        [course.id, overlappingFriendCourses.map(\.id).joined(separator: ",")].joined(separator: "|")
+    }
+}
+
+struct FriendCourseOccurrence: Identifiable {
+    let friendId: String
+    let friendName: String
+    let badgeText: String
+    let color: Color
+    let course: PublicCourseInfo
+
+    var id: String {
+        "\(friendId)-\(course.id)"
+    }
+}
+
+private struct FriendSlotDetail: Identifiable {
+    let title: String
+    let subtitle: String
+    let courses: [FriendCourseOccurrence]
+
+    var id: String {
+        [title, subtitle, courses.map(\.id).joined(separator: ",")].joined(separator: "|")
+    }
+}
+
+private struct FriendSlotDetailSheet: View {
+    let detail: FriendSlotDetail
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(detail.courses) { occurrence in
+                        FriendCourseOccurrenceRow(occurrence: occurrence)
+                    }
+                } header: {
+                    Text(detail.subtitle)
+                }
+            }
+            .navigationTitle(detail.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct FriendCourseOccurrenceRow: View {
+    let occurrence: FriendCourseOccurrence
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(occurrence.badgeText)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(occurrence.color))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(occurrence.course.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(occurrence.friendName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(friendCourseTimeAndLocation(occurrence.course))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func friendCourseTimeAndLocation(_ course: PublicCourseInfo) -> String {
+        let start = FJUPeriod.periodLabel(for: course.startPeriod)
+        let end = FJUPeriod.periodLabel(for: course.endPeriod)
+        let time = start == end ? "星期\(course.dayOfWeek) 第\(start)節" : "星期\(course.dayOfWeek) 第\(start)-\(end)節"
+        return course.location.isEmpty ? time : "\(time) · \(course.location)"
+    }
+}
+
+private struct ScheduleBlockLayout: Identifiable, Hashable {
+    let id: String
+    let isSelf: Bool
+    let dayIndex: Int
+    let startPeriod: Int
+    let endPeriod: Int
+    let order: Int
+    let labelHeight: CGFloat
+
+    func overlaps(_ other: ScheduleBlockLayout) -> Bool {
+        startPeriod <= other.endPeriod && endPeriod >= other.startPeriod
+    }
+}
+
+private struct OverlapMetrics {
+    let width: CGFloat
+    let xOffset: CGFloat
+    let textYOffset: CGFloat
+    let backgroundOpacity: Double
+    let contentOpacity: Double
+    let contentFrameAlignment: Alignment
+    let alignment: HorizontalAlignment
+    let zIndex: Double
 }
 
 // MARK: - Friend Schedule Picker Sheet
@@ -445,12 +863,19 @@ private struct FriendCourseCell: View {
 private struct FriendSchedulePickerSheet: View {
     let friends: [FriendRecord]
     @Binding var visibleIds: Set<String>
+    @Binding var showSelfCourses: Bool
     let colorForIndex: (Int) -> Color
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Toggle(isOn: $showSelfCourses) {
+                        Label("顯示自己的課表", systemImage: "person.crop.rectangle")
+                    }
+                }
+
                 Section {
                     ForEach(Array(friends.enumerated()), id: \.element.id) { index, friend in
                         HStack(spacing: 12) {

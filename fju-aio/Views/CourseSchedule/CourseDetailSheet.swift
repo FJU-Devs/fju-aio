@@ -3,6 +3,7 @@ import MapKit
 
 struct CourseDetailSheet: View {
     let course: Course
+    var overlappingFriendCourses: [FriendCourseOccurrence] = []
     var onOpenMap: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
@@ -65,6 +66,14 @@ struct CourseDetailSheet: View {
                     }
                 } header: {
                     Text("修課名單")
+                }
+
+                if !overlappingFriendCourses.isEmpty {
+                    Section("這個時段你的朋友也在修...") {
+                        ForEach(overlappingFriendCourses) { occurrence in
+                            FriendCourseOccurrenceRow(occurrence: occurrence)
+                        }
+                    }
                 }
 
                 // Course info
