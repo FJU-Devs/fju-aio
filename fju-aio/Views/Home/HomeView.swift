@@ -277,6 +277,7 @@ struct HomeView: View {
                 cache.setSemesters(semesters)
                 cache.setCourses(all, semester: currentSemester)
                 cache.setCalendarEvents(calendarEvents, semester: currentSemester)
+                WidgetDataWriter.shared.writeCourseData(courses: all, friends: FriendStore.shared.friends)
 
                 let todayKey = todayDayString()
                 todayCourses = all.filter { $0.dayOfWeek == todayKey }

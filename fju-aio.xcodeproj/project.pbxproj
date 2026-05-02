@@ -40,6 +40,7 @@
 
 /* Begin PBXFileReference section */
 		524AAA042F9EEA5000C3F8F9 /* fju_aio.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = fju_aio.icon; sourceTree = "<group>"; };
+		529879362FA6235500353571 /* CourseWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CourseWidgetExtension.entitlements; sourceTree = "<group>"; };
 		52D5DFF42F693F22002EE05C /* fju-aio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "fju-aio.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		52FB82AA2F9ED94000BC5EAE /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		52FB82AC2F9ED94000BC5EAE /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
@@ -105,6 +106,7 @@
 		52D5DFEB2F693F22002EE05C = {
 			isa = PBXGroup;
 			children = (
+				529879362FA6235500353571 /* CourseWidgetExtension.entitlements */,
 				52D5DFF62F693F22002EE05C /* fju-aio */,
 				52FB830F2F9EDAE500BC5EAE /* CourseWidget */,
 				52FB82A92F9ED94000BC5EAE /* Frameworks */,
@@ -517,6 +519,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = CourseWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = G4LXL97NF9;
@@ -549,6 +552,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = CourseWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = G4LXL97NF9;

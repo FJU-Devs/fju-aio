@@ -1,5 +1,6 @@
 import Foundation
 import os.log
+import WidgetKit
 
 // MARK: - FriendStore
 // Friend list persisted in UserDefaults (public profile data only).
@@ -47,6 +48,8 @@ final class FriendStore {
         friends[idx].cachedProfile = profile
         friends[idx].displayName = profile.displayName
         save()
+        // Refresh widget with updated friend schedule data
+        WidgetCenter.shared.reloadTimelines(ofKind: "CourseScheduleWidget")
     }
 
     func removeFriend(id: String) {

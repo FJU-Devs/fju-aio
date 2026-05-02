@@ -61,6 +61,7 @@ struct AssignmentsView: View {
         if !forceRefresh, let cached = cache.getAssignments() {
             assignments = cached
             isLoading = false
+            WidgetDataWriter.shared.writeAssignmentData(assignments: cached)
             return
         }
 
@@ -69,6 +70,7 @@ struct AssignmentsView: View {
             let fetched = try await service.fetchAssignments()
             assignments = fetched
             cache.setAssignments(fetched)
+            WidgetDataWriter.shared.writeAssignmentData(assignments: fetched)
         } catch {}
         isLoading = false
     }

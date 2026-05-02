@@ -634,6 +634,7 @@ struct CourseScheduleView: View {
                 let fetched = try await service.fetchCourses(semester: selectedSemester)
                 courses = fetched
                 cache.setCourses(fetched, semester: selectedSemester)
+                WidgetDataWriter.shared.writeCourseData(courses: fetched, friends: FriendStore.shared.friends)
             }
         } catch {
             courses = []
