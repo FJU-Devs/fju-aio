@@ -43,6 +43,7 @@ private struct FriendListContent: View {
     @State private var showScanner = false
     @State private var showMyQR = false
     @State private var showNearby = false
+    @State private var nearbyService = NearbyFriendService.shared
     @State private var scanError: String?
     @State private var lastScannedInfo: String?
     @State private var sisSession: SISSession?
@@ -130,7 +131,12 @@ private struct FriendListContent: View {
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 4) {
                     Button {
-                        showNearby = true
+                        Task {
+                            if sisSession == nil {
+                                await loadSession(force: true)
+                            }
+                            showNearby = true
+                        }
                     } label: {
                         Image(systemName: "antenna.radiowaves.left.and.right")
                     }
@@ -170,16 +176,8 @@ private struct FriendListContent: View {
         }
         .sheet(isPresented: $showNearby) {
             NearbyAddView(session: sisSession) { peer in
-                let payload = ProfileQRPayload(
-                    version: 1,
-                    type: "profile",
-                    cloudKitRecordName: peer.id,
-                    empNo: peer.empNo,
-                    displayName: peer.displayName,
-                    userId: peer.userId
-                )
-                friendStore.addFriend(from: payload)
-                fetchAndCacheProfile(recordName: peer.id)
+                addFriend(peer)
+                nearbyService.sendAddRequest(to: peer)
             }
         }
         .task { await loadSession() }
@@ -255,6 +253,8 @@ private struct FriendListContent: View {
             friendStore.addFriend(from: profilePayload)
             lastScannedInfo = "已新增好友：\(payload.displayName)（\(payload.empNo)）"
             fetchAndCacheProfile(recordName: payload.cloudKitRecordName)
+            startNearbyIfPossible()
+            nearbyService.sendAddRequest(to: payload)
         case .combined(let payload):
             if payload.cloudKitRecordName == myToken {
                 scanError = "這是你自己的 QR Code，無法加自己為好友。"
@@ -290,6 +290,29 @@ private struct FriendListContent: View {
             }
         }
     }
+
+    private func addFriend(_ peer: NearbyPeerProfile) {
+        let payload = ProfileQRPayload(
+            version: 1,
+            type: "profile",
+            cloudKitRecordName: peer.id,
+            empNo: peer.empNo,
+            displayName: peer.displayName,
+            userId: peer.userId
+        )
+        friendStore.addFriend(from: payload)
+        fetchAndCacheProfile(recordName: peer.id)
+    }
+
+    private func startNearbyIfPossible() {
+        guard let sisSession else { return }
+        let myPayload = ProfileQRService.makeMutualPayload(
+            userId: sisSession.userId,
+            empNo: sisSession.empNo,
+            displayName: sisSession.userName
+        )
+        nearbyService.start(profile: myPayload)
+    }
 }
 
 // MARK: - My Profile QR Sheet (inline, shown from friend list)
@@ -301,6 +324,8 @@ private struct MyProfileQRSheet: View {
     let errorMessage: String?
     let onRetry: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var nearbyService = NearbyFriendService.shared
+    @State private var friendStore = FriendStore.shared
 
     var body: some View {
         NavigationStack {
@@ -344,6 +369,31 @@ private struct MyProfileQRSheet: View {
                     }
                 }
 
+                if !nearbyService.incomingAddRequests.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(nearbyService.incomingAddRequests) { peer in
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(peer.displayName) 已加你為好友")
+                                        .font(.body.weight(.medium))
+                                    Text("要加回對方嗎？")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("加好友") {
+                                    addIncomingPeer(peer)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                }
+
                 // Share credentials toggle
                 Toggle(isOn: $sharesCredentials) {
                     Label("包含點名授權", systemImage: "person.badge.key.fill")
@@ -370,6 +420,17 @@ private struct MyProfileQRSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("關閉") { dismiss() } }
             }
+        }
+        .task {
+            guard let session else { return }
+            nearbyService.start(profile: ProfileQRService.makeMutualPayload(
+                userId: session.userId,
+                empNo: session.empNo,
+                displayName: session.userName
+            ))
+        }
+        .onDisappear {
+            nearbyService.stop()
         }
     }
 
@@ -409,12 +470,29 @@ private struct MyProfileQRSheet: View {
         }
         return "缺少學校帳號資料。"
     }
+
+    private func addIncomingPeer(_ peer: NearbyPeerProfile) {
+        let payload = ProfileQRPayload(
+            version: 1,
+            type: "profile",
+            cloudKitRecordName: peer.id,
+            empNo: peer.empNo,
+            displayName: peer.displayName,
+            userId: peer.userId
+        )
+        friendStore.addFriend(from: payload)
+        nearbyService.dismissIncomingRequest(id: peer.id)
+        Task {
+            if let profile = try? await CloudKitProfileService.shared.fetchProfile(recordName: peer.id) {
+                await MainActor.run {
+                    friendStore.updateCachedProfile(profile, for: peer.id)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Mutual Add Sheet
-// Two-phase flow:
-//   Phase 1 — scan friend's mutual QR → they are added locally
-//   Phase 2 — show your own mutual QR for them to scan back
 
 private struct MutualAddSheet: View {
     let session: SISSession?
@@ -422,21 +500,10 @@ private struct MutualAddSheet: View {
     let onAddedFriend: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var phase: Phase = .scanning
-
-    enum Phase {
-        case scanning
-        case showMyQR(scannedName: String)
-    }
 
     var body: some View {
         NavigationStack {
-            switch phase {
-            case .scanning:
-                scannerPhase
-            case .showMyQR(let name):
-                myQRPhase(scannedName: name)
-            }
+            scannerPhase
         }
     }
 
@@ -445,13 +512,6 @@ private struct MutualAddSheet: View {
     private var scannerPhase: some View {
         ZStack {
             QRScannerView { qrString in
-                guard case .mutual(let payload) = ProfileQRService.parse(qrString: qrString),
-                      payload.cloudKitRecordName != ProfileQRService.stableDeviceToken() else {
-                    // Fall back to legacy handling for non-mutual QRs
-                    onAddedFriend(qrString)
-                    return
-                }
-                phase = .showMyQR(scannedName: payload.displayName)
                 onAddedFriend(qrString)
             }
             .ignoresSafeArea()
@@ -475,71 +535,6 @@ private struct MutualAddSheet: View {
                 Button("取消") { dismiss() }.foregroundStyle(.white)
             }
         }
-    }
-
-    // MARK: Phase 2 — Show own QR for friend to scan back
-
-    private func myQRPhase(scannedName: String) -> some View {
-        VStack(spacing: 24) {
-            VStack(spacing: 6) {
-                Text("已新增 \(scannedName)")
-                    .font(.headline)
-                Text("現在讓對方掃描你的 QR Code")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.top, 8)
-
-            if let session, let image = makeMutualQRImage(session: session) {
-                Image(uiImage: image)
-                    .interpolation(.none)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 260, height: 260)
-                    .padding()
-                    .background(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(radius: 8)
-            } else {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.secondary.opacity(0.15))
-                    .frame(width: 260, height: 260)
-                    .overlay { ProgressView() }
-            }
-
-            if let session {
-                VStack(spacing: 4) {
-                    Text(session.userName).font(.headline)
-                    Text(session.empNo).font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            Button("完成") { dismiss() }
-                .buttonStyle(.borderedProminent)
-                .padding(.bottom, 32)
-        }
-        .padding(.horizontal)
-        .navigationTitle("我的 QR Code")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("關閉") { dismiss() }
-            }
-        }
-    }
-
-    private func makeMutualQRImage(session: SISSession) -> UIImage? {
-        ProfileQRService.generateQRImage(
-            for: ProfileQRService.makeMutualPayload(
-                userId: session.userId,
-                empNo: session.empNo,
-                displayName: session.userName
-            ),
-            size: 600
-        )
     }
 }
 

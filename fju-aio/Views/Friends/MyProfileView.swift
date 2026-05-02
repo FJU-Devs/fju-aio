@@ -5,6 +5,7 @@ import os.log
 
 struct MyProfileView: View {
     @Environment(AuthenticationManager.self) private var authManager
+    @Environment(\.fjuService) private var service
 
     @AppStorage("myProfile.displayName") private var displayName = ""
     @AppStorage("myProfile.bio") private var bio = ""
@@ -242,7 +243,7 @@ struct MyProfileView: View {
             let effectiveName = displayName.isEmpty ? session.userName : displayName
             snapshotLogger.info("📤 publishProfileNow: shareSchedule=\(self.shareSchedule, privacy: .public), userId=\(session.userId, privacy: .private), empNo=\(session.empNo, privacy: .private)")
 
-            let snapshot = shareSchedule ? buildSnapshot(session: session) : nil
+            let snapshot = shareSchedule ? await buildSnapshot(session: session) : nil
             snapshotLogger.info("📦 publishProfileNow: snapshot is \(snapshot == nil ? "nil" : "present (\(snapshot!.courses.count) courses, semester \(snapshot!.semester))", privacy: .public)")
 
             let profile = PublicProfile(
@@ -285,24 +286,36 @@ struct MyProfileView: View {
 
     private let snapshotLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.fju.aio", category: "ScheduleSnapshot")
 
-    private func buildSnapshot(session: SISSession) -> FriendScheduleSnapshot? {
+    private func buildSnapshot(session: SISSession) async -> FriendScheduleSnapshot? {
         let cache = AppCache.shared
 
-        let semesters = cache.getSemesters()
-        snapshotLogger.info("📅 buildSnapshot: cached semesters = \(semesters?.description ?? "nil", privacy: .public)")
-
-        guard let semesters, let semester = semesters.first else {
-            snapshotLogger.warning("⚠️ buildSnapshot: no cached semesters — snapshot will be nil")
+        let semesters: [String]
+        if let cached = cache.getSemesters(), !cached.isEmpty {
+            semesters = cached
+            snapshotLogger.info("📅 buildSnapshot: cached semesters = \(cached.description, privacy: .public)")
+        } else if let fetched = try? await service.fetchAvailableSemesters(), !fetched.isEmpty {
+            semesters = fetched
+            cache.setSemesters(fetched)
+            snapshotLogger.info("📅 buildSnapshot: fetched semesters = \(fetched.description, privacy: .public)")
+        } else {
+            snapshotLogger.warning("⚠️ buildSnapshot: no semesters available — snapshot will be nil")
             return nil
         }
 
-        let courses = cache.getCourses(semester: semester)
-        snapshotLogger.info("📚 buildSnapshot: semester=\(semester, privacy: .public), cached courses count = \(courses?.count ?? -1, privacy: .public)")
-
-        guard let courses, !courses.isEmpty else {
-            snapshotLogger.warning("⚠️ buildSnapshot: no cached courses for semester \(semester, privacy: .public) — snapshot will be nil")
+        let semester = semesters[0]
+        let courses: [Course]
+        if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
+            courses = cached
+            snapshotLogger.info("📚 buildSnapshot: semester=\(semester, privacy: .public), cached courses count = \(cached.count, privacy: .public)")
+        } else if let fetched = try? await service.fetchCourses(semester: semester), !fetched.isEmpty {
+            courses = fetched
+            cache.setCourses(fetched, semester: semester)
+            snapshotLogger.info("📚 buildSnapshot: semester=\(semester, privacy: .public), fetched courses count = \(fetched.count, privacy: .public)")
+        } else {
+            snapshotLogger.warning("⚠️ buildSnapshot: no courses for semester \(semester, privacy: .public) — snapshot will be nil")
             return nil
         }
+
 
         let publicCourses = courses.map { PublicCourseInfo(from: $0) }
         snapshotLogger.info("✅ buildSnapshot: building snapshot with \(publicCourses.count, privacy: .public) courses for semester \(semester, privacy: .public)")
@@ -328,8 +341,21 @@ struct MyProfileView: View {
             displayName: displayName.isEmpty ? session.userName : displayName,
             bio: bio.isEmpty ? nil : bio,
             socialLinks: socialLinks,
-            scheduleSnapshot: shareSchedule ? buildSnapshot(session: session) : nil,
+            scheduleSnapshot: shareSchedule ? buildCachedSnapshot(session: session) : nil,
             lastUpdated: Date()
+        )
+    }
+
+    private func buildCachedSnapshot(session: SISSession) -> FriendScheduleSnapshot? {
+        let cache = AppCache.shared
+        guard let semesters = cache.getSemesters(), let semester = semesters.first,
+              let courses = cache.getCourses(semester: semester), !courses.isEmpty else { return nil }
+        return FriendScheduleSnapshot(
+            ownerUserId: session.userId,
+            ownerDisplayName: session.userName,
+            semester: semester,
+            courses: courses.map { PublicCourseInfo(from: $0) },
+            updatedAt: Date()
         )
     }
 }

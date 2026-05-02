@@ -7,6 +7,7 @@ import os.log
 
 private let kServiceUUID        = CBUUID(string: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")
 private let kProfileCharUUID    = CBUUID(string: "A1B2C3D4-E5F6-7890-ABCD-EF1234567891")
+private let kAddRequestCharUUID = CBUUID(string: "A1B2C3D4-E5F6-7890-ABCD-EF1234567892")
 
 // MARK: - Peer Profile
 
@@ -28,7 +29,7 @@ final class NearbyFriendService: NSObject {
     static let shared = NearbyFriendService()
 
     private(set) var discoveredPeers: [NearbyPeerProfile] = []
-    private(set) var confirmedPeers: [NearbyPeerProfile] = []
+    private(set) var incomingAddRequests: [NearbyPeerProfile] = []
     private(set) var isActive = false
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.fju.aio", category: "NearbyFriend")
@@ -42,6 +43,9 @@ final class NearbyFriendService: NSObject {
     private var centralManager: CBCentralManager?
     /// peripherals being held in memory while we read from them
     private var pendingPeripherals: [CBPeripheral] = []
+    private var peripheralsByRecordName: [String: CBPeripheral] = [:]
+    private var addRequestCharacteristicsByRecordName: [String: CBCharacteristic] = [:]
+    private var pendingAddRequestRecordNames: Set<String> = []
     /// track which peripheral IDs we have already processed
     private var seenPeripheralIDs: Set<UUID> = []
 
@@ -79,9 +83,12 @@ final class NearbyFriendService: NSObject {
         centralManager = nil
 
         pendingPeripherals = []
+        peripheralsByRecordName = [:]
+        addRequestCharacteristicsByRecordName = [:]
+        pendingAddRequestRecordNames = []
         seenPeripheralIDs = []
         discoveredPeers = []
-        confirmedPeers = []
+        incomingAddRequests = []
         myProfileData = nil
         profileCharacteristic = nil
         isActive = false
@@ -90,6 +97,31 @@ final class NearbyFriendService: NSObject {
 
     func removePeer(id: String) {
         discoveredPeers.removeAll { $0.id == id }
+    }
+
+    func dismissIncomingRequest(id: String) {
+        incomingAddRequests.removeAll { $0.id == id }
+    }
+
+    func sendAddRequest(to peer: NearbyPeerProfile) {
+        sendAddRequest(toRecordName: peer.id)
+    }
+
+    func sendAddRequest(to payload: MutualQRPayload) {
+        sendAddRequest(toRecordName: payload.cloudKitRecordName)
+    }
+
+    private func sendAddRequest(toRecordName recordName: String) {
+        guard recordName != ProfileQRService.stableDeviceToken() else { return }
+        pendingAddRequestRecordNames.insert(recordName)
+        logger.info("📨 Queued add request for \(recordName, privacy: .public)")
+
+        if let peripheral = peripheralsByRecordName[recordName],
+           let characteristic = addRequestCharacteristicsByRecordName[recordName] {
+            writeAddRequest(to: peripheral, characteristic: characteristic, recordName: recordName)
+        } else if centralManager?.state == .poweredOn {
+            startScanning()
+        }
     }
 
     // MARK: - Peripheral setup (called once CBPeripheralManager is powered on)
@@ -105,8 +137,15 @@ final class NearbyFriendService: NSObject {
         )
         profileCharacteristic = characteristic
 
+        let addRequestCharacteristic = CBMutableCharacteristic(
+            type: kAddRequestCharUUID,
+            properties: [.write, .writeWithoutResponse],
+            value: nil,
+            permissions: [.writeable]
+        )
+
         let service = CBMutableService(type: kServiceUUID, primary: true)
-        service.characteristics = [characteristic]
+        service.characteristics = [characteristic, addRequestCharacteristic]
         pm.add(service)
     }
 
@@ -126,6 +165,14 @@ final class NearbyFriendService: NSObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
         logger.info("🔍 Scanning for nearby peers")
+    }
+
+    private func writeAddRequest(to peripheral: CBPeripheral, characteristic: CBCharacteristic, recordName: String) {
+        guard let data = myProfileData else { return }
+        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(data, for: characteristic, type: writeType)
+        pendingAddRequestRecordNames.remove(recordName)
+        logger.info("📨 Sent add request to \(recordName, privacy: .public)")
     }
 }
 
@@ -164,6 +211,35 @@ extension NearbyFriendService: CBPeripheralManagerDelegate {
                 self.logger.error("❌ Advertising failed: \(error.localizedDescription, privacy: .public)")
             } else {
                 self.logger.info("📡 Advertising started")
+            }
+        }
+    }
+
+    nonisolated func peripheralManager(
+        _ peripheral: CBPeripheralManager,
+        didReceiveWrite requests: [CBATTRequest]
+    ) {
+        Task { @MainActor in
+            for request in requests where request.characteristic.uuid == kAddRequestCharUUID {
+                guard let value = request.value,
+                      let payload = try? JSONDecoder().decode(MutualQRPayload.self, from: value),
+                      payload.cloudKitRecordName != ProfileQRService.stableDeviceToken() else {
+                    peripheral.respond(to: request, withResult: .invalidAttributeValueLength)
+                    continue
+                }
+
+                let peer = NearbyPeerProfile(
+                    id: payload.cloudKitRecordName,
+                    empNo: payload.empNo,
+                    displayName: payload.displayName,
+                    userId: payload.userId
+                )
+
+                if !self.incomingAddRequests.contains(where: { $0.id == peer.id }) {
+                    self.incomingAddRequests.append(peer)
+                    self.logger.info("📥 Incoming add request from \(peer.displayName, privacy: .public)")
+                }
+                peripheral.respond(to: request, withResult: .success)
             }
         }
     }
@@ -239,19 +315,27 @@ extension NearbyFriendService: CBPeripheralDelegate {
                 return
             }
             self.logger.info("✅ Service found — discovering characteristics")
-            peripheral.discoverCharacteristics([kProfileCharUUID], for: service)
+            peripheral.discoverCharacteristics([kProfileCharUUID, kAddRequestCharUUID], for: service)
         }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
             guard error == nil,
-                  let char = service.characteristics?.first(where: { $0.uuid == kProfileCharUUID }) else {
+                  let profileChar = service.characteristics?.first(where: { $0.uuid == kProfileCharUUID }) else {
                 self.logger.error("❌ Characteristic discovery failed: \(error?.localizedDescription ?? "not found", privacy: .public)")
                 return
             }
+            if let addRequestChar = service.characteristics?.first(where: { $0.uuid == kAddRequestCharUUID }) {
+                for (recordName, storedPeripheral) in self.peripheralsByRecordName where storedPeripheral == peripheral {
+                    self.addRequestCharacteristicsByRecordName[recordName] = addRequestChar
+                    if self.pendingAddRequestRecordNames.contains(recordName) {
+                        self.writeAddRequest(to: peripheral, characteristic: addRequestChar, recordName: recordName)
+                    }
+                }
+            }
             self.logger.info("📖 Reading profile characteristic")
-            peripheral.readValue(for: char)
+            peripheral.readValue(for: profileChar)
         }
     }
 
@@ -285,12 +369,23 @@ extension NearbyFriendService: CBPeripheralDelegate {
 
             self.logger.info("✅ Received profile: \(peer.displayName, privacy: .public) (\(peer.empNo, privacy: .public))")
 
+            self.peripheralsByRecordName[peer.id] = peripheral
+            if let service = peripheral.services?.first(where: { $0.uuid == kServiceUUID }),
+               let addRequestChar = service.characteristics?.first(where: { $0.uuid == kAddRequestCharUUID }) {
+                self.addRequestCharacteristicsByRecordName[peer.id] = addRequestChar
+                if self.pendingAddRequestRecordNames.contains(peer.id) {
+                    self.writeAddRequest(to: peripheral, characteristic: addRequestChar, recordName: peer.id)
+                }
+            }
+
             if !self.discoveredPeers.contains(where: { $0.id == peer.id }),
-               !self.confirmedPeers.contains(where: { $0.id == peer.id }) {
+               !self.incomingAddRequests.contains(where: { $0.id == peer.id }) {
                 self.discoveredPeers.append(peer)
             }
 
-            self.centralManager?.cancelPeripheralConnection(peripheral)
+            if !self.pendingAddRequestRecordNames.contains(peer.id) {
+                self.centralManager?.cancelPeripheralConnection(peripheral)
+            }
         }
     }
 }

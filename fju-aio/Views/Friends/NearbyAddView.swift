@@ -2,9 +2,8 @@ import SwiftUI
 
 // MARK: - NearbyAddView
 // Both devices advertise their profile via BLE and scan for each other.
-// When a peer is discovered (profile already read), the user taps "加好友"
-// to add them. The add happens on both sides independently since each device
-// reads the other's characteristic.
+// Tapping "加好友" adds locally and writes an add request to the peer, so the
+// other side can confirm adding back.
 
 struct NearbyAddView: View {
     let session: SISSession?
@@ -48,6 +47,14 @@ struct NearbyAddView: View {
                 // MARK: Discovered peers (profile already read — ready to add)
                 let pending = nearbyService.discoveredPeers.filter { !addedIds.contains($0.id) }
                 let added   = nearbyService.discoveredPeers.filter {  addedIds.contains($0.id) }
+
+                if !nearbyService.incomingAddRequests.isEmpty {
+                    Section("邀請") {
+                        ForEach(nearbyService.incomingAddRequests) { peer in
+                            incomingRequestRow(peer)
+                        }
+                    }
+                }
 
                 if !pending.isEmpty {
                     Section("附近的人") {
@@ -95,14 +102,8 @@ struct NearbyAddView: View {
                     }
                 }
             }
-            .task {
-                guard let session else { return }
-                let payload = ProfileQRService.makeMutualPayload(
-                    userId: session.userId,
-                    empNo: session.empNo,
-                    displayName: session.userName
-                )
-                nearbyService.start(profile: payload)
+            .task(id: session?.empNo) {
+                startNearby()
             }
             .onDisappear {
                 nearbyService.stop()
@@ -143,6 +144,47 @@ struct NearbyAddView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func startNearby() {
+        guard let session else { return }
+        let payload = ProfileQRService.makeMutualPayload(
+            userId: session.userId,
+            empNo: session.empNo,
+            displayName: session.userName
+        )
+        nearbyService.start(profile: payload)
+    }
+
+    private func incomingRequestRow(_ peer: NearbyPeerProfile) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.green.opacity(0.15))
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: "person.badge.plus")
+                        .foregroundStyle(.green)
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(peer.displayName) 已加你為好友")
+                    .font(.body)
+                Text("要加回對方嗎？")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("加好友") {
+                addedIds.insert(peer.id)
+                onAddPeer(peer)
+                nearbyService.dismissIncomingRequest(id: peer.id)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
         }
         .padding(.vertical, 2)
     }

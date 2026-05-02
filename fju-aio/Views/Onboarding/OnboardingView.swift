@@ -318,6 +318,7 @@ struct OnboardingView: View {
 /// it advances the page by resetting the binding and calling `onSaved`.
 private struct OnboardingProfilePage: View {
     @Environment(AuthenticationManager.self) private var authManager
+    @Environment(\.fjuService) private var service
 
     /// Parent sets this to true → we save → then call onSaved
     @Binding var onContinueTapped: Bool
@@ -569,7 +570,7 @@ private struct OnboardingProfilePage: View {
         defer { isSaving = false }
 
         let effectiveName = displayName.isEmpty ? session.userName : displayName
-        let snapshot: FriendScheduleSnapshot? = shareSchedule ? buildSnapshot(session: session) : nil
+        let snapshot: FriendScheduleSnapshot? = shareSchedule ? await buildSnapshot(session: session) : nil
         let profile = PublicProfile(
             cloudKitRecordName: ProfileQRService.stableDeviceToken(),
             userId: session.userId,
@@ -622,10 +623,30 @@ private struct OnboardingProfilePage: View {
         }
     }
 
-    private func buildSnapshot(session: SISSession) -> FriendScheduleSnapshot? {
+    private func buildSnapshot(session: SISSession) async -> FriendScheduleSnapshot? {
         let cache = AppCache.shared
-        guard let semesters = cache.getSemesters(), let semester = semesters.first,
-              let courses = cache.getCourses(semester: semester), !courses.isEmpty else { return nil }
+
+        let semesters: [String]
+        if let cached = cache.getSemesters(), !cached.isEmpty {
+            semesters = cached
+        } else if let fetched = try? await service.fetchAvailableSemesters(), !fetched.isEmpty {
+            semesters = fetched
+            cache.setSemesters(fetched)
+        } else {
+            return nil
+        }
+
+        let semester = semesters[0]
+        let courses: [Course]
+        if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
+            courses = cached
+        } else if let fetched = try? await service.fetchCourses(semester: semester), !fetched.isEmpty {
+            courses = fetched
+            cache.setCourses(fetched, semester: semester)
+        } else {
+            return nil
+        }
+
         return FriendScheduleSnapshot(
             ownerUserId: session.userId,
             ownerDisplayName: session.userName,
