@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @AppStorage("openLinksInApp") private var openLinksInApp = true
     @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
+    @AppStorage(AppStartupSettings.syncDuringSplashKey) private var syncDuringSplash = true
     @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
     @AppStorage(EventKitSyncService.autoSyncTodoKey) private var autoSyncTodo = false
     
@@ -104,6 +105,15 @@ struct SettingsView: View {
             }
 
             Section("自動同步") {
+                Toggle(isOn: $syncDuringSplash) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("啟動時先同步資料")
+                        Text("關閉後會先進入首頁，再於背景慢慢載入課程、行事曆與 Live Activity 排程")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Toggle(isOn: Binding(
                     get: { autoSyncCalendar },
                     set: { updateAutoCalendarSync($0) }

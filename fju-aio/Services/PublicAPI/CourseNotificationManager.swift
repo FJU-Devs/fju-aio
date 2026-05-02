@@ -404,6 +404,8 @@ final class CourseNotificationManager {
 
     private var activeActivityIDs: [String: String] = [:]
     private var lastCourseSnapshot: [Course] = []
+    private var lastRemoteScheduleSyncSignature: String?
+    private var inFlightRemoteScheduleSyncSignature: String?
 
     private func runningActivity(for course: Course) -> Activity<CourseActivityAttributes>? {
         Activity<CourseActivityAttributes>.activities.first {
@@ -456,6 +458,20 @@ final class CourseNotificationManager {
             return
         }
 
+        let syncSignature = remoteScheduleSyncSignature(
+            userId: identity.userId,
+            deviceId: identity.deviceId,
+            semester: semester,
+            semesterEndDate: semesterEndDate,
+            schedules: schedules
+        )
+        guard syncSignature != lastRemoteScheduleSyncSignature,
+              syncSignature != inFlightRemoteScheduleSyncSignature else {
+            print("[CourseNotification] Live Activity 伺服器排程未變更，跳過重複同步")
+            return
+        }
+        inFlightRemoteScheduleSyncSignature = syncSignature
+
         let payload = PushToStartSemesterSyncPayload(
             userId: identity.userId,
             deviceId: identity.deviceId,
@@ -466,11 +482,49 @@ final class CourseNotificationManager {
         await MainActor.run { SyncStatusManager.shared.begin("正在同步課程通知排程…") }
         let success = await postJSON(to: "\(serverBaseURL)/push-to-start/sync-semester", body: payload)
         await MainActor.run { SyncStatusManager.shared.end() }
+        inFlightRemoteScheduleSyncSignature = nil
         if success {
+            lastRemoteScheduleSyncSignature = syncSignature
             print("[CourseNotification] ✅ 已向伺服器同步整學期 Live Activities: \(semester) \(schedules.count)")
         } else {
             print("[CourseNotification] ⚠️ 課程 Live Activity 伺服器排程失敗")
         }
+    }
+
+    private func remoteScheduleSyncSignature(
+        userId: String,
+        deviceId: String,
+        semester: String,
+        semesterEndDate: Date,
+        schedules: [RemoteCourseActivitySchedule]
+    ) -> String {
+        let scheduleSignature = schedules
+            .map {
+                [
+                    $0.courseId,
+                    $0.courseName,
+                    $0.location,
+                    $0.instructor,
+                    String($0.pushAt),
+                    String($0.classStartDate),
+                    String($0.classEndDate),
+                    $0.initialPhase.rawValue,
+                    String($0.endAt ?? 0),
+                    String($0.dismissalDate ?? 0)
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+        return [
+            userId,
+            deviceId,
+            semester,
+            String(unixSeconds(semesterEndDate)),
+            String(minutesBefore),
+            String(notifyBefore),
+            String(notifyStart),
+            String(notifyEnd),
+            scheduleSignature
+        ].joined(separator: "#")
     }
 
     private func remoteSchedules(
