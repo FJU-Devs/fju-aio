@@ -454,7 +454,7 @@ struct CourseLargeView: View {
             ForEach(Array(days.enumerated()), id: \.offset) { index, day in
                 Text(day)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(index == todayIndex ? Color.accentColor : .secondary)
+                    .foregroundStyle(index == todayIndex ? Color.accentColor : Color.secondary)
                     .frame(width: dayColWidth, height: headerHeight)
             }
         }
@@ -501,6 +501,7 @@ struct CourseLargeView: View {
 
             TimetableCellView(
                 name: course.name,
+                subtitle: course.location,
                 colorHex: course.colorHex,
                 width: dayColWidth - 2,
                 height: h
@@ -531,12 +532,19 @@ struct CourseLargeView: View {
                         .strokeBorder(Color(hex: course.colorHex).opacity(0.7), lineWidth: 1)
                 )
                 .overlay(alignment: .topLeading) {
-                    Text(course.name)
-                        .font(.system(size: 6, weight: .medium))
-                        .foregroundStyle(Color(hex: course.colorHex))
-                        .lineLimit(2)
-                        .padding(.horizontal, 2)
-                        .padding(.vertical, 2)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(course.name)
+                            .font(.system(size: 6, weight: .medium))
+                            .lineLimit(h > 28 ? 2 : 1)
+                        if h > 28, !course.location.isEmpty {
+                            Text(course.location)
+                                .font(.system(size: 5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                    }
+                    .foregroundStyle(Color(hex: course.colorHex))
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
                 }
                 .frame(width: dayColWidth - 2, height: h)
                 .offset(x: x, y: y)
@@ -564,6 +572,7 @@ struct CourseLargeView: View {
 
 struct TimetableCellView: View {
     let name: String
+    let subtitle: String
     let colorHex: String
     let width: CGFloat
     let height: CGFloat
@@ -572,12 +581,20 @@ struct TimetableCellView: View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 3)
                 .fill(Color(hex: colorHex))
-            Text(name)
-                .font(.system(size: 7, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(height > 28 ? 3 : 1)
-                .padding(.horizontal, 2)
-                .padding(.vertical, 2)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.system(size: 7, weight: .semibold))
+                    .lineLimit(height > 28 ? 2 : 1)
+                if height > 28, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 6, weight: .semibold))
+                        .lineLimit(1)
+                        .opacity(0.9)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
         }
         .frame(width: width, height: height)
     }

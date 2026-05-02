@@ -63,6 +63,31 @@ final class WidgetDataWriter {
         }
         WidgetCenter.shared.reloadTimelines(ofKind: "TodoListWidget")
     }
+
+    // MARK: - Classroom Data
+
+    func writeClassroomData(index: ClassroomScheduleIndex, room: String) {
+        let normalizedRoom = ClassroomScheduleConstants.normalizedRoom(room)
+        guard !normalizedRoom.isEmpty else { return }
+
+        let widgetCourses = ClassroomScheduleConstants.weekdays.flatMap { weekday in
+            ClassroomScheduleConstants.periods.flatMap { period in
+                index.courses(room: normalizedRoom, weekday: weekday, period: period).map {
+                    WidgetClassroomCourse(from: $0)
+                }
+            }
+        }
+
+        let payload = WidgetClassroomPayload(
+            room: normalizedRoom,
+            courses: widgetCourses,
+            updatedAt: Date()
+        )
+        if let data = try? JSONEncoder().encode(payload) {
+            WidgetDataStore.defaults.set(data, forKey: WidgetDataStore.classroomDataKey)
+        }
+        WidgetCenter.shared.reloadTimelines(ofKind: "ClassroomScheduleWidget")
+    }
 }
 
 // MARK: - Conversion: Course → WidgetCourse
@@ -104,6 +129,21 @@ extension WidgetFriendCourse {
         self.endPeriod = info.endPeriod
         self.location = info.location
         self.colorHex = colorHex
+    }
+}
+
+// MARK: - Conversion: ClassroomScheduledCourse → WidgetClassroomCourse
+
+extension WidgetClassroomCourse {
+    init(from course: ClassroomScheduledCourse) {
+        self.id = course.id
+        self.courseName = course.courseName
+        self.offeringUnit = course.offeringUnit
+        self.instructor = course.instructor
+        self.week = course.week
+        self.weekday = course.weekday
+        self.period = course.period
+        self.timeRange = ClassroomScheduleConstants.timeRangeText(for: course.period)
     }
 }
 

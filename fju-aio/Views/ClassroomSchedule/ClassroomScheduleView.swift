@@ -377,6 +377,10 @@ struct ClassroomScheduleView: View {
         exactRoom = index.rooms.first { $0 == normalized } ?? ""
         suggestions = normalized.isEmpty ? examples : index.suggestedRooms(for: normalized)
 
+        if !exactRoom.isEmpty {
+            WidgetDataWriter.shared.writeClassroomData(index: index, room: exactRoom)
+        }
+
         if exactRoom.isEmpty {
             selectedWeekday = ClassroomScheduleConstants.currentWeekday() ?? ClassroomScheduleConstants.weekdays[0]
         }

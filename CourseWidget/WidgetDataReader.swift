@@ -18,6 +18,11 @@ enum WidgetDataReader {
         return try? JSONDecoder().decode(WidgetAssignmentPayload.self, from: data)
     }
 
+    static func loadClassroomPayload() -> WidgetClassroomPayload? {
+        guard let data = WidgetDataStore.defaults.data(forKey: WidgetDataStore.classroomDataKey) else { return nil }
+        return try? JSONDecoder().decode(WidgetClassroomPayload.self, from: data)
+    }
+
     // MARK: - Period Time Tables (mirrors FJUPeriod.periodTimes)
 
     // Index 0 = period 1, index 4 = noon (N), index 10 = period 11
@@ -153,5 +158,90 @@ enum WidgetDataReader {
         guard today >= 1 && today <= 5 else { return courseDay }
         let offset = courseDay - today
         return offset > 0 ? offset : offset + 7
+    }
+}
+
+// MARK: - Classroom Helpers
+
+extension WidgetDataReader {
+    static let classroomPeriods: [String] = [
+        "D1", "D2", "D3", "D4", "DN", "D5", "D6", "D7", "D8", "E0", "E1", "E2", "E3", "E4"
+    ]
+
+    static let classroomWeekdays: [String] = [
+        "一(Mon)", "二(Tue)", "三(Wed)", "四(Thu)", "五(Fri)", "六(Sat)"
+    ]
+
+    static func currentClassroomWeekday(at date: Date) -> String? {
+        let weekday = Calendar.current.component(.weekday, from: date)
+        let index = weekday - 2
+        guard classroomWeekdays.indices.contains(index) else { return nil }
+        return classroomWeekdays[index]
+    }
+
+    static func currentClassroomPeriod(at date: Date) -> String? {
+        let currentMinutes = currentMinutes(from: date)
+        return classroomPeriods.first { period in
+            guard let range = classroomPeriodTimeRanges[period],
+                  let start = minutes(from: range.start),
+                  let end = minutes(from: range.end) else {
+                return false
+            }
+            return currentMinutes >= start && currentMinutes <= end
+        }
+    }
+
+    static func classroomCourses(
+        from courses: [WidgetClassroomCourse],
+        weekday: String?,
+        period: String?
+    ) -> [WidgetClassroomCourse] {
+        guard let weekday, let period else { return [] }
+        return courses.filter { $0.weekday == weekday && $0.period == period }
+    }
+
+    static func todaysClassroomCourses(
+        from courses: [WidgetClassroomCourse],
+        at date: Date
+    ) -> [WidgetClassroomCourse] {
+        guard let weekday = currentClassroomWeekday(at: date) else { return [] }
+        return courses
+            .filter { $0.weekday == weekday }
+            .sorted { classroomPeriodIndex($0.period) < classroomPeriodIndex($1.period) }
+    }
+
+    static func classroomPeriodIndex(_ period: String) -> Int {
+        classroomPeriods.firstIndex(of: period) ?? Int.max
+    }
+
+    static func shortClassroomWeekday(_ weekday: String) -> String {
+        String(weekday.prefix { $0 != "(" })
+    }
+
+    private static let classroomPeriodTimeRanges: [String: (start: String, end: String)] = [
+        "D1": ("08:10", "09:00"),
+        "D2": ("09:10", "10:00"),
+        "D3": ("10:10", "11:00"),
+        "D4": ("11:10", "12:00"),
+        "DN": ("12:40", "13:30"),
+        "D5": ("13:40", "14:30"),
+        "D6": ("14:40", "15:30"),
+        "D7": ("15:40", "16:30"),
+        "D8": ("16:40", "17:30"),
+        "E0": ("17:40", "18:30"),
+        "E1": ("18:40", "19:30"),
+        "E2": ("19:40", "20:30"),
+        "E3": ("20:40", "21:30"),
+        "E4": ("21:35", "22:25")
+    ]
+
+    private static func minutes(from time: String) -> Int? {
+        let parts = time.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]) else {
+            return nil
+        }
+        return hour * 60 + minute
     }
 }

@@ -9,6 +9,7 @@ enum WidgetDataStore {
 
     static let courseDataKey     = "widget.courseData"
     static let assignmentDataKey = "widget.assignmentData"
+    static let classroomDataKey  = "widget.classroomData"
 }
 
 // MARK: - Widget Course
@@ -38,6 +39,19 @@ struct WidgetAssignment: Codable, Identifiable {
     let dueDate: Date
 }
 
+// MARK: - Widget Classroom
+
+struct WidgetClassroomCourse: Codable, Identifiable, Hashable {
+    let id: String
+    let courseName: String
+    let offeringUnit: String
+    let instructor: String
+    let week: String
+    let weekday: String
+    let period: String
+    let timeRange: String
+}
+
 // MARK: - Widget Friend Overlay
 
 struct WidgetFriendOverlay: Codable, Identifiable {
@@ -65,5 +79,11 @@ struct WidgetCoursePayload: Codable {
 
 struct WidgetAssignmentPayload: Codable {
     let assignments: [WidgetAssignment]
+    let updatedAt: Date
+}
+
+struct WidgetClassroomPayload: Codable {
+    let room: String
+    let courses: [WidgetClassroomCourse]
     let updatedAt: Date
 }
