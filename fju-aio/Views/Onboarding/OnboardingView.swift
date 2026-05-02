@@ -3,6 +3,12 @@ import SwiftUI
 // MARK: - Onboarding View
 
 struct OnboardingView: View {
+    private let onComplete: () -> Void
+
+    init(onComplete: @escaping () -> Void = {}) {
+        self.onComplete = onComplete
+    }
+
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @State private var pageIndex: Int = 0
@@ -264,7 +270,7 @@ struct OnboardingView: View {
 
             Button {
                 if isLastPage {
-                    hasCompletedOnboarding = true
+                    completeOnboarding()
                 } else if isProfilePage {
                     // Signal OnboardingProfilePage to save, then advance when done
                     profileSaveRequested = true
@@ -296,7 +302,7 @@ struct OnboardingView: View {
 
             if !isLastPage {
                 Button("跳過") {
-                    hasCompletedOnboarding = true
+                    completeOnboarding()
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -307,6 +313,11 @@ struct OnboardingView: View {
         .padding(.top, 12)
         .padding(.bottom, 32)
         .background(Color(.systemGroupedBackground))
+    }
+
+    private func completeOnboarding() {
+        onComplete()
+        hasCompletedOnboarding = true
     }
 }
 
@@ -401,7 +412,7 @@ private struct OnboardingProfilePage: View {
                             Text("啟用公開資料")
                                 .font(.body)
                             Text(isPublished
-                                 ? "朋友可透過 QR Code 找到你。繼續後將上傳至雲端。"
+                                 ? "朋友可透過 QR Code 找到你。開始使用後將上傳至雲端。"
                                  : "開啟後，朋友可掃描你的 QR Code 加好友。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -564,56 +575,25 @@ private struct OnboardingProfilePage: View {
         }
     }
 
-    // MARK: - Save & advance
+    // MARK: - Save local choices & advance
 
     @MainActor
     private func saveAndAdvance() async {
         onContinueTapped = false
+        publishError = nil
+        saveSocialLinks()
 
         guard isPublished, let session = sisSession else {
-            // Profile not enabled — skip save and just advance
             onSaved()
             return
         }
 
         isSaving = true
-        publishError = nil
         defer { isSaving = false }
-        if profileAvatarURL == nil {
-            await loadAvatar()
+        if displayName.isEmpty {
+            displayName = session.userName
         }
-
-        let effectiveName = displayName.isEmpty ? session.userName : displayName
-        let visibility = scheduleVisibility
-        let snapshot: FriendScheduleSnapshot? = visibility == .off ? nil : await buildSnapshot(session: session)
-        let profile = PublicProfile(
-            cloudKitRecordName: ProfileQRService.stableDeviceToken(),
-            userId: session.userId,
-            empNo: session.empNo,
-            displayName: effectiveName,
-            avatarURLString: profileAvatarURL?.absoluteString,
-            bio: bio.isEmpty ? nil : bio,
-            socialLinks: socialLinks,
-            scheduleSnapshot: visibility == .public ? snapshot : nil,
-            lastUpdated: Date()
-        )
-        do {
-            try await CloudKitProfileService.shared.publishProfile(profile)
-            let scheduleToken = ProfileQRService.scheduleShareToken()
-            if visibility == .friendsOnly, let snapshot {
-                try await CloudKitProfileService.shared.publishFriendSchedule(
-                    snapshot,
-                    token: scheduleToken,
-                    ownerRecordName: profile.cloudKitRecordName,
-                    ownerEmpNo: session.empNo
-                )
-            } else if visibility == .off || visibility == .public {
-                try? await CloudKitProfileService.shared.deleteFriendSchedule(token: scheduleToken)
-            }
-            onSaved()
-        } catch {
-            publishError = "儲存失敗：\(error.localizedDescription)"
-        }
+        onSaved()
     }
 
     // MARK: - Helpers

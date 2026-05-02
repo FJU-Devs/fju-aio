@@ -10,6 +10,10 @@ actor ClassroomScheduleService {
 
     private init() {}
 
+    func clearInMemoryCache() {
+        cachedIndex = nil
+    }
+
     func loadIndex(forceRefresh: Bool = false) async throws -> ClassroomScheduleIndex {
         if !forceRefresh, let cachedIndex {
             return cachedIndex

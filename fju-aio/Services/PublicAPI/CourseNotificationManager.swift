@@ -263,6 +263,19 @@ final class CourseNotificationManager {
         await cancelRemoteSchedules(deactivateToken: true)
     }
 
+    @MainActor
+    func resetLocalStateForLogout() {
+        _isEnabled = true
+        _notifyBefore = true
+        _notifyStart = true
+        _notifyEnd = true
+        _minutesBefore = 15
+        activeActivityIDs.removeAll()
+        lastCourseSnapshot = []
+        lastRemoteScheduleSyncSignature = nil
+        inFlightRemoteScheduleSyncSignature = nil
+    }
+
     // MARK: - Test helpers (DebugView)
 
     /// Schedules a "during" Live Activity to start after `delaySeconds`.

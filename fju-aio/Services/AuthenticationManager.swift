@@ -75,8 +75,8 @@ final class AuthenticationManager {
             try await tronClassAuthService.logout()
             try await sisAuthService.logout()
             try await estuAuthService.logout()
-            AppCacheCleanupService.clearForLogout()
-            UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
+            await DormAuthService.shared.clearSession()
+            await AppCacheCleanupService.clearForLogout()
             isAuthenticated = false
             currentUserId = nil
             logger.info("✅ Logout successful")

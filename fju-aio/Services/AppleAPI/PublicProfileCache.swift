@@ -37,6 +37,10 @@ struct PublicProfileCache {
         save(cache)
     }
 
+    func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
     private func load() -> [String: CacheEntry] {
         guard let data = UserDefaults.standard.data(forKey: key),
               let cache = try? JSONDecoder().decode([String: CacheEntry].self, from: data) else {

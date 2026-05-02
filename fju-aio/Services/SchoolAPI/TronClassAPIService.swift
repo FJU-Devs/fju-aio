@@ -41,6 +41,13 @@ actor TronClassAPIService {
     private let avatarCacheTTL: TimeInterval = 60 * 60
 
     private init() {}
+
+    func clearInMemoryCaches() {
+        myCoursesCache = nil
+        enrollmentCache.removeAll()
+        avatarCacheByCourseId.removeAll()
+        currentUserAvatarCache.removeAll()
+    }
     
     // MARK: - Notifications
 

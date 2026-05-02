@@ -8,33 +8,46 @@ import UIKit
 // All data stays on-device and peer-to-peer — nothing transits a server.
 
 enum ProfileQRService {
+    private static let stableDeviceTokenKey = "com.nelsongx.apps.fju-aio.stableDeviceToken"
+    private static let scheduleShareTokenKey = "com.nelsongx.apps.fju-aio.scheduleShareToken"
 
     // MARK: - Stable Device Token
     // Generated once per install and stored in Keychain.
     // Used as the CloudKit record name so it's consistent across sessions.
 
     static func stableDeviceToken() -> String {
-        let key = "com.nelsongx.apps.fju-aio.stableDeviceToken"
-        if let existing = try? KeychainManager.shared.retrieveString(for: key) {
+        if let existing = existingStableDeviceToken() {
             return existing
         }
         var bytes = [UInt8](repeating: 0, count: 16)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         let token = bytes.map { String(format: "%02x", $0) }.joined()
-        try? KeychainManager.shared.save(token, for: key)
+        try? KeychainManager.shared.save(token, for: stableDeviceTokenKey)
         return token
     }
 
     static func scheduleShareToken() -> String {
-        let key = "com.nelsongx.apps.fju-aio.scheduleShareToken"
-        if let existing = try? KeychainManager.shared.retrieveString(for: key) {
+        if let existing = existingScheduleShareToken() {
             return existing
         }
         var bytes = [UInt8](repeating: 0, count: 24)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         let token = bytes.map { String(format: "%02x", $0) }.joined()
-        try? KeychainManager.shared.save(token, for: key)
+        try? KeychainManager.shared.save(token, for: scheduleShareTokenKey)
         return token
+    }
+
+    static func existingStableDeviceToken() -> String? {
+        try? KeychainManager.shared.retrieveString(for: stableDeviceTokenKey)
+    }
+
+    static func existingScheduleShareToken() -> String? {
+        try? KeychainManager.shared.retrieveString(for: scheduleShareTokenKey)
+    }
+
+    static func clearStoredTokens() {
+        try? KeychainManager.shared.delete(for: stableDeviceTokenKey)
+        try? KeychainManager.shared.delete(for: scheduleShareTokenKey)
     }
 
     // MARK: - Generate Profile QR Payload

@@ -8,9 +8,11 @@ enum AppStartupSettings {
 struct FJUApp: App {
     @State private var authManager = AuthenticationManager()
     @State private var isPreloading = false
+    @State private var isCompletingOnboarding = false
     @State private var hasSkippedPreload = false
     @State private var showsSkipPreloadButton = false
     @State private var preloadStatusText = "檢查登入狀態..."
+    @State private var onboardingStatusText = "準備完成設定..."
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage(AppStartupSettings.syncDuringSplashKey) private var syncDuringSplash = true
     private let syncStatus = SyncStatusManager.shared
@@ -22,10 +24,31 @@ struct FJUApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if authManager.isCheckingAuth || (isPreloading && !hasSkippedPreload) {
+                if authManager.isCheckingAuth {
                     LaunchScreenView(
-                        titleText: authManager.isCheckingAuth ? "啟動中..." : "同步資料中...",
-                        statusText: authManager.isCheckingAuth ? "檢查登入狀態..." : preloadStatusText,
+                        titleText: "啟動中...",
+                        statusText: "檢查登入狀態...",
+                        showsSkipButton: false,
+                        onSkip: {}
+                    )
+                } else if authManager.isAuthenticated && authManager.isLoading {
+                    LaunchScreenView(
+                        titleText: "登出中...",
+                        statusText: "清除本機、CloudKit 與快取資料...",
+                        showsSkipButton: false,
+                        onSkip: {}
+                    )
+                } else if isCompletingOnboarding {
+                    LaunchScreenView(
+                        titleText: "準備使用...",
+                        statusText: onboardingStatusText,
+                        showsSkipButton: false,
+                        onSkip: {}
+                    )
+                } else if isPreloading && !hasSkippedPreload {
+                    LaunchScreenView(
+                        titleText: "同步資料中...",
+                        statusText: preloadStatusText,
                         showsSkipButton: showsSkipPreloadButton,
                         onSkip: skipPreload
                     )
@@ -37,7 +60,7 @@ struct FJUApp: App {
                             .environment(authManager)
                             .environment(syncStatus)
                     } else {
-                        OnboardingView()
+                        OnboardingView(onComplete: beginOnboardingCompletionSplash)
                             .environment(authManager)
                             .environment(syncStatus)
                     }
@@ -55,7 +78,36 @@ struct FJUApp: App {
                       syncDuringSplash else { return }
                 Task { await preloadHomeData() }
             }
+            .onChange(of: hasCompletedOnboarding) { _, completed in
+                guard completed,
+                      authManager.isAuthenticated,
+                      !isCompletingOnboarding,
+                      !isPreloading else { return }
+                beginOnboardingCompletionSplash()
+            }
         }
+    }
+
+    @MainActor
+    private func beginOnboardingCompletionSplash() {
+        guard !isCompletingOnboarding else { return }
+        isCompletingOnboarding = true
+        onboardingStatusText = "準備完成設定..."
+        Task { await finishOnboardingSetup() }
+    }
+
+    @MainActor
+    private func finishOnboardingSetup() async {
+        defer {
+            isCompletingOnboarding = false
+            onboardingStatusText = "準備完成設定..."
+        }
+
+        await publishOnboardingProfileIfNeeded()
+
+        guard syncDuringSplash else { return }
+        onboardingStatusText = "同步首頁資料..."
+        await preloadHomeData()
     }
 
     /// Fetch courses and calendar events into AppCache while the splash is still showing.
@@ -126,6 +178,99 @@ struct FJUApp: App {
         } catch {
             // Non-fatal — AssignmentsView will fetch and sync on its own.
         }
+    }
+
+    @MainActor
+    private func publishOnboardingProfileIfNeeded() async {
+        guard UserDefaults.standard.bool(forKey: "myProfile.isPublished"),
+              let session = try? await authManager.getValidSISSession() else { return }
+
+        onboardingStatusText = "準備公開個人檔案..."
+
+        let displayName = UserDefaults.standard.string(forKey: "myProfile.displayName") ?? ""
+        let bio = UserDefaults.standard.string(forKey: "myProfile.bio") ?? ""
+        let shareSchedule = UserDefaults.standard.bool(forKey: "myProfile.shareSchedule")
+        let scheduleVisibilityRaw = UserDefaults.standard.string(forKey: "myProfile.scheduleVisibility")
+        let visibility = ScheduleVisibility(rawValue: scheduleVisibilityRaw ?? "") ?? (shareSchedule ? .public : .friendsOnly)
+        let socialLinks = loadOnboardingSocialLinks()
+
+        onboardingStatusText = "取得個人頭貼..."
+        let avatarURLString = try? await TronClassAPIService.shared.getCurrentUserAvatarURL()
+
+        onboardingStatusText = "建立課表分享資料..."
+        let snapshot = visibility == .off ? nil : await buildOnboardingScheduleSnapshot(session: session)
+        let profile = PublicProfile(
+            cloudKitRecordName: ProfileQRService.stableDeviceToken(),
+            userId: session.userId,
+            empNo: session.empNo,
+            displayName: displayName.isEmpty ? session.userName : displayName,
+            avatarURLString: avatarURLString,
+            bio: bio.isEmpty ? nil : bio,
+            socialLinks: socialLinks,
+            scheduleSnapshot: visibility == .public ? snapshot : nil,
+            lastUpdated: Date()
+        )
+
+        onboardingStatusText = "儲存公開個人檔案..."
+        do {
+            try await CloudKitProfileService.shared.publishProfile(profile)
+            let scheduleToken = ProfileQRService.scheduleShareToken()
+            if visibility == .friendsOnly, let snapshot {
+                try await CloudKitProfileService.shared.publishFriendSchedule(
+                    snapshot,
+                    token: scheduleToken,
+                    ownerRecordName: profile.cloudKitRecordName,
+                    ownerEmpNo: session.empNo
+                )
+            } else if visibility == .off || visibility == .public {
+                try? await CloudKitProfileService.shared.deleteFriendSchedule(token: scheduleToken)
+            }
+        } catch {
+            onboardingStatusText = "公開資料稍後可在好友頁重試"
+            try? await Task.sleep(for: .milliseconds(700))
+        }
+    }
+
+    private func loadOnboardingSocialLinks() -> [SocialLink] {
+        guard let data = UserDefaults.standard.data(forKey: "myProfile.socialLinks"),
+              let decoded = try? JSONDecoder().decode([SocialLink].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    @MainActor
+    private func buildOnboardingScheduleSnapshot(session: SISSession) async -> FriendScheduleSnapshot? {
+        let cache = AppCache.shared
+
+        let semesters: [String]
+        if let cached = cache.getSemesters(), !cached.isEmpty {
+            semesters = cached
+        } else if let fetched = try? await FJUService.shared.fetchAvailableSemesters(), !fetched.isEmpty {
+            semesters = fetched
+            cache.setSemesters(fetched)
+        } else {
+            return nil
+        }
+
+        let semester = semesters[0]
+        let courses: [Course]
+        if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
+            courses = cached
+        } else if let fetched = try? await FJUService.shared.fetchCourses(semester: semester), !fetched.isEmpty {
+            courses = fetched
+            cache.setCourses(fetched, semester: semester)
+        } else {
+            return nil
+        }
+
+        return FriendScheduleSnapshot(
+            ownerUserId: session.userId,
+            ownerDisplayName: session.userName,
+            semester: semester,
+            courses: courses.map { PublicCourseInfo(from: $0) },
+            updatedAt: Date()
+        )
     }
 
     @MainActor

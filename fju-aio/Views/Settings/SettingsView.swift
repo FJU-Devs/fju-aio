@@ -202,15 +202,15 @@ struct SettingsView: View {
         .navigationDestination(isPresented: $showDebugScreen) {
             DebugView()
         }
-        .alert("確認登出", isPresented: $showLogoutAlert) {
-            Button("取消", role: .cancel) {}
-            Button("登出", role: .destructive) {
+        .alert("你真的要登出嗎？", isPresented: $showLogoutAlert) {
+            Button("先不要", role: .cancel) {}
+            Button("好，我確定", role: .destructive) {
                 Task {
                     await performLogout()
                 }
             }
         } message: {
-            Text("登出後將清除所有已儲存的帳號密碼和 Session 資訊")
+            Text("登出後你的好友名單、公開資料及儲存的設定將會被清除，並且無法復原。你確定要登出嗎？(不影響學校資料)")
         }
         .task {
             await loadSISSession()
