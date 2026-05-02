@@ -35,6 +35,9 @@ enum ModuleRegistry {
         AppModule(id: "webCourseSelect", name: "選課系統", icon: "list.bullet.rectangle",
                   color: .orange, category: .academic,
                   type: .webLink(URL(string: "https://signcourse.fju.edu.tw")!)),
+        AppModule(id: "webWishCourseSelect", name: "全人志願選課系統", icon: "list.bullet.rectangle",
+                  color: .orange, category: .academic,
+                  type: .webLink(URL(string: "http://wishcourse.fju.edu.tw")!)),
 
         // In-app features (life)
         AppModule(id: "campusMap", name: "校園地圖", icon: "map.fill",
