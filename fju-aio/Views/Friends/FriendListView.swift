@@ -283,10 +283,19 @@ private struct AddFriendSheet: View {
     @State private var showScanner = false
     @State private var addedIds: Set<String> = []
     @State private var nearbyStartNonce = UUID()
+    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
 
     var body: some View {
         NavigationStack {
             List {
+                if !incomingRequests.isEmpty {
+                    Section("邀請") {
+                        ForEach(incomingRequests) { peer in
+                            incomingRequestRow(peer)
+                        }
+                    }
+                }
+
                 Section {
                     myQRCodeView
 
@@ -306,23 +315,19 @@ private struct AddFriendSheet: View {
                         .padding(.vertical, 4)
                     }
                 } header: {
-                    Text("我的 QR Code")
+                    HStack {
+                        Text("我的 QR Code")
+                        Spacer()
+                        Button {
+                            showScanner = true
+                        } label: {
+                            Label("掃掃別人的", systemImage: "qrcode.viewfinder")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 } footer: {
                     Text("讓朋友掃描這個 QR Code 來加你為好友。")
-                }
-
-                Section {
-                    Button {
-                        showScanner = true
-                    } label: {
-                        AddFriendActionRow(
-                            icon: "qrcode.viewfinder",
-                            tint: AppTheme.accent,
-                            title: "掃描 QR Code",
-                            subtitle: "掃描朋友的個人 QR Code 來新增好友"
-                        )
-                    }
-                    .buttonStyle(.plain)
                 }
 
                 Section {
@@ -332,14 +337,6 @@ private struct AddFriendSheet: View {
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("附近加好友")
-                }
-
-                if !incomingRequests.isEmpty {
-                    Section("邀請") {
-                        ForEach(incomingRequests) { peer in
-                            incomingRequestRow(peer)
-                        }
-                    }
                 }
 
                 if !pendingPeers.isEmpty {
@@ -396,10 +393,18 @@ private struct AddFriendSheet: View {
         }
         .onAppear {
             startNearby()
+            autoAcceptIncomingRequestsIfNeeded()
+        }
+        .onChange(of: nearbyService.incomingAddRequests) {
+            autoAcceptIncomingRequestsIfNeeded()
+        }
+        .onChange(of: autoAddBackFriends) {
+            autoAcceptIncomingRequestsIfNeeded()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 startNearby()
+                autoAcceptIncomingRequestsIfNeeded()
             }
         }
         .onDisappear {
@@ -528,6 +533,15 @@ private struct AddFriendSheet: View {
         }
         nearbyStartNonce = UUID()
         startNearby()
+    }
+
+    private func autoAcceptIncomingRequestsIfNeeded() {
+        guard autoAddBackFriends else { return }
+        for peer in incomingRequests {
+            addedIds.insert(peer.id)
+            onAcceptIncomingPeer(peer)
+            nearbyService.dismissIncomingRequest(id: peer.id)
+        }
     }
 
     private func makeQRImage(session: SISSession) -> UIImage? {
@@ -663,43 +677,6 @@ private struct FriendQRScannerSheet: View {
                 }
             }
         }
-    }
-}
-
-private struct AddFriendActionRow: View {
-    let icon: String
-    let tint: Color
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(tint.opacity(0.12))
-                    .frame(width: 44, height: 44)
-                Image(systemName: icon)
-                    .font(.title2)
-                    .foregroundStyle(tint)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
     }
 }
 

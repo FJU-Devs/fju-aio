@@ -14,6 +14,7 @@ struct SettingsView: View {
     private let syncStatus = SyncStatusManager.shared
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @AppStorage("openLinksInApp") private var openLinksInApp = true
+    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
     
     var body: some View {
         List {
@@ -48,6 +49,17 @@ struct SettingsView: View {
             Section {
                 NavigationLink(destination: FriendListView()) {
                     SettingsFriendRow(friendCount: friendStore.friends.count)
+                }
+            }
+
+            Section("好友設定") {
+                Toggle(isOn: $autoAddBackFriends) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("自動回加好友")
+                        Text("對方加你時，自動把對方加回好友")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
