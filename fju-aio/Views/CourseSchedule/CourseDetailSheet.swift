@@ -770,7 +770,7 @@ private struct LocationMapSection: View {
                                 .font(.caption)
                         }
                         .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
+                        .frame(width: 90)
                         .padding(.vertical, 11)
                     }
                     .buttonStyle(.glassProminent)
@@ -796,7 +796,7 @@ private struct LocationMapSection: View {
                                 .font(.caption)
                         }
                         .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
+                        .frame(width: 90)
                         .padding(.vertical, 11)
                     }
                     .buttonStyle(FilledButtonStyle())
