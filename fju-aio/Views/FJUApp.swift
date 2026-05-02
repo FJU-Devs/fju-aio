@@ -157,7 +157,11 @@ struct FJUApp: App {
                 )
                 if EventKitSyncService.shared.isAutoCalendarSyncEnabled {
                     preloadStatusText = "同步系統行事曆..."
-                    try? await EventKitSyncService.shared.syncCalendarEvents(e)
+                    do {
+                        try await EventKitSyncService.shared.syncCalendarEvents(e)
+                    } catch EventKitSyncService.SyncError.calendarAccessDenied {
+                        EventKitSyncService.shared.disableAutoCalendarSyncForPermissionIssue()
+                    } catch {}
                 }
                 if EventKitSyncService.shared.isAutoTodoSyncEnabled {
                     Task { await preloadTodoSyncIfNeeded() }
@@ -175,6 +179,8 @@ struct FJUApp: App {
             AppCache.shared.setAssignments(assignments)
             WidgetDataWriter.shared.writeAssignmentData(assignments: assignments)
             try await EventKitSyncService.shared.syncAssignments(assignments)
+        } catch EventKitSyncService.SyncError.reminderAccessDenied {
+            EventKitSyncService.shared.disableAutoTodoSyncForPermissionIssue()
         } catch {
             // Non-fatal — AssignmentsView will fetch and sync on its own.
         }
@@ -324,7 +330,7 @@ private struct LaunchScreenView: View {
                     .frame(width: 184, height: 5)
 
                 if showsSkipButton {
-                    Button("略過") {
+                    Button("略過 (稍後同步資料)") {
                         onSkip()
                     }
                     .buttonStyle(.bordered)

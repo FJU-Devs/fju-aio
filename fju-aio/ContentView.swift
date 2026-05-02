@@ -29,6 +29,7 @@ enum AppTab: Hashable {
 
 struct ContentView: View {
     @State private var selectedTab: AppTab = .home
+    @State private var networkMonitor = NetworkMonitor.shared
     @Environment(SyncStatusManager.self) private var syncStatus
 
     var body: some View {
@@ -61,11 +62,34 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if syncStatus.isSyncing {
-                syncBanner
+            VStack(spacing: 0) {
+                if !networkMonitor.isConnected {
+                    offlineBanner
+                }
+                if syncStatus.isSyncing {
+                    syncBanner
+                }
             }
         }
         .animation(.easeInOut(duration: 0.3), value: syncStatus.isSyncing)
+        .animation(.easeInOut(duration: 0.3), value: networkMonitor.isConnected)
+    }
+
+    private var offlineBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "wifi.slash")
+                .font(.caption.weight(.semibold))
+                .padding(.top, 1)
+            Text("沒有網路連線：將使用快取，無法同步，部分功能可能無法使用。")
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity)
+        .background(Color.red)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private var syncBanner: some View {

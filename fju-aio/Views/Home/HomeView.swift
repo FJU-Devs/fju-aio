@@ -294,7 +294,12 @@ struct HomeView: View {
 
     private func autoSyncCalendarIfNeeded(_ events: [CalendarEvent]) async {
         guard autoSyncCalendar else { return }
-        try? await EventKitSyncService.shared.syncCalendarEvents(events)
+        do {
+            try await EventKitSyncService.shared.syncCalendarEvents(events)
+        } catch EventKitSyncService.SyncError.calendarAccessDenied {
+            EventKitSyncService.shared.disableAutoCalendarSyncForPermissionIssue()
+            autoSyncCalendar = false
+        } catch {}
     }
 
     private func scheduleCourseNotifications(for courses: [Course], calendarEvents: [CalendarEvent]) {

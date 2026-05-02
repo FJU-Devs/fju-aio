@@ -7,6 +7,10 @@ final class NetworkService: Sendable {
     private init() {}
     
     nonisolated func performRequest(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        guard await MainActor.run(body: { NetworkMonitor.shared.isConnected }) else {
+            throw NetworkError.offline
+        }
+
         logger.logRequest(request)
         
         do {
@@ -32,12 +36,14 @@ final class NetworkService: Sendable {
 
 nonisolated enum NetworkError: LocalizedError {
     case invalidResponse
+    case offline
     case connectionFailed(Error)
     case httpError(Int)
     
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "伺服器回應無效"
+        case .offline: return "目前沒有網路連線"
         case .connectionFailed(let error): return "連線失敗: \(error.localizedDescription)"
         case .httpError(let code): return "HTTP 錯誤: \(code)"
         }

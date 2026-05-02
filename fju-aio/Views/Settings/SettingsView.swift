@@ -1,7 +1,9 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(AuthenticationManager.self) private var authManager
+    @Environment(\.scenePhase) private var scenePhase
     @State private var versionTapCount = 0
     @State private var showDebugScreen = false
     @State private var showLogoutAlert = false
@@ -11,6 +13,8 @@ struct SettingsView: View {
     @State private var profileAvatarURL: URL?
     @State private var showAvatarMessage = false
     @State private var syncSettingsError: String?
+    @State private var reenablePrompt: AutoSyncReenablePrompt?
+    @State private var liveActivityPermissionAlert = false
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
     private let cache = AppCache.shared
@@ -71,7 +75,7 @@ struct SettingsView: View {
             Section("課程通知") {
                 Toggle("啟用課程提醒", isOn: Binding(
                     get: { notificationManager.isEnabled },
-                    set: { notificationManager.isEnabled = $0 }
+                    set: { updateCourseNotifications($0) }
                 ))
 
                 if notificationManager.isEnabled {
@@ -215,6 +219,13 @@ struct SettingsView: View {
         .task {
             await loadSISSession()
             await loadProfileAvatar()
+            checkAutoSyncPermissionRecovery()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                checkAutoSyncPermissionRecovery()
+                disableCourseNotificationsIfLiveActivitiesUnavailable()
+            }
         }
         .refreshable {
             await loadSISSession()
@@ -235,6 +246,39 @@ struct SettingsView: View {
             Button("確定", role: .cancel) { syncSettingsError = nil }
         } message: {
             Text(syncSettingsError ?? "")
+        }
+        .alert(
+            "要重新啟用自動同步嗎？",
+            isPresented: Binding(
+                get: { reenablePrompt != nil },
+                set: { if !$0 { reenablePrompt = nil } }
+            )
+        ) {
+            Button("先不要", role: .cancel) {
+                clearReenablePrompt()
+            }
+            Button("重新啟用") {
+                guard let prompt = reenablePrompt else { return }
+                clearReenablePrompt()
+                switch prompt {
+                case .calendar:
+                    updateAutoCalendarSync(true)
+                case .todo:
+                    updateAutoTodoSync(true)
+                }
+            }
+        } message: {
+            Text(reenablePrompt?.message ?? "")
+        }
+        .alert("無法使用 Live Activities", isPresented: $liveActivityPermissionAlert) {
+            Button("取消", role: .cancel) {}
+            Button("前往設定") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+        } message: {
+            Text("請在系統設定中允許 Live Activities。課程提醒已先關閉。")
         }
     }
     
@@ -286,9 +330,13 @@ struct SettingsView: View {
                 }
 
                 try await EventKitSyncService.shared.syncCalendarEvents(events)
+                UserDefaults.standard.set(false, forKey: EventKitSyncService.autoSyncCalendarDisabledByPermissionKey)
             } catch {
                 await MainActor.run {
                     autoSyncCalendar = false
+                    if case EventKitSyncService.SyncError.calendarAccessDenied = error {
+                        EventKitSyncService.shared.disableAutoCalendarSyncForPermissionIssue()
+                    }
                     syncSettingsError = error.localizedDescription
                 }
             }
@@ -311,13 +359,61 @@ struct SettingsView: View {
                 }
 
                 try await EventKitSyncService.shared.syncAssignments(assignments)
+                UserDefaults.standard.set(false, forKey: EventKitSyncService.autoSyncTodoDisabledByPermissionKey)
             } catch {
                 await MainActor.run {
                     autoSyncTodo = false
+                    if case EventKitSyncService.SyncError.reminderAccessDenied = error {
+                        EventKitSyncService.shared.disableAutoTodoSyncForPermissionIssue()
+                    }
                     syncSettingsError = error.localizedDescription
                 }
             }
         }
+    }
+
+    private func updateCourseNotifications(_ isEnabled: Bool) {
+        guard isEnabled else {
+            notificationManager.isEnabled = false
+            return
+        }
+
+        if notificationManager.canUseLiveActivities {
+            notificationManager.isEnabled = true
+        } else {
+            notificationManager.disableForLiveActivityPermissionIssue()
+            liveActivityPermissionAlert = true
+        }
+    }
+
+    private func disableCourseNotificationsIfLiveActivitiesUnavailable() {
+        guard notificationManager.isEnabled, !notificationManager.canUseLiveActivities else { return }
+        notificationManager.disableForLiveActivityPermissionIssue()
+        liveActivityPermissionAlert = true
+    }
+
+    private func checkAutoSyncPermissionRecovery() {
+        guard reenablePrompt == nil else { return }
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: EventKitSyncService.autoSyncCalendarDisabledByPermissionKey),
+           EventKitSyncService.hasCalendarAccess {
+            reenablePrompt = .calendar
+        } else if defaults.bool(forKey: EventKitSyncService.autoSyncTodoDisabledByPermissionKey),
+                  EventKitSyncService.hasReminderAccess {
+            reenablePrompt = .todo
+        }
+    }
+
+    private func clearReenablePrompt() {
+        guard let prompt = reenablePrompt else { return }
+        let defaults = UserDefaults.standard
+        switch prompt {
+        case .calendar:
+            defaults.set(false, forKey: EventKitSyncService.autoSyncCalendarDisabledByPermissionKey)
+        case .todo:
+            defaults.set(false, forKey: EventKitSyncService.autoSyncTodoDisabledByPermissionKey)
+        }
+        reenablePrompt = nil
     }
     
     private func performLogout() async {
@@ -325,6 +421,20 @@ struct SettingsView: View {
             try await authManager.logout()
         } catch {
             print("登出失敗: \(error)")
+        }
+    }
+}
+
+private enum AutoSyncReenablePrompt {
+    case calendar
+    case todo
+
+    var message: String {
+        switch self {
+        case .calendar:
+            return "行事曆權限已恢復。是否重新啟用自動同步學期行事曆？"
+        case .todo:
+            return "提醒事項權限已恢復。是否重新啟用自動同步作業 Todo？"
         }
     }
 }

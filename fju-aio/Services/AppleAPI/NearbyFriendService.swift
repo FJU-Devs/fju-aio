@@ -19,6 +19,18 @@ struct NearbyPeerProfile: Identifiable, Equatable {
     let scheduleShareToken: String?
 }
 
+enum NearbyBluetoothIssue: Identifiable, Equatable {
+    case poweredOff
+    case unauthorized
+
+    var id: String {
+        switch self {
+        case .poweredOff: return "poweredOff"
+        case .unauthorized: return "unauthorized"
+        }
+    }
+}
+
 // MARK: - NearbyFriendService
 // Acts as both BLE peripheral (advertises own profile) and central (scans + reads peers).
 // No special entitlements required — uses CoreBluetooth only.
@@ -32,6 +44,7 @@ final class NearbyFriendService: NSObject {
     private(set) var discoveredPeers: [NearbyPeerProfile] = []
     private(set) var incomingAddRequests: [NearbyPeerProfile] = []
     private(set) var isActive = false
+    private(set) var permissionIssue: NearbyBluetoothIssue?
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "NearbyFriend")
 
@@ -60,8 +73,18 @@ final class NearbyFriendService: NSObject {
     func start(profile: MutualQRPayload) {
         // Force-clean any lingering session so re-opening the sheet always starts fresh
         if isActive { stop() }
+        switch CBManager.authorization {
+        case .denied, .restricted:
+            setPermissionIssue(.unauthorized)
+            logger.warning("⚠️ Bluetooth unauthorized before starting")
+            return
+        default:
+            break
+        }
+
         guard let data = try? JSONEncoder().encode(profile) else { return }
         myProfileData = data
+        permissionIssue = nil
 
         // Use a background queue — passing .main can suppress the permission prompt on some iOS versions
         let btQueue = DispatchQueue(label: "com.nelsongx.apps.fju-aio.bluetooth", qos: .userInitiated)
@@ -96,6 +119,7 @@ final class NearbyFriendService: NSObject {
         seenPeripheralIDs = []
         discoveredPeers = []
         incomingAddRequests = []
+        permissionIssue = nil
         myProfileData = nil
         profileCharacteristic = nil
         isActive = false
@@ -108,6 +132,29 @@ final class NearbyFriendService: NSObject {
 
     func dismissIncomingRequest(id: String) {
         incomingAddRequests.removeAll { $0.id == id }
+    }
+
+    func clearPermissionIssue() {
+        permissionIssue = nil
+    }
+
+    private func setPermissionIssue(_ issue: NearbyBluetoothIssue) {
+        permissionIssue = issue
+        isActive = false
+        peripheralManager?.stopAdvertising()
+        centralManager?.stopScan()
+    }
+
+    private func clearPermissionIssueIfManagersAreUsable() {
+        let states = [peripheralManager?.state, centralManager?.state]
+        if states.contains(where: { $0 == .unauthorized }) {
+            setPermissionIssue(.unauthorized)
+        } else if states.contains(where: { $0 == .poweredOff }) {
+            setPermissionIssue(.poweredOff)
+        } else {
+            permissionIssue = nil
+            isActive = true
+        }
     }
 
     func sendAddRequest(to peer: NearbyPeerProfile) {
@@ -268,10 +315,15 @@ extension NearbyFriendService: CBPeripheralManagerDelegate {
         Task { @MainActor in
             switch peripheral.state {
             case .poweredOn:
+                self.clearPermissionIssueIfManagersAreUsable()
                 self.logger.info("🔵 Peripheral powered on")
                 self.setupPeripheral()
             case .poweredOff:
+                self.setPermissionIssue(.poweredOff)
                 self.logger.warning("⚠️ Bluetooth powered off")
+            case .unauthorized:
+                self.setPermissionIssue(.unauthorized)
+                self.logger.warning("⚠️ Bluetooth unauthorized")
             default:
                 break
             }
@@ -338,10 +390,15 @@ extension NearbyFriendService: CBCentralManagerDelegate {
         Task { @MainActor in
             switch central.state {
             case .poweredOn:
+                self.clearPermissionIssueIfManagersAreUsable()
                 self.logger.info("🔵 Central powered on")
                 self.startScanning()
             case .poweredOff:
+                self.setPermissionIssue(.poweredOff)
                 self.logger.warning("⚠️ Bluetooth powered off")
+            case .unauthorized:
+                self.setPermissionIssue(.unauthorized)
+                self.logger.warning("⚠️ Bluetooth unauthorized")
             default:
                 break
             }

@@ -86,6 +86,20 @@ final class CourseNotificationManager {
         }
     }
 
+    var canUseLiveActivities: Bool {
+        ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
+    func disableForLiveActivityPermissionIssue() {
+        guard _isEnabled else { return }
+        _isEnabled = false
+        UserDefaults.standard.set(false, forKey: Keys.enabled)
+        Task {
+            await endAllLiveActivities()
+            await cancelRemoteSchedules(deactivateToken: true)
+        }
+    }
+
     // MARK: - Backing stored properties (tracked by @Observable)
     private var _isEnabled: Bool = true
     private var _notifyBefore: Bool = true
@@ -125,6 +139,11 @@ final class CourseNotificationManager {
         semesterEndDate overrideSemesterEndDate: Date? = nil
     ) async {
         guard isEnabled, notifyStart || notifyBefore else { return }
+        guard canUseLiveActivities else {
+            disableForLiveActivityPermissionIssue()
+            print("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
+            return
+        }
         lastCourseSnapshot = courses
         await scheduleRemoteCourseActivities(
             for: courses,
@@ -140,8 +159,9 @@ final class CourseNotificationManager {
     @MainActor
     func startLiveActivity(for course: Course) async -> Bool {
         guard isEnabled else { return false }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            print("[CourseNotification] Live Activities 未啟用")
+        guard canUseLiveActivities else {
+            disableForLiveActivityPermissionIssue()
+            print("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
             return false
         }
 
@@ -284,8 +304,9 @@ final class CourseNotificationManager {
     @MainActor
     func scheduleDelayedTestLiveActivity(course: Course, delaySeconds: TimeInterval) async -> Bool {
         await endAllLiveActivities()
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            print("[CourseNotification] Live Activities 未啟用")
+        guard canUseLiveActivities else {
+            disableForLiveActivityPermissionIssue()
+            print("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
             return false
         }
 
@@ -325,8 +346,9 @@ final class CourseNotificationManager {
     @MainActor
     func scheduleFullCycleTestLiveActivity(course: Course) async -> Bool {
         await endAllLiveActivities()
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            print("[CourseNotification] Live Activities 未啟用")
+        guard canUseLiveActivities else {
+            disableForLiveActivityPermissionIssue()
+            print("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
             return false
         }
 
@@ -368,8 +390,9 @@ final class CourseNotificationManager {
     @MainActor
     func fireTestLiveActivity(course: Course, phase: CoursePhase) async -> Bool {
         await endAllLiveActivities()
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            print("[CourseNotification] Live Activities 未啟用")
+        guard canUseLiveActivities else {
+            disableForLiveActivityPermissionIssue()
+            print("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
             return false
         }
 

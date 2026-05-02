@@ -8,6 +8,8 @@ final class EventKitSyncService {
 
     nonisolated static let autoSyncCalendarKey = "eventKitSync.autoCalendar"
     nonisolated static let autoSyncTodoKey = "eventKitSync.autoTodo"
+    nonisolated static let autoSyncCalendarDisabledByPermissionKey = "eventKitSync.autoCalendarDisabledByPermission"
+    nonisolated static let autoSyncTodoDisabledByPermissionKey = "eventKitSync.autoTodoDisabledByPermission"
 
     private let eventStore = EKEventStore()
     private let calendarName = "輔大行事曆"
@@ -27,6 +29,42 @@ final class EventKitSyncService {
 
     var isAutoTodoSyncEnabled: Bool {
         UserDefaults.standard.bool(forKey: Self.autoSyncTodoKey)
+    }
+
+    var hasCalendarAccess: Bool {
+        Self.hasCalendarAccess
+    }
+
+    var hasReminderAccess: Bool {
+        Self.hasReminderAccess
+    }
+
+    nonisolated static var hasCalendarAccess: Bool {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if #available(iOS 17.0, *) {
+            return status == .fullAccess
+        } else {
+            return status == .authorized
+        }
+    }
+
+    nonisolated static var hasReminderAccess: Bool {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        if #available(iOS 17.0, *) {
+            return status == .fullAccess
+        } else {
+            return status == .authorized
+        }
+    }
+
+    func disableAutoCalendarSyncForPermissionIssue() {
+        UserDefaults.standard.set(false, forKey: Self.autoSyncCalendarKey)
+        UserDefaults.standard.set(true, forKey: Self.autoSyncCalendarDisabledByPermissionKey)
+    }
+
+    func disableAutoTodoSyncForPermissionIssue() {
+        UserDefaults.standard.set(false, forKey: Self.autoSyncTodoKey)
+        UserDefaults.standard.set(true, forKey: Self.autoSyncTodoDisabledByPermissionKey)
     }
 
     @discardableResult

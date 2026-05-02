@@ -148,6 +148,12 @@ struct AssignmentsView: View {
 
     private func autoSyncIfNeeded(_ assignments: [Assignment]) async {
         guard autoSyncTodo else { return }
-        try? await EventKitSyncService.shared.syncAssignments(assignments)
+        do {
+            try await EventKitSyncService.shared.syncAssignments(assignments)
+        } catch EventKitSyncService.SyncError.reminderAccessDenied {
+            EventKitSyncService.shared.disableAutoTodoSyncForPermissionIssue()
+            autoSyncTodo = false
+            reminderAccessDenied = true
+        } catch {}
     }
 }

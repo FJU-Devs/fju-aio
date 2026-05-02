@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - FriendListView
 // Entry is gated: user must have published their profile first.
@@ -321,6 +322,7 @@ private struct AddFriendSheet: View {
     @State private var addedIds: Set<String> = []
     @State private var acceptedInvitationPeers: [NearbyPeerProfile] = []
     @State private var nearbyStartNonce = UUID()
+    @State private var bluetoothAlertIssue: NearbyBluetoothIssue?
     @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
     @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
 
@@ -432,6 +434,7 @@ private struct AddFriendSheet: View {
             FriendQRScannerSheet { qrString in
                 showScanner = false
                 onScannedQRCode(qrString)
+                dismiss()
             }
         }
         .task(id: startTaskID) {
@@ -451,6 +454,9 @@ private struct AddFriendSheet: View {
         .onChange(of: nearbyService.incomingAddRequests) {
             autoAcceptIncomingRequestsIfNeeded()
         }
+        .onChange(of: nearbyService.permissionIssue) { _, issue in
+            bluetoothAlertIssue = issue
+        }
         .onChange(of: autoAddBackFriends) {
             autoAcceptIncomingRequestsIfNeeded()
         }
@@ -467,6 +473,32 @@ private struct AddFriendSheet: View {
         }
         .onDisappear {
             nearbyService.stop()
+        }
+        .alert(item: $bluetoothAlertIssue) { issue in
+            switch issue {
+            case .poweredOff:
+                return Alert(
+                    title: Text("藍牙已關閉"),
+                    message: Text("請開啟藍牙後再使用附近加好友。"),
+                    dismissButton: .default(Text("確定")) {
+                        bluetoothAlertIssue = nil
+                    }
+                )
+            case .unauthorized:
+                return Alert(
+                    title: Text("無法使用藍牙"),
+                    message: Text("請在「設定」中允許此 App 使用藍牙。"),
+                    primaryButton: .default(Text("前往設定")) {
+                        bluetoothAlertIssue = nil
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    },
+                    secondaryButton: .cancel(Text("取消")) {
+                        bluetoothAlertIssue = nil
+                    }
+                )
+            }
         }
     }
 
@@ -511,6 +543,9 @@ private struct AddFriendSheet: View {
     private var invitationEmptyStateMessage: String {
         if isLoadingSession || session == nil {
             return "正在載入帳號資料..."
+        }
+        if let issue = nearbyService.permissionIssue {
+            return nearbyIssueMessage(issue)
         }
         if !nearbyService.isActive {
             return "正在啟動附近加好友..."
@@ -566,10 +601,16 @@ private struct AddFriendSheet: View {
         HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(nearbyService.isActive ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
+                    .fill(nearbyService.permissionIssue == nil
+                          ? (nearbyService.isActive ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
+                          : Color.red.opacity(0.12))
                     .frame(width: 42, height: 42)
-                Image(systemName: nearbyService.isActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                    .foregroundStyle(nearbyService.isActive ? .green : .secondary)
+                Image(systemName: nearbyService.permissionIssue == nil && nearbyService.isActive
+                      ? "antenna.radiowaves.left.and.right"
+                      : "antenna.radiowaves.left.and.right.slash")
+                    .foregroundStyle(nearbyService.permissionIssue == nil
+                                     ? (nearbyService.isActive ? .green : .secondary)
+                                     : .red)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -584,6 +625,14 @@ private struct AddFriendSheet: View {
 
             if isLoadingSession {
                 ProgressView().controlSize(.small)
+            } else if nearbyService.permissionIssue == .unauthorized {
+                Button("設定") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             } else {
                 Button("重試") {
                     restartNearby()
@@ -598,13 +647,33 @@ private struct AddFriendSheet: View {
     private var nearbyStatusTitle: String {
         if isLoadingSession { return "正在載入帳號資料" }
         if session == nil { return "無法啟動附近加好友" }
+        if let issue = nearbyService.permissionIssue { return nearbyIssueTitle(issue) }
         return nearbyService.isActive ? "正在搜尋附近的朋友" : "尚未啟動"
     }
 
     private var nearbyStatusSubtitle: String {
         if let sessionError { return sessionError }
         if session == nil { return "請確認已登入後再試一次。" }
+        if let issue = nearbyService.permissionIssue { return nearbyIssueMessage(issue) }
         return "把手機靠近對方，保持此頁開啟。"
+    }
+
+    private func nearbyIssueTitle(_ issue: NearbyBluetoothIssue) -> String {
+        switch issue {
+        case .poweredOff:
+            return "藍牙已關閉"
+        case .unauthorized:
+            return "無法使用藍牙"
+        }
+    }
+
+    private func nearbyIssueMessage(_ issue: NearbyBluetoothIssue) -> String {
+        switch issue {
+        case .poweredOff:
+            return "請開啟藍牙後再使用附近加好友。"
+        case .unauthorized:
+            return "請在「設定」中允許此 App 使用藍牙。"
+        }
     }
 
     private func startNearby() {
@@ -615,6 +684,11 @@ private struct AddFriendSheet: View {
             displayName: session.userName
         )
         nearbyService.start(profile: payload)
+        if let issue = nearbyService.permissionIssue {
+            DispatchQueue.main.async {
+                bluetoothAlertIssue = issue
+            }
+        }
     }
 
     private func restartNearby() {
