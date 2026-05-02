@@ -11,6 +11,8 @@ struct FJUApp: App {
     @State private var isCompletingOnboarding = false
     @State private var hasSkippedPreload = false
     @State private var showsSkipPreloadButton = false
+    @State private var isWidgetQuickLaunch = false
+    @State private var pendingDeepLinkDestination: AppDestination?
     @State private var preloadStatusText = "檢查登入狀態..."
     @State private var onboardingStatusText = "準備完成設定..."
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
@@ -24,7 +26,7 @@ struct FJUApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if authManager.isCheckingAuth {
+                if authManager.isCheckingAuth && !isWidgetQuickLaunch {
                     LaunchScreenView(
                         titleText: "啟動中...",
                         statusText: "檢查登入狀態...",
@@ -45,16 +47,16 @@ struct FJUApp: App {
                         showsSkipButton: false,
                         onSkip: {}
                     )
-                } else if isPreloading && !hasSkippedPreload {
+                } else if isPreloading && !hasSkippedPreload && !isWidgetQuickLaunch {
                     LaunchScreenView(
                         titleText: "同步資料中...",
                         statusText: preloadStatusText,
                         showsSkipButton: showsSkipPreloadButton,
                         onSkip: skipPreload
                     )
-                } else if authManager.isAuthenticated {
+                } else if authManager.isAuthenticated || (authManager.isCheckingAuth && isWidgetQuickLaunch) {
                     if hasCompletedOnboarding {
-                        ContentView()
+                        ContentView(pendingDeepLinkDestination: $pendingDeepLinkDestination)
                             .environment(\.fjuService, FJUService.shared)
                             .environment(HomePreferences())
                             .environment(authManager)
@@ -70,11 +72,15 @@ struct FJUApp: App {
                 }
             }
             .tint(AppTheme.accent)
+            .onOpenURL { url in
+                handleDeepLink(url)
+            }
             .onChange(of: authManager.isCheckingAuth) { _, stillChecking in
                 // Auth check just finished and user is logged in — preload home data
                 guard !stillChecking,
                       authManager.isAuthenticated,
                       hasCompletedOnboarding,
+                      !isWidgetQuickLaunch,
                       syncDuringSplash else { return }
                 Task { await preloadHomeData() }
             }
@@ -86,6 +92,22 @@ struct FJUApp: App {
                 beginOnboardingCompletionSplash()
             }
         }
+    }
+
+    @MainActor
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "fju-aio",
+              url.host == "page",
+              let pathComponent = url.pathComponents.dropFirst().first,
+              let destination = AppDestination(deepLinkPath: pathComponent)
+        else {
+            return
+        }
+
+        isWidgetQuickLaunch = true
+        hasSkippedPreload = true
+        showsSkipPreloadButton = false
+        pendingDeepLinkDestination = destination
     }
 
     @MainActor

@@ -59,6 +59,7 @@ struct TodoListWidget: Widget {
         StaticConfiguration(kind: kind, provider: TodoProvider()) { entry in
             TodoListWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
+                .widgetURL(URL(string: "fju-aio://page/assignments"))
         }
         .configurationDisplayName("作業 Todo")
         .description("顯示即將到期的作業清單")

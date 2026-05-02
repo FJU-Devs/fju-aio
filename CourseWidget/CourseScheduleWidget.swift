@@ -184,6 +184,7 @@ struct CourseScheduleWidget: Widget {
         ) { entry in
             CourseScheduleWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
+                .widgetURL(URL(string: "fju-aio://page/courseSchedule"))
         }
         .configurationDisplayName("課表")
         .description("顯示今日課程或完整週課表")

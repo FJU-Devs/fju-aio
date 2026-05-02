@@ -15,6 +15,24 @@ enum AppDestination: Hashable {
     case campusMap
     case friends
     case myProfile
+
+    init?(deepLinkPath: String) {
+        switch deepLinkPath {
+        case "courseSchedule":          self = .courseSchedule
+        case "classroomSchedule":       self = .classroomSchedule
+        case "grades":                  self = .grades
+        case "leaveRequest":            self = .leaveRequest
+        case "attendance":              self = .attendance
+        case "semesterCalendar":        self = .semesterCalendar
+        case "assignments":             self = .assignments
+        case "checkIn":                 self = .checkIn
+        case "enrollmentCertificate":   self = .enrollmentCertificate
+        case "campusMap":               self = .campusMap
+        case "friends":                 self = .friends
+        case "myProfile":               self = .myProfile
+        default:                        return nil
+        }
+    }
 }
 
 // MARK: - Tab Enum
@@ -29,13 +47,20 @@ enum AppTab: Hashable {
 
 struct ContentView: View {
     @State private var selectedTab: AppTab = .home
+    @State private var homePath = NavigationPath()
+    @State private var allFunctionsPath = NavigationPath()
+    @Binding private var pendingDeepLinkDestination: AppDestination?
     @State private var networkMonitor = NetworkMonitor.shared
     @Environment(SyncStatusManager.self) private var syncStatus
+
+    init(pendingDeepLinkDestination: Binding<AppDestination?> = .constant(nil)) {
+        _pendingDeepLinkDestination = pendingDeepLinkDestination
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab("首頁", systemImage: "house.fill", value: .home) {
-                NavigationStack {
+                NavigationStack(path: $homePath) {
                     HomeView()
                         .navigationDestination(for: AppDestination.self) { destination in
                             destinationView(for: destination)
@@ -45,7 +70,7 @@ struct ContentView: View {
             }
 
             Tab("全部功能", systemImage: "square.grid.2x2.fill", value: .allFunctions) {
-                NavigationStack {
+                NavigationStack(path: $allFunctionsPath) {
                     AllFunctionsView()
                         .navigationDestination(for: AppDestination.self) { destination in
                             destinationView(for: destination)
@@ -61,6 +86,15 @@ struct ContentView: View {
                 }
             }
         }
+        .onOpenURL { url in
+            handleDeepLink(url)
+        }
+        .onAppear {
+            consumePendingDeepLink()
+        }
+        .onChange(of: pendingDeepLinkDestination) { _, _ in
+            consumePendingDeepLink()
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if !networkMonitor.isConnected {
@@ -73,6 +107,31 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: syncStatus.isSyncing)
         .animation(.easeInOut(duration: 0.3), value: networkMonitor.isConnected)
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "fju-aio",
+              url.host == "page",
+              let pathComponent = url.pathComponents.dropFirst().first,
+              let destination = AppDestination(deepLinkPath: pathComponent)
+        else {
+            return
+        }
+
+        open(destination)
+    }
+
+    private func consumePendingDeepLink() {
+        guard let destination = pendingDeepLinkDestination else { return }
+        pendingDeepLinkDestination = nil
+        open(destination)
+    }
+
+    private func open(_ destination: AppDestination) {
+        selectedTab = .home
+        var path = NavigationPath()
+        path.append(destination)
+        homePath = path
     }
 
     private var offlineBanner: some View {
