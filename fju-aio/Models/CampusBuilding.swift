@@ -20,7 +20,7 @@ enum CampusBuildingRegistry {
         CampusBuilding(code: "MD", name: "國璽樓", coordinate: .init(latitude: 25.0386260, longitude: 121.4313403)),
         CampusBuilding(code: "LI", name: "文華樓", coordinate: .init(latitude: 25.0364526, longitude: 121.4336470)),
         CampusBuilding(code: "LE", name: "文開樓", coordinate: .init(latitude: 25.0372311, longitude: 121.4338911)),
-        CampusBuilding(code: "SH", name: "信義和平男宿", coordinate: .init(latitude: 25.0368835, longitude: 121.4298275)),
+        CampusBuilding(code: "SH", name: "信義和平男宿", coordinate: .init(latitude: 25.0370245, longitude: 121.4298704)),
         CampusBuilding(code: "SS", name: "仁園 法園", coordinate: .init(latitude: 25.0364867, longitude: 121.4295540)),
         CampusBuilding(code: "NF", name: "秉雅樓", coordinate: .init(latitude: 25.0354594, longitude: 121.4340761)),
         CampusBuilding(code: "FC", name: "輔幼中心", coordinate: .init(latitude: 25.0354765, longitude: 121.4348003)),
