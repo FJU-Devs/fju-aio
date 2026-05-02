@@ -27,19 +27,20 @@ struct CourseCell: View {
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(baseColor.opacity(contentOpacity))
                         .frame(width: 14, height: 14)
-                        .background(Circle().fill(ownerBadgeColor.opacity(0.9 * contentOpacity)))
+                        .background(Circle().fill(ownerBadgeColor.opacity(0.95 * contentOpacity)))
                 }
 
                 Text(course.name)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white.opacity(contentOpacity))
                     .lineLimit(cellHeight > periodHeight ? 2 : 1)
+                    .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 1)
             }
 
             if cellHeight > periodHeight * 0.9 {
                 Text(course.location)
-                    .font(.system(size: 9, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.85 * contentOpacity))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92 * contentOpacity))
                     .lineLimit(1)
             }
         }
@@ -53,8 +54,9 @@ struct CourseCell: View {
                 .fill(
                     LinearGradient(
                         colors: [
+                            baseColor.mix(with: .white, by: 0.15).opacity(backgroundOpacity),
                             baseColor.opacity(backgroundOpacity),
-                            baseColor.opacity(0.85 * backgroundOpacity)
+                            baseColor.mix(with: .black, by: 0.12).opacity(backgroundOpacity)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -63,7 +65,7 @@ struct CourseCell: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
+                .strokeBorder(.white.opacity(0.35), lineWidth: 1)
         )
     }
 }

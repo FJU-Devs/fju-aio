@@ -239,12 +239,12 @@ struct CourseScheduleView: View {
                     ForEach(0..<5, id: \.self) { dayIndex in
                         Rectangle()
                             .fill(dayIndex == todayWeekdayIndex
-                                  ? Color.accentColor.opacity(0.04)
+                                  ? Color.accentColor.opacity(0.07)
                                   : Color(.systemBackground))
                             .frame(width: colWidth, height: periodHeight)
                             .overlay(
                                 Rectangle()
-                                    .stroke(Color(.separator).opacity(0.2), lineWidth: 0.5)
+                                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
                             )
                     }
                 }
@@ -703,10 +703,19 @@ private struct FriendCourseCell: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(color.opacity(0.18 * backgroundOpacity))
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            color.mix(with: .white, by: 0.25).opacity(0.32 * backgroundOpacity),
+                            color.opacity(0.22 * backgroundOpacity)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(color.opacity(0.6 * backgroundOpacity), lineWidth: 1.5)
+                        .strokeBorder(color.opacity(0.85 * backgroundOpacity), lineWidth: 1.5)
                 )
 
             VStack(alignment: contentAlignment, spacing: 2) {
@@ -716,19 +725,19 @@ private struct FriendCourseCell: View {
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.white.opacity(contentOpacity))
                         .frame(width: 14, height: 14)
-                        .background(Circle().fill(color.opacity(contentOpacity)))
+                        .background(Circle().fill(color.mix(with: .black, by: 0.1).opacity(contentOpacity)))
 
                     Text(course.name)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(color.opacity(contentOpacity))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(color.mix(with: .black, by: 0.2).opacity(contentOpacity))
                         .lineLimit(1)
                 }
 
                 if course.location.isEmpty == false,
                    CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2 > periodHeight * 0.9 {
                     Text(course.location)
-                        .font(.system(size: 8, weight: .regular))
-                        .foregroundStyle(color.opacity(0.8 * contentOpacity))
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(color.mix(with: .black, by: 0.25).opacity(0.9 * contentOpacity))
                         .lineLimit(1)
                 }
             }
