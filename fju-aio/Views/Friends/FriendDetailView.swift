@@ -9,6 +9,7 @@ struct FriendDetailView: View {
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var friendStore = FriendStore.shared
+    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
 
     // live credential status from store
     private var currentFriend: FriendRecord {
@@ -62,54 +63,56 @@ struct FriendDetailView: View {
             }
 
             // MARK: Rollcall Authorisation
-            Section {
-                if currentFriend.hasStoredCredentials {
-                    HStack(spacing: 12) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .foregroundStyle(.green)
-                            .frame(width: 28)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("已儲存點名授權")
-                                .font(.body)
-                            Text("你可以在簽到頁面替此朋友點名")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            if checkInEnabled {
+                Section {
+                    if currentFriend.hasStoredCredentials {
+                        HStack(spacing: 12) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .foregroundStyle(.green)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("已儲存點名授權")
+                                    .font(.body)
+                                Text("你可以在簽到頁面替此朋友點名")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                    }
-                    Button(role: .destructive) {
-                        showDeleteCredConfirm = true
-                    } label: {
-                        Label("撤銷授權（刪除帳密）", systemImage: "trash")
-                    }
-                } else {
-                    HStack(spacing: 12) {
-                        Image(systemName: "shield.slash")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 28)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("尚未授權點名")
-                                .font(.body)
-                            Text("請對方在「我的資料」顯示點名 QR Code，再點下方按鈕掃描")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button(role: .destructive) {
+                            showDeleteCredConfirm = true
+                        } label: {
+                            Label("撤銷授權（刪除帳密）", systemImage: "trash")
                         }
+                    } else {
+                        HStack(spacing: 12) {
+                            Image(systemName: "shield.slash")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("尚未授權點名")
+                                    .font(.body)
+                                Text("請對方在「我的資料」顯示點名 QR Code，再點下方按鈕掃描")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Button {
+                            showCredentialScanner = true
+                        } label: {
+                            Label("掃描對方的點名 QR Code", systemImage: "qrcode.viewfinder")
+                        }
+                        .foregroundStyle(AppTheme.accent)
                     }
-                    Button {
-                        showCredentialScanner = true
-                    } label: {
-                        Label("掃描對方的點名 QR Code", systemImage: "qrcode.viewfinder")
-                    }
-                    .foregroundStyle(AppTheme.accent)
-                }
 
-                if let err = credentialScanError {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
-            } header: {
-                Text("點名授權")
-            } footer: {
-                if !currentFriend.hasStoredCredentials {
-                    Text("對方的帳號密碼僅儲存於你的裝置 Keychain，不會上傳至任何伺服器。")
+                    if let err = credentialScanError {
+                        Text(err).font(.caption).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("點名授權")
+                } footer: {
+                    if !currentFriend.hasStoredCredentials {
+                        Text("對方的帳號密碼僅儲存於你的裝置 Keychain，不會上傳至任何伺服器。")
+                    }
                 }
             }
 

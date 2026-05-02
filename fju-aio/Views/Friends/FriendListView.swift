@@ -322,6 +322,7 @@ private struct AddFriendSheet: View {
     @State private var acceptedInvitationPeers: [NearbyPeerProfile] = []
     @State private var nearbyStartNonce = UUID()
     @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
+    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
 
     var body: some View {
         NavigationStack {
@@ -342,20 +343,22 @@ private struct AddFriendSheet: View {
                 Section {
                     myQRCodeView
 
-                    Toggle(isOn: $sharesCredentials) {
-                        Label("包含點名授權", systemImage: "person.badge.key.fill")
-                    }
-                    .foregroundStyle(sharesCredentials ? .orange : .primary)
-
-                    if sharesCredentials {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text("這個 QR Code 含有帳號密碼。分享後對方可以替你點名，請勿任意外流。")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
+                    if checkInEnabled {
+                        Toggle(isOn: $sharesCredentials) {
+                            Label("包含點名授權", systemImage: "person.badge.key.fill")
                         }
-                        .padding(.vertical, 4)
+                        .foregroundStyle(sharesCredentials ? .orange : .primary)
+
+                        if sharesCredentials {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text("這個 QR Code 含有帳號密碼。分享後對方可以替你點名，請勿任意外流。")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            .padding(.vertical, 4)
+                        }
                     }
                 } header: {
                     HStack {
@@ -450,6 +453,11 @@ private struct AddFriendSheet: View {
         }
         .onChange(of: autoAddBackFriends) {
             autoAcceptIncomingRequestsIfNeeded()
+        }
+        .onChange(of: checkInEnabled) {
+            if !checkInEnabled {
+                sharesCredentials = false
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -633,7 +641,7 @@ private struct AddFriendSheet: View {
     }
 
     private func makeQRImage(session: SISSession) -> UIImage? {
-        if sharesCredentials {
+        if checkInEnabled && sharesCredentials {
             guard let credentials = try? CredentialStore.shared.retrieveLDAPCredentials() else { return nil }
             return ProfileQRService.generateQRImage(
                 for: ProfileQRService.makeCombinedPayload(
@@ -659,7 +667,7 @@ private struct AddFriendSheet: View {
 
     private var qrUnavailableMessage: String {
         if let sessionError { return sessionError }
-        if sharesCredentials && !CredentialStore.shared.hasLDAPCredentials() {
+        if checkInEnabled && sharesCredentials && !CredentialStore.shared.hasLDAPCredentials() {
             return "尚未儲存 LDAP 帳號密碼，無法產生點名授權 QR Code。"
         }
         return "缺少學校帳號資料。"
