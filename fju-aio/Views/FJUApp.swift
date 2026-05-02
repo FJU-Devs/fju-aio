@@ -65,6 +65,7 @@ struct FJUApp: App {
                 let (c, e) = try await (courses, events)
                 cache.setCourses(c, semester: current)
                 cache.setCalendarEvents(e, semester: current)
+                WidgetDataWriter.shared.writeCourseData(courses: c, friends: FriendStore.shared.friends)
             }
         } catch {
             // Non-fatal — HomeView will fetch on its own if cache is empty

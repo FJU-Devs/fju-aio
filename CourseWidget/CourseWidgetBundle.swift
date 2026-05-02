@@ -4,9 +4,9 @@ import SwiftUI
 @main
 struct CourseWidgetBundle: WidgetBundle {
     var body: some Widget {
-        CourseActivityWidget()
-        TodoListWidget()
         CourseScheduleWidget()
+        TodoListWidget()
+        CourseActivityWidget()
     }
 }
 

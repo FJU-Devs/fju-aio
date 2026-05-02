@@ -129,7 +129,7 @@ struct TodoSmallView: View {
     }
 }
 
-// MARK: - Medium View (up to 5 assignments with course badge)
+// MARK: - Medium View (up to 4 assignments with course badge)
 
 struct TodoMediumView: View {
     let entry: TodoEntry
@@ -139,7 +139,7 @@ struct TodoMediumView: View {
             entry.assignments
                 .filter { $0.dueDate > Date() }
                 .sorted { $0.dueDate < $1.dueDate }
-                .prefix(5)
+                .prefix(4)
         )
     }
 
@@ -187,7 +187,7 @@ struct TodoMediumView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(12)
     }
 }
 
@@ -235,7 +235,7 @@ struct TodoRowMedium: View {
                 .foregroundStyle(dueDateColor(assignment.dueDate))
                 .lineLimit(1)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)

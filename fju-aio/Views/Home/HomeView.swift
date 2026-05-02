@@ -261,6 +261,7 @@ struct HomeView: View {
                     .filter { $0.dayOfWeek == todayKey }
                     .sorted { $0.startPeriod < $1.startPeriod }
                 isLoading = false
+                WidgetDataWriter.shared.writeCourseData(courses: cachedCourses, friends: FriendStore.shared.friends)
                 scheduleCourseNotifications(for: cachedCourses, calendarEvents: cachedCalendarEvents)
                 return
             }

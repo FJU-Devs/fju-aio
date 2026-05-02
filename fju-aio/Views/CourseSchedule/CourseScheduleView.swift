@@ -624,6 +624,7 @@ struct CourseScheduleView: View {
         if !forceRefresh, let cached = cache.getCourses(semester: selectedSemester) {
             courses = cached
             isLoading = false
+            WidgetDataWriter.shared.writeCourseData(courses: cached, friends: FriendStore.shared.friends)
             scheduleCourseNotifications(for: cached)
             return
         }

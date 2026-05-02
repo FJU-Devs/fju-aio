@@ -57,38 +57,33 @@ enum WidgetDataReader {
 
     // MARK: - Current / Next Course
 
-    /// Returns the current or next upcoming course for today based on wall-clock time.
-    /// Returns `nil` on weekends or when all today's courses have ended.
+    /// Returns the current course, today's next course, or the next course in the coming week.
     static func currentOrNextCourse(
         from courses: [WidgetCourse],
         at date: Date
     ) -> (course: WidgetCourse, isActive: Bool)? {
         let dayNumber = todayDayNumber(at: date)
-        guard let dayNumber else { return nil }
+        if let dayNumber {
+            let todayCourses = courses
+                .filter { $0.dayOfWeekNumber == dayNumber }
+                .sorted { $0.startPeriod < $1.startPeriod }
 
-        let todayCourses = courses
-            .filter { $0.dayOfWeekNumber == dayNumber }
-            .sorted { $0.startPeriod < $1.startPeriod }
+            let nowMinutes = currentMinutes(from: date)
 
-        let nowMinutes = currentMinutes(from: date)
+            for course in todayCourses {
+                guard let start = periodStartMinute(for: course.startPeriod),
+                      let end = periodEndMinute(for: course.endPeriod) else { continue }
 
-        for course in todayCourses {
-            let startIdx = course.startPeriod - 1
-            let endIdx   = course.endPeriod - 1
-            guard startIdx >= 0, startIdx < periodStartMinutes.count,
-                  endIdx >= 0, endIdx < periodEndMinutes.count else { continue }
-
-            let start = periodStartMinutes[startIdx]
-            let end   = periodEndMinutes[endIdx]
-
-            if nowMinutes >= start && nowMinutes < end {
-                return (course, true)   // currently in class
-            }
-            if nowMinutes < start {
-                return (course, false)  // next upcoming class
+                if nowMinutes >= start && nowMinutes < end {
+                    return (course, true)
+                }
+                if nowMinutes < start {
+                    return (course, false)
+                }
             }
         }
-        return nil
+
+        return nextCourseAfterToday(from: courses, todayDayNumber: dayNumber)
     }
 
     // MARK: - Today's Courses
@@ -121,5 +116,42 @@ enum WidgetDataReader {
         let h = cal.component(.hour, from: date)
         let m = cal.component(.minute, from: date)
         return h * 60 + m
+    }
+
+    private static func periodStartMinute(for period: Int) -> Int? {
+        let index = period - 1
+        guard periodStartMinutes.indices.contains(index) else { return nil }
+        return periodStartMinutes[index]
+    }
+
+    private static func periodEndMinute(for period: Int) -> Int? {
+        let index = period - 1
+        guard periodEndMinutes.indices.contains(index) else { return nil }
+        return periodEndMinutes[index]
+    }
+
+    private static func nextCourseAfterToday(
+        from courses: [WidgetCourse],
+        todayDayNumber: Int?
+    ) -> (course: WidgetCourse, isActive: Bool)? {
+        let normalizedToday = todayDayNumber ?? 0
+        return courses
+            .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5 }
+            .sorted {
+                let lhsOffset = daysUntilNextCourseDay($0.dayOfWeekNumber, from: normalizedToday)
+                let rhsOffset = daysUntilNextCourseDay($1.dayOfWeekNumber, from: normalizedToday)
+                if lhsOffset == rhsOffset {
+                    return $0.startPeriod < $1.startPeriod
+                }
+                return lhsOffset < rhsOffset
+            }
+            .first
+            .map { ($0, false) }
+    }
+
+    private static func daysUntilNextCourseDay(_ courseDay: Int, from today: Int) -> Int {
+        guard today >= 1 && today <= 5 else { return courseDay }
+        let offset = courseDay - today
+        return offset > 0 ? offset : offset + 7
     }
 }

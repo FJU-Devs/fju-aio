@@ -1,5 +1,16 @@
 import WidgetKit
 import SwiftUI
+import AppIntents
+
+// MARK: - Widget Configuration
+
+struct CourseScheduleConfigurationIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "課表設定"
+    static var description = IntentDescription("選擇是否顯示朋友課表")
+
+    @Parameter(title: "顯示朋友課表", default: true)
+    var showFriendCourses: Bool
+}
 
 // MARK: - Timeline Entry
 
@@ -14,7 +25,7 @@ struct CourseScheduleEntry: TimelineEntry {
 
 struct CourseScheduleProvider: AppIntentTimelineProvider {
     typealias Entry = CourseScheduleEntry
-    typealias Intent = TimetableWidgetConfiguration
+    typealias Intent = CourseScheduleConfigurationIntent
 
     func placeholder(in context: Context) -> CourseScheduleEntry {
         CourseScheduleEntry(
@@ -26,15 +37,20 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
     }
 
     func snapshot(
-        for configuration: TimetableWidgetConfiguration,
+        for configuration: CourseScheduleConfigurationIntent,
         in context: Context
     ) async -> CourseScheduleEntry {
+        if context.isPreview {
+            return makeSampleEntry(configuration: configuration, date: Date())
+        }
+
         let payload = WidgetDataReader.loadCoursePayload()
-        return makeEntry(from: payload, configuration: configuration, date: Date())
+        return payload.map { makeEntry(from: $0, configuration: configuration, date: Date()) }
+            ?? makeSampleEntry(configuration: configuration, date: Date())
     }
 
     func timeline(
-        for configuration: TimetableWidgetConfiguration,
+        for configuration: CourseScheduleConfigurationIntent,
         in context: Context
     ) async -> Timeline<CourseScheduleEntry> {
         let payload = WidgetDataReader.loadCoursePayload()
@@ -66,13 +82,38 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
 
     private func makeEntry(
         from payload: WidgetCoursePayload?,
-        configuration: TimetableWidgetConfiguration,
+        configuration: CourseScheduleConfigurationIntent,
         date: Date
     ) -> CourseScheduleEntry {
         CourseScheduleEntry(
             date: date,
             courses: payload?.courses ?? [],
             friendOverlays: payload?.friendOverlays ?? [],
+            showFriendCourses: configuration.showFriendCourses
+        )
+    }
+
+    private func makeEntry(
+        from payload: WidgetCoursePayload,
+        configuration: CourseScheduleConfigurationIntent,
+        date: Date
+    ) -> CourseScheduleEntry {
+        CourseScheduleEntry(
+            date: date,
+            courses: payload.courses,
+            friendOverlays: payload.friendOverlays,
+            showFriendCourses: configuration.showFriendCourses
+        )
+    }
+
+    private func makeSampleEntry(
+        configuration: CourseScheduleConfigurationIntent,
+        date: Date
+    ) -> CourseScheduleEntry {
+        CourseScheduleEntry(
+            date: date,
+            courses: sampleCourses(),
+            friendOverlays: sampleFriendOverlays(),
             showFriendCourses: configuration.showFriendCourses
         )
     }
@@ -94,6 +135,38 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
                          startPeriod: 3, endPeriod: 4, startTimeString: "10:10",
                          endTimeString: "12:00", timeSlotLabel: "第3-4節",
                          weeks: "全", instructor: "黃建華"),
+            WidgetCourse(id: "s4", name: "資料庫系統", location: "進修 ES408",
+                         colorHex: "#F7A440", dayOfWeekNumber: 5, dayOfWeekChinese: "五",
+                         startPeriod: 6, endPeriod: 8, startTimeString: "13:40",
+                         endTimeString: "16:30", timeSlotLabel: "第5-7節",
+                         weeks: "全", instructor: "林怡君"),
+        ]
+    }
+
+    private func sampleFriendOverlays() -> [WidgetFriendOverlay] {
+        [
+            WidgetFriendOverlay(
+                id: "friend-1",
+                displayName: "Alex",
+                courses: [
+                    WidgetFriendCourse(
+                        name: "人工智慧",
+                        dayOfWeekNumber: 1,
+                        startPeriod: 6,
+                        endPeriod: 7,
+                        location: "理工 SF131",
+                        colorHex: "#FF6B6B"
+                    ),
+                    WidgetFriendCourse(
+                        name: "作業系統",
+                        dayOfWeekNumber: 4,
+                        startPeriod: 3,
+                        endPeriod: 4,
+                        location: "理工 SF234",
+                        colorHex: "#FF6B6B"
+                    ),
+                ]
+            )
         ]
     }
 }
@@ -106,7 +179,7 @@ struct CourseScheduleWidget: Widget {
     var body: some WidgetConfiguration {
         AppIntentConfiguration(
             kind: kind,
-            intent: TimetableWidgetConfiguration.self,
+            intent: CourseScheduleConfigurationIntent.self,
             provider: CourseScheduleProvider()
         ) { entry in
             CourseScheduleWidgetView(entry: entry)
@@ -507,4 +580,58 @@ struct TimetableCellView: View {
         }
         .frame(width: width, height: height)
     }
+}
+
+private extension CourseScheduleEntry {
+    static var preview: CourseScheduleEntry {
+        CourseScheduleEntry(
+            date: Date(),
+            courses: [
+                WidgetCourse(id: "preview-1", name: "資料結構", location: "理工 SF334",
+                             colorHex: "#4A90D9", dayOfWeekNumber: 1, dayOfWeekChinese: "一",
+                             startPeriod: 3, endPeriod: 4, startTimeString: "10:10",
+                             endTimeString: "12:00", timeSlotLabel: "第3-4節",
+                             weeks: "全", instructor: "王大明"),
+                WidgetCourse(id: "preview-2", name: "線性代數", location: "理工 LM305",
+                             colorHex: "#50C878", dayOfWeekNumber: 3, dayOfWeekChinese: "三",
+                             startPeriod: 1, endPeriod: 2, startTimeString: "08:10",
+                             endTimeString: "10:00", timeSlotLabel: "第1-2節",
+                             weeks: "全", instructor: "陳志明"),
+                WidgetCourse(id: "preview-3", name: "資料庫系統", location: "進修 ES408",
+                             colorHex: "#F7A440", dayOfWeekNumber: 5, dayOfWeekChinese: "五",
+                             startPeriod: 6, endPeriod: 8, startTimeString: "13:40",
+                             endTimeString: "16:30", timeSlotLabel: "第5-7節",
+                             weeks: "全", instructor: "林怡君"),
+            ],
+            friendOverlays: [
+                WidgetFriendOverlay(
+                    id: "preview-friend",
+                    displayName: "Alex",
+                    courses: [
+                        WidgetFriendCourse(name: "人工智慧", dayOfWeekNumber: 1, startPeriod: 6,
+                                           endPeriod: 7, location: "理工 SF131", colorHex: "#FF6B6B"),
+                    ]
+                )
+            ],
+            showFriendCourses: true
+        )
+    }
+}
+
+#Preview("課表 - 小", as: .systemSmall) {
+    CourseScheduleWidget()
+} timeline: {
+    CourseScheduleEntry.preview
+}
+
+#Preview("課表 - 中", as: .systemMedium) {
+    CourseScheduleWidget()
+} timeline: {
+    CourseScheduleEntry.preview
+}
+
+#Preview("課表 - 大", as: .systemLarge) {
+    CourseScheduleWidget()
+} timeline: {
+    CourseScheduleEntry.preview
 }
