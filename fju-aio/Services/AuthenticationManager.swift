@@ -6,6 +6,7 @@ final class AuthenticationManager {
     private(set) var isAuthenticated = false
     private(set) var currentUserId: Int?
     private(set) var isLoading = false
+    private(set) var isCheckingAuth = true
     
     private let tronClassAuthService = TronClassAuthService.shared
     private let sisAuthService = SISAuthService.shared
@@ -25,6 +26,7 @@ final class AuthenticationManager {
         let tronClassLoggedIn = await tronClassAuthService.isLoggedIn()
         let sisLoggedIn = await sisAuthService.isLoggedIn()
         isAuthenticated = tronClassLoggedIn || sisLoggedIn
+        isCheckingAuth = false
         logger.info("Initial auth state: \(self.isAuthenticated ? "logged in" : "logged out")")
     }
     
