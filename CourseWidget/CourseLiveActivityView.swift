@@ -55,50 +55,77 @@ struct CourseLiveActivityView: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
-            HStack(alignment: .center, spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(display.phaseColor.opacity(0.15))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: display.phaseIcon)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(display.phaseColor)
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(context.attributes.courseName)
-                        .font(.system(.subheadline, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    HStack(spacing: 4) {
-                        Image(systemName: "mappin")
-                            .font(.caption2)
-                        Text(context.attributes.location)
-                            .font(.caption)
+            VStack(alignment: .leading, spacing: 10) {
+                if let courseDetailURL = context.attributes.courseDetailURL {
+                    Link(destination: courseDetailURL) {
+                        contentRow(display: display)
                     }
-                    .foregroundStyle(.secondary)
+                } else {
+                    contentRow(display: display)
                 }
 
-                Spacer(minLength: 0)
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(display.phaseLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if display.phase != .ended {
-                        Text(display.timerTarget, style: .timer)
-                            .font(.system(.title3, design: .rounded).monospacedDigit().bold())
-                            .foregroundStyle(display.phaseColor)
-                            .multilineTextAlignment(.trailing)
-                    } else {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(Color.green)
+                if display.phase != .ended,
+                   let mapURL = context.attributes.mapURL {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Link(destination: mapURL) {
+                            Label("在地圖中查看", systemImage: "map.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(display.phaseColor, in: Capsule())
+                        }
                     }
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+        }
+    }
+
+    private func contentRow(display: CourseActivityDisplay) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(display.phaseColor.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                Image(systemName: display.phaseIcon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(display.phaseColor)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(context.attributes.courseName)
+                    .font(.system(.subheadline, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Image(systemName: "mappin")
+                        .font(.caption2)
+                    Text(context.attributes.location)
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(display.phaseLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if display.phase != .ended {
+                    Text(display.timerTarget, style: .timer)
+                        .font(.system(.title3, design: .rounded).monospacedDigit().bold())
+                        .foregroundStyle(display.phaseColor)
+                        .multilineTextAlignment(.trailing)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(Color.green)
+                }
+            }
         }
     }
 }
@@ -112,9 +139,17 @@ struct CourseCompactLeading: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
-            Image(systemName: display.phaseIcon)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(display.phaseColor)
+            if let courseDetailURL = context.attributes.courseDetailURL {
+                Link(destination: courseDetailURL) {
+                    Image(systemName: display.phaseIcon)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(display.phaseColor)
+                }
+            } else {
+                Image(systemName: display.phaseIcon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(display.phaseColor)
+            }
         }
     }
 }
@@ -129,17 +164,35 @@ struct CourseCompactTrailing: View {
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
             if display.phase == .ended {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.green)
+                if let courseDetailURL = context.attributes.courseDetailURL {
+                    Link(destination: courseDetailURL) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.green)
+                    }
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.green)
+                }
             } else {
-                Text(display.timerTarget, style: .timer)
-                    .monospacedDigit()
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundStyle(display.phaseColor)
-                    .frame(maxWidth: 44)
+                if let courseDetailURL = context.attributes.courseDetailURL {
+                    Link(destination: courseDetailURL) {
+                        compactTimer(display: display)
+                    }
+                } else {
+                    compactTimer(display: display)
+                }
             }
         }
+    }
+
+    private func compactTimer(display: CourseActivityDisplay) -> some View {
+        Text(display.timerTarget, style: .timer)
+            .monospacedDigit()
+            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .foregroundStyle(display.phaseColor)
+            .frame(maxWidth: 44)
     }
 }
 
@@ -152,27 +205,37 @@ struct CourseExpandedLeading: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill(display.phaseColor.opacity(0.2))
-                        .frame(width: 32, height: 32)
-                    Image(systemName: display.phaseIcon)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(display.phaseColor)
+            if let courseDetailURL = context.attributes.courseDetailURL {
+                Link(destination: courseDetailURL) {
+                    expandedLeadingContent(display: display)
                 }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(context.attributes.courseName)
-                        .font(.system(.footnote, weight: .semibold))
-                        .lineLimit(1)
-                    Text(context.attributes.location)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            } else {
+                expandedLeadingContent(display: display)
             }
-            .padding(.leading, 4)
         }
+    }
+
+    private func expandedLeadingContent(display: CourseActivityDisplay) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(display.phaseColor.opacity(0.2))
+                    .frame(width: 32, height: 32)
+                Image(systemName: display.phaseIcon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(display.phaseColor)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(context.attributes.courseName)
+                    .font(.system(.footnote, weight: .semibold))
+                    .lineLimit(1)
+                Text(context.attributes.location)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, 4)
     }
 }
 
@@ -185,6 +248,18 @@ struct CourseExpandedTrailing: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
+            if let courseDetailURL = context.attributes.courseDetailURL {
+                Link(destination: courseDetailURL) {
+                    expandedTrailingContent(display: display)
+                }
+            } else {
+                expandedTrailingContent(display: display)
+            }
+        }
+    }
+
+    private func expandedTrailingContent(display: CourseActivityDisplay) -> some View {
+        Group {
             if display.phase == .ended {
                 Text("結束")
                     .font(.footnote.bold())
@@ -215,11 +290,29 @@ struct CourseExpandedBottom: View {
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
             HStack {
-                Label(context.attributes.location, systemImage: "mappin.circle.fill")
-                    .foregroundStyle(display.phaseColor.opacity(0.9))
+                if let courseDetailURL = context.attributes.courseDetailURL {
+                    Link(destination: courseDetailURL) {
+                        Label(context.attributes.location, systemImage: "mappin.circle.fill")
+                            .foregroundStyle(display.phaseColor.opacity(0.9))
+                            .lineLimit(1)
+                    }
+                } else {
+                    Label(context.attributes.location, systemImage: "mappin.circle.fill")
+                        .foregroundStyle(display.phaseColor.opacity(0.9))
+                        .lineLimit(1)
+                }
                 Spacer()
-                Label(context.attributes.instructor, systemImage: "person.circle.fill")
-                    .foregroundStyle(.secondary)
+                if display.phase != .ended,
+                   let mapURL = context.attributes.mapURL {
+                    Link(destination: mapURL) {
+                        Label("地圖", systemImage: "map.fill")
+                            .foregroundStyle(display.phaseColor.opacity(0.95))
+                    }
+                } else {
+                    Label(context.attributes.instructor, systemImage: "person.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .font(.caption2)
             .padding(.horizontal, 4)
@@ -237,9 +330,17 @@ struct CourseMinimalView: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let display = CourseActivityDisplay(context: context, now: timeline.date)
 
-            Image(systemName: display.phaseIcon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(display.phaseColor)
+            if let courseDetailURL = context.attributes.courseDetailURL {
+                Link(destination: courseDetailURL) {
+                    Image(systemName: display.phaseIcon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(display.phaseColor)
+                }
+            } else {
+                Image(systemName: display.phaseIcon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(display.phaseColor)
+            }
         }
     }
 }
