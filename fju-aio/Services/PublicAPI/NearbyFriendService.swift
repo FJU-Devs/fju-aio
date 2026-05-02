@@ -46,8 +46,11 @@ final class NearbyFriendService: NSObject {
     private var peripheralsByRecordName: [String: CBPeripheral] = [:]
     private var addRequestCharacteristicsByRecordName: [String: CBCharacteristic] = [:]
     private var pendingAddRequestRecordNames: Set<String> = []
+    private var addRequestAttemptsByRecordName: [String: Int] = [:]
+    private var addRequestRetryTasksByRecordName: [String: Task<Void, Never>] = [:]
     /// track which peripheral IDs we have already processed
     private var seenPeripheralIDs: Set<UUID> = []
+    private let maxAddRequestAttempts = 4
 
     private override init() {}
 
@@ -86,6 +89,9 @@ final class NearbyFriendService: NSObject {
         peripheralsByRecordName = [:]
         addRequestCharacteristicsByRecordName = [:]
         pendingAddRequestRecordNames = []
+        addRequestAttemptsByRecordName = [:]
+        for task in addRequestRetryTasksByRecordName.values { task.cancel() }
+        addRequestRetryTasksByRecordName = [:]
         seenPeripheralIDs = []
         discoveredPeers = []
         incomingAddRequests = []
@@ -114,6 +120,7 @@ final class NearbyFriendService: NSObject {
     private func sendAddRequest(toRecordName recordName: String) {
         guard recordName != ProfileQRService.stableDeviceToken() else { return }
         pendingAddRequestRecordNames.insert(recordName)
+        addRequestAttemptsByRecordName[recordName] = 0
         logger.info("📨 Queued add request for \(recordName, privacy: .public)")
 
         if let peripheral = peripheralsByRecordName[recordName],
@@ -169,10 +176,50 @@ final class NearbyFriendService: NSObject {
 
     private func writeAddRequest(to peripheral: CBPeripheral, characteristic: CBCharacteristic, recordName: String) {
         guard let data = myProfileData else { return }
+        guard pendingAddRequestRecordNames.contains(recordName) else { return }
+
+        let attempt = (addRequestAttemptsByRecordName[recordName] ?? 0) + 1
+        addRequestAttemptsByRecordName[recordName] = attempt
+
         let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
         peripheral.writeValue(data, for: characteristic, type: writeType)
+        logger.info("📨 Sent add request attempt \(attempt, privacy: .public) to \(recordName, privacy: .public)")
+
+        scheduleAddRequestRetryIfNeeded(recordName: recordName)
+    }
+
+    private func scheduleAddRequestRetryIfNeeded(recordName: String) {
+        addRequestRetryTasksByRecordName[recordName]?.cancel()
+
+        guard pendingAddRequestRecordNames.contains(recordName),
+              (addRequestAttemptsByRecordName[recordName] ?? 0) < maxAddRequestAttempts else {
+            if pendingAddRequestRecordNames.contains(recordName) {
+                pendingAddRequestRecordNames.remove(recordName)
+                logger.warning("⚠️ Add request retry limit reached for \(recordName, privacy: .public)")
+            }
+            addRequestAttemptsByRecordName[recordName] = nil
+            addRequestRetryTasksByRecordName[recordName] = nil
+            return
+        }
+
+        addRequestRetryTasksByRecordName[recordName] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run {
+                guard let self,
+                      self.pendingAddRequestRecordNames.contains(recordName),
+                      let peripheral = self.peripheralsByRecordName[recordName],
+                      let characteristic = self.addRequestCharacteristicsByRecordName[recordName] else { return }
+                self.writeAddRequest(to: peripheral, characteristic: characteristic, recordName: recordName)
+            }
+        }
+    }
+
+    private func markAddRequestDelivered(recordName: String) {
         pendingAddRequestRecordNames.remove(recordName)
-        logger.info("📨 Sent add request to \(recordName, privacy: .public)")
+        addRequestAttemptsByRecordName[recordName] = nil
+        addRequestRetryTasksByRecordName[recordName]?.cancel()
+        addRequestRetryTasksByRecordName[recordName] = nil
+        logger.info("✅ Add request delivered to \(recordName, privacy: .public)")
     }
 }
 
@@ -385,6 +432,20 @@ extension NearbyFriendService: CBPeripheralDelegate {
 
             if !self.pendingAddRequestRecordNames.contains(peer.id) {
                 self.centralManager?.cancelPeripheralConnection(peripheral)
+            }
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        Task { @MainActor in
+            guard characteristic.uuid == kAddRequestCharUUID else { return }
+            guard let recordName = self.peripheralsByRecordName.first(where: { $0.value == peripheral })?.key else { return }
+
+            if let error {
+                self.logger.error("❌ Add request write failed: \(error.localizedDescription, privacy: .public)")
+                self.scheduleAddRequestRetryIfNeeded(recordName: recordName)
+            } else {
+                self.markAddRequestDelivered(recordName: recordName)
             }
         }
     }

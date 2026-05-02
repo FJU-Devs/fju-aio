@@ -602,9 +602,16 @@ private struct AddFriendSheet: View {
             Spacer()
 
             if isAdded {
-                Label("已新增", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.green)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Label("已新增", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                    Button("重送邀請") {
+                        onRequestAddPeer(peer)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
             } else {
                 Button("加好友") {
                     guard !friendStore.isFriend(recordName: peer.id) else {
