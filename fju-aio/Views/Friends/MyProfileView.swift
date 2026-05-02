@@ -11,7 +11,7 @@ struct MyProfileView: View {
     @AppStorage("myProfile.bio") private var bio = ""
     @AppStorage("myProfile.isPublished") private var isPublished = false
     @AppStorage("myProfile.shareSchedule") private var shareSchedule = false
-    @AppStorage("myProfile.scheduleVisibility") private var scheduleVisibilityRaw = ""
+    @AppStorage("myProfile.scheduleVisibility") private var scheduleVisibilityRaw = ScheduleVisibility.friendsOnly.rawValue
 
     // Social links are stored as JSON in UserDefaults (AppStorage can't hold [SocialLink])
     @State private var socialLinks: [SocialLink] = []
@@ -377,7 +377,7 @@ struct MyProfileView: View {
         if let visibility = ScheduleVisibility(rawValue: scheduleVisibilityRaw) {
             return visibility
         }
-        return ScheduleVisibility(legacyShareSchedule: shareSchedule)
+        return shareSchedule ? .public : .friendsOnly
     }
 
     private var scheduleVisibilityBinding: Binding<String> {

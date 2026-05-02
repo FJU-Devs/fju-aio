@@ -331,7 +331,7 @@ private struct OnboardingProfilePage: View {
     @AppStorage("myProfile.bio") private var bio = ""
     @AppStorage("myProfile.isPublished") private var isPublished = false
     @AppStorage("myProfile.shareSchedule") private var shareSchedule = false
-    @AppStorage("myProfile.scheduleVisibility") private var scheduleVisibilityRaw = ""
+    @AppStorage("myProfile.scheduleVisibility") private var scheduleVisibilityRaw = ScheduleVisibility.friendsOnly.rawValue
 
     @State private var socialLinks: [SocialLink] = []
     @State private var sisSession: SISSession?
@@ -654,7 +654,7 @@ private struct OnboardingProfilePage: View {
         if let visibility = ScheduleVisibility(rawValue: scheduleVisibilityRaw) {
             return visibility
         }
-        return ScheduleVisibility(legacyShareSchedule: shareSchedule)
+        return shareSchedule ? .public : .friendsOnly
     }
 
     private var scheduleVisibilityBinding: Binding<String> {
