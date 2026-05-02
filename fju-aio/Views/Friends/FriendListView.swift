@@ -88,11 +88,11 @@ private struct FriendListContent: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    showAddFriend = true
                     Task {
                         if sisSession == nil {
                             await loadSession(force: true)
                         }
-                        showAddFriend = true
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -289,8 +289,10 @@ private struct AddFriendSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if !incomingRequests.isEmpty || !acceptedInvitationPeers.isEmpty {
-                    Section("好友邀請") {
+                Section("好友邀請") {
+                    if incomingRequests.isEmpty && acceptedInvitationPeers.isEmpty {
+                        invitationEmptyStateRow
+                    } else {
                         ForEach(incomingRequests) { peer in
                             incomingRequestRow(peer)
                         }
@@ -396,6 +398,13 @@ private struct AddFriendSheet: View {
             startNearby()
         }
         .onAppear {
+            if session == nil && !isLoadingSession {
+                onRetrySession()
+            }
+            startNearby()
+            autoAcceptIncomingRequestsIfNeeded()
+        }
+        .onChange(of: session?.empNo) {
             startNearby()
             autoAcceptIncomingRequestsIfNeeded()
         }
@@ -433,6 +442,35 @@ private struct AddFriendSheet: View {
 
     private var addedPeers: [NearbyPeerProfile] {
         visiblePeers.filter { addedIds.contains($0.id) }
+    }
+
+    private var invitationEmptyStateRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if isLoadingSession || (session != nil && !nearbyService.isActive) {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24)
+            } else {
+                Image(systemName: "person.badge.plus")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+            }
+
+            Text(invitationEmptyStateMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var invitationEmptyStateMessage: String {
+        if isLoadingSession || session == nil {
+            return "正在載入帳號資料..."
+        }
+        if !nearbyService.isActive {
+            return "正在啟動附近加好友..."
+        }
+        return "目前暫時沒有人加您。如果有，可能是藍牙出現問題，需要您也掃描對方 QRCode。"
     }
 
     private var startTaskID: String {
