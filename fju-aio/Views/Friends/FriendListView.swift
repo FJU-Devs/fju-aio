@@ -40,9 +40,8 @@ private struct ProfileRequiredView: View {
 private struct FriendListContent: View {
     @Environment(AuthenticationManager.self) private var authManager
     @State private var friendStore = FriendStore.shared
-    @State private var showScanner = false
+    @State private var showAddFriend = false
     @State private var showMyQR = false
-    @State private var showNearby = false
     @State private var nearbyService = NearbyFriendService.shared
     @State private var scanError: String?
     @State private var lastScannedInfo: String?
@@ -129,22 +128,15 @@ private struct FriendListContent: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 4) {
-                    Button {
-                        Task {
-                            if sisSession == nil {
-                                await loadSession(force: true)
-                            }
-                            showNearby = true
+                Button {
+                    Task {
+                        if sisSession == nil {
+                            await loadSession(force: true)
                         }
-                    } label: {
-                        Image(systemName: "antenna.radiowaves.left.and.right")
+                        showAddFriend = true
                     }
-                    Button {
-                        showScanner = true
-                    } label: {
-                        Image(systemName: "qrcode.viewfinder")
-                    }
+                } label: {
+                    Image(systemName: "plus")
                 }
             }
         }
@@ -156,15 +148,6 @@ private struct FriendListContent: View {
         } message: {
             Text(scanError ?? lastScannedInfo ?? "")
         }
-        .sheet(isPresented: $showScanner) {
-            MutualAddSheet(
-                session: sisSession,
-                onAddedFriend: { qrString in
-                    showScanner = false
-                    handleScanned(qrString)
-                }
-            )
-        }
         .sheet(isPresented: $showMyQR) {
             MyProfileQRSheet(
                 session: sisSession,
@@ -174,9 +157,15 @@ private struct FriendListContent: View {
                 onRetry: { Task { await loadSession(force: true) } }
             )
         }
-        .sheet(isPresented: $showNearby) {
-            NearbyAddView(
+        .sheet(isPresented: $showAddFriend) {
+            AddFriendSheet(
                 session: sisSession,
+                isLoadingSession: isLoadingSession,
+                sessionError: sessionError,
+                onRetrySession: { Task { await loadSession(force: true) } },
+                onScannedQRCode: { qrString in
+                    handleScanned(qrString)
+                },
                 onRequestAddPeer: { peer in
                     addFriend(peer)
                     nearbyService.sendAddRequest(to: peer)
@@ -520,49 +509,360 @@ private struct MyProfileQRSheet: View {
     }
 }
 
-// MARK: - Mutual Add Sheet
+// MARK: - Add Friend Sheet
 
-private struct MutualAddSheet: View {
+private struct AddFriendSheet: View {
     let session: SISSession?
-    /// Called with the raw QR string once the first scan succeeds.
-    let onAddedFriend: (String) -> Void
+    let isLoadingSession: Bool
+    let sessionError: String?
+    let onRetrySession: () -> Void
+    let onScannedQRCode: (String) -> Void
+    let onRequestAddPeer: (NearbyPeerProfile) -> Void
+    let onAcceptIncomingPeer: (NearbyPeerProfile) -> Void
 
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var nearbyService = NearbyFriendService.shared
+    @State private var friendStore = FriendStore.shared
+    @State private var showScanner = false
+    @State private var addedIds: Set<String> = []
+    @State private var nearbyStartNonce = UUID()
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        showScanner = true
+                    } label: {
+                        AddFriendActionRow(
+                            icon: "qrcode.viewfinder",
+                            tint: AppTheme.accent,
+                            title: "掃描 QR Code",
+                            subtitle: "掃描朋友的個人 QR Code 來新增好友"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Section {
+                    nearbyStatusRow
+                    Text("使用附近加好友時，請把兩台手機靠近並保持這個畫面開啟，距離太遠時可能會搜尋到但連線失敗。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("附近加好友")
+                }
+
+                if !incomingRequests.isEmpty {
+                    Section("邀請") {
+                        ForEach(incomingRequests) { peer in
+                            incomingRequestRow(peer)
+                        }
+                    }
+                }
+
+                if !pendingPeers.isEmpty {
+                    Section("附近的人") {
+                        ForEach(pendingPeers) { peer in
+                            peerRow(peer, isAdded: false)
+                        }
+                    }
+                }
+
+                if !addedPeers.isEmpty {
+                    Section("已新增") {
+                        ForEach(addedPeers) { peer in
+                            peerRow(peer, isAdded: true)
+                        }
+                    }
+                }
+
+                if nearbyService.isActive && incomingRequests.isEmpty && pendingPeers.isEmpty && addedPeers.isEmpty {
+                    Section {
+                        ContentUnavailableView {
+                            Label("尚未找到附近的人", systemImage: "person.2.slash")
+                        } description: {
+                            Text("請確認對方也開啟加好友頁面，並把兩台手機靠近一點。")
+                        } actions: {
+                            Button("重新搜尋") {
+                                restartNearby()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("新增好友")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("關閉") {
+                        nearbyService.stop()
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showScanner) {
+            FriendQRScannerSheet { qrString in
+                showScanner = false
+                onScannedQRCode(qrString)
+            }
+        }
+        .task(id: startTaskID) {
+            startNearby()
+        }
+        .onAppear {
+            startNearby()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                startNearby()
+            }
+        }
+        .onDisappear {
+            nearbyService.stop()
+        }
+    }
+
+    private var incomingRequests: [NearbyPeerProfile] {
+        nearbyService.incomingAddRequests.filter { !friendStore.isFriend(recordName: $0.id) }
+    }
+
+    private var visiblePeers: [NearbyPeerProfile] {
+        nearbyService.discoveredPeers.filter { !friendStore.isFriend(recordName: $0.id) }
+    }
+
+    private var pendingPeers: [NearbyPeerProfile] {
+        visiblePeers.filter { !addedIds.contains($0.id) }
+    }
+
+    private var addedPeers: [NearbyPeerProfile] {
+        visiblePeers.filter { addedIds.contains($0.id) }
+    }
+
+    private var startTaskID: String {
+        "\(session?.empNo ?? "no-session")-\(nearbyStartNonce.uuidString)"
+    }
+
+    private var nearbyStatusRow: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(nearbyService.isActive ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
+                    .frame(width: 42, height: 42)
+                Image(systemName: nearbyService.isActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                    .foregroundStyle(nearbyService.isActive ? .green : .secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(nearbyStatusTitle)
+                    .font(.body.weight(.medium))
+                Text(nearbyStatusSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if isLoadingSession {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("重試") {
+                    restartNearby()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var nearbyStatusTitle: String {
+        if isLoadingSession { return "正在載入帳號資料" }
+        if session == nil { return "無法啟動附近加好友" }
+        return nearbyService.isActive ? "正在搜尋附近的朋友" : "尚未啟動"
+    }
+
+    private var nearbyStatusSubtitle: String {
+        if let sessionError { return sessionError }
+        if session == nil { return "請確認已登入後再試一次。" }
+        return "把手機靠近對方，保持此頁開啟。"
+    }
+
+    private func startNearby() {
+        guard let session else { return }
+        let payload = ProfileQRService.makeMutualPayload(
+            userId: session.userId,
+            empNo: session.empNo,
+            displayName: session.userName
+        )
+        nearbyService.start(profile: payload)
+    }
+
+    private func restartNearby() {
+        if session == nil {
+            onRetrySession()
+        }
+        nearbyStartNonce = UUID()
+        startNearby()
+    }
+
+    private func peerRow(_ peer: NearbyPeerProfile, isAdded: Bool) -> some View {
+        HStack(spacing: 12) {
+            ProfileInitialCircle(name: peer.displayName, tint: AppTheme.accent)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(peer.displayName).font(.body)
+                Text(peer.empNo).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if isAdded {
+                Label("已新增", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.green)
+            } else {
+                Button("加好友") {
+                    guard !friendStore.isFriend(recordName: peer.id) else {
+                        addedIds.insert(peer.id)
+                        return
+                    }
+                    addedIds.insert(peer.id)
+                    onRequestAddPeer(peer)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func incomingRequestRow(_ peer: NearbyPeerProfile) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.green.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                Image(systemName: "person.badge.plus")
+                    .foregroundStyle(.green)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(peer.displayName) 已加你為好友")
+                    .font(.body)
+                Text("要加回對方嗎？")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("加好友") {
+                guard !friendStore.isFriend(recordName: peer.id) else {
+                    nearbyService.dismissIncomingRequest(id: peer.id)
+                    addedIds.insert(peer.id)
+                    return
+                }
+                addedIds.insert(peer.id)
+                onAcceptIncomingPeer(peer)
+                nearbyService.dismissIncomingRequest(id: peer.id)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct FriendQRScannerSheet: View {
+    let onScanned: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            scannerPhase
+            ZStack {
+                QRScannerView { qrString in
+                    onScanned(qrString)
+                }
+                .ignoresSafeArea()
+
+                VStack {
+                    Spacer()
+                    Text("掃描朋友的個人 QR Code")
+                        .font(.subheadline).foregroundStyle(.white)
+                        .padding()
+                        .background(.black.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.bottom, 48)
+                }
+            }
+            .navigationTitle("掃描 QR Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(.black.opacity(0.6), for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }.foregroundStyle(.white)
+                }
+            }
         }
     }
+}
 
-    // MARK: Phase 1 — Camera scanner
+private struct AddFriendActionRow: View {
+    let icon: String
+    let tint: Color
+    let title: String
+    let subtitle: String
 
-    private var scannerPhase: some View {
-        ZStack {
-            QRScannerView { qrString in
-                onAddedFriend(qrString)
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(tint.opacity(0.12))
+                    .frame(width: 44, height: 44)
+                Image(systemName: icon)
+                    .font(.title2)
+                    .foregroundStyle(tint)
             }
-            .ignoresSafeArea()
 
-            VStack {
-                Spacer()
-                Text("掃描朋友的個人 QR Code")
-                    .font(.subheadline).foregroundStyle(.white)
-                    .padding()
-                    .background(.black.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, 48)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
-        .navigationTitle("掃描 QR Code")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbarBackground(.black.opacity(0.6), for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("取消") { dismiss() }.foregroundStyle(.white)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct ProfileInitialCircle: View {
+    let name: String
+    let tint: Color
+
+    var body: some View {
+        Circle()
+            .fill(tint.opacity(0.15))
+            .frame(width: 44, height: 44)
+            .overlay {
+                Text(String(name.prefix(1)))
+                    .font(.headline)
+                    .foregroundStyle(tint)
             }
-        }
     }
 }
 
