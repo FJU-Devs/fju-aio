@@ -175,10 +175,16 @@ private struct FriendListContent: View {
             )
         }
         .sheet(isPresented: $showNearby) {
-            NearbyAddView(session: sisSession) { peer in
-                addFriend(peer)
-                nearbyService.sendAddRequest(to: peer)
-            }
+            NearbyAddView(
+                session: sisSession,
+                onRequestAddPeer: { peer in
+                    addFriend(peer)
+                    nearbyService.sendAddRequest(to: peer)
+                },
+                onAcceptIncomingPeer: { peer in
+                    addFriend(peer)
+                }
+            )
         }
         .task { await loadSession() }
         .refreshable { await refreshAll() }

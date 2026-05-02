@@ -7,8 +7,10 @@ import SwiftUI
 
 struct NearbyAddView: View {
     let session: SISSession?
-    /// Called when the user confirms adding a peer.
-    let onAddPeer: (NearbyPeerProfile) -> Void
+    /// Called when this device initiates adding a discovered peer.
+    let onRequestAddPeer: (NearbyPeerProfile) -> Void
+    /// Called when this device accepts a peer's incoming add request.
+    let onAcceptIncomingPeer: (NearbyPeerProfile) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var nearbyService = NearbyFriendService.shared
@@ -139,7 +141,7 @@ struct NearbyAddView: View {
             } else {
                 Button("加好友") {
                     addedIds.insert(peer.id)
-                    onAddPeer(peer)
+                    onRequestAddPeer(peer)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -180,7 +182,7 @@ struct NearbyAddView: View {
 
             Button("加好友") {
                 addedIds.insert(peer.id)
-                onAddPeer(peer)
+                onAcceptIncomingPeer(peer)
                 nearbyService.dismissIncomingRequest(id: peer.id)
             }
             .buttonStyle(.borderedProminent)
