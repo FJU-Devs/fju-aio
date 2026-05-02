@@ -105,15 +105,6 @@ struct SettingsView: View {
             }
 
             Section("自動同步") {
-                Toggle(isOn: $syncDuringSplash) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("啟動時先同步資料")
-                        Text("關閉後會先進入首頁，再於背景慢慢載入課程、行事曆與 Live Activity 排程")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
                 Toggle(isOn: Binding(
                     get: { autoSyncCalendar },
                     set: { updateAutoCalendarSync($0) }
@@ -140,6 +131,15 @@ struct SettingsView: View {
             }
 
             Section("一般") {
+                Toggle(isOn: $syncDuringSplash) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("啟動時先同步資料")
+                        Text("關閉後會先進入首頁，再於背景慢慢載入課程、行事曆與 Live Activity 排程")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Toggle("顯示同步狀態列", isOn: Binding(
                     get: { syncStatus.isEnabled },
                     set: { syncStatus.isEnabled = $0 }
