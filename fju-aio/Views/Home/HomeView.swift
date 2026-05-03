@@ -41,7 +41,7 @@ struct HomeView: View {
             .padding(.bottom, 24)
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("FJU AIO")
+        .navigationTitle("輔大 All In One")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             await loadTodayCourses(forceRefresh: true)
