@@ -18,15 +18,14 @@ struct HomeView: View {
     private let cache = AppCache.shared
 
     private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
     ]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                greetingSection
+            VStack(alignment: .leading, spacing: 24) {
+                heroSection
 
                 if !todayCourses.isEmpty {
                     todayCoursesSection
@@ -38,10 +37,12 @@ struct HomeView: View {
                     bulletinSection
                 }
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.bottom, 24)
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("FJU AIO")
+        .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             await loadTodayCourses(forceRefresh: true)
             await loadBulletinNotifications()
@@ -71,17 +72,105 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Greeting
+    // MARK: - Hero Section
 
-    private var greetingSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(greetingText)
-                .font(.title2.weight(.bold))
-            Text(dateString)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+    private var heroSection: some View {
+        ZStack(alignment: .bottomLeading) {
+            // Gradient background
+            RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
+                .fill(
+                    LinearGradient(
+                        colors: heroGradientColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: 150)
+
+            // Decorative circle
+            Circle()
+                .fill(.white.opacity(0.08))
+                .frame(width: 180, height: 180)
+                .offset(x: 200, y: 30)
+
+            Circle()
+                .fill(.white.opacity(0.05))
+                .frame(width: 100, height: 100)
+                .offset(x: 260, y: -10)
+
+            // Content
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(greetingText)
+                        .font(.title.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(dateString)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+
+                Spacer()
+
+                // Next course pill
+                if let next = nextUpcomingCourse {
+                    nextCoursePill(next)
+                }
+            }
+            .padding(20)
+        }
+        .padding(.top, 8)
+    }
+
+    private var heroGradientColors: [Color] {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 0..<6:   return [Color(hex: "#1a1a2e"), Color(hex: "#16213e")]
+        case 6..<10:  return [Color(hex: "#f093fb"), Color(hex: "#f5576c")]
+        case 10..<14: return [Color(hex: "#4facfe"), Color(hex: "#00f2fe")]
+        case 14..<18: return [Color(hex: "#43e97b"), Color(hex: "#38f9d7")]
+        case 18..<21: return [Color(hex: "#fa709a"), Color(hex: "#fee140")]
+        default:      return [Color(hex: "#a18cd1"), Color(hex: "#fbc2eb")]
         }
     }
+
+    @ViewBuilder
+    private func nextCoursePill(_ course: Course) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text("接下來")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.white.opacity(0.7))
+            Text(course.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(FJUPeriod.startTime(for: course.startPeriod))
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// The first upcoming course today (start time hasn't passed yet).
+    private var nextUpcomingCourse: Course? {
+        let now = Date()
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: now)
+        let minute = cal.component(.minute, from: now)
+        let currentMinutes = hour * 60 + minute
+
+        return todayCourses.first { course in
+            let parts = FJUPeriod.startTime(for: course.startPeriod).split(separator: ":")
+            guard parts.count == 2,
+                  let h = Int(parts[0]),
+                  let m = Int(parts[1]) else { return false }
+            return (h * 60 + m) > currentMinutes
+        }
+    }
+
+    // MARK: - Greeting
 
     private var greetingText: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -96,7 +185,7 @@ struct HomeView: View {
     private var dateString: String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_TW")
-        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        formatter.dateFormat = "M月d日 EEEE"
         return formatter.string(from: Date())
     }
 
@@ -104,39 +193,109 @@ struct HomeView: View {
 
     private var todayCoursesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("今日課程")
-                .font(.headline)
+            SectionHeader(title: "今日課程", icon: "clock.fill", iconColor: .blue)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     ForEach(todayCourses) { course in
                         todayCourseCard(course)
                             .onTapGesture { selectedCourse = course }
                     }
                 }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 2)
             }
         }
     }
 
     private func todayCourseCard(_ course: Course) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(course.name)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-            Text(course.location)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.8))
-            Text(course.timeSlot)
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.7))
-            Text(FJUPeriod.startTime(for: course.startPeriod))
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.white.opacity(0.9))
+        let isPast = isCourseInPast(course)
+        let isNow = isCourseOngoing(course)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color(hex: course.color))
+                    .frame(width: 4, height: 36)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(course.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .foregroundStyle(isPast ? .secondary : .primary)
+
+                    Text(course.timeSlot)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Divider()
+
+            HStack(spacing: 6) {
+                Label(course.location, systemImage: "location.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if isNow {
+                    Text("上課中")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(hex: course.color), in: Capsule())
+                } else {
+                    Text(FJUPeriod.startTime(for: course.startPeriod))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(isPast ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color(hex: course.color)))
+                }
+            }
         }
         .padding(12)
-        .frame(width: 140, alignment: .leading)
-        .background(Color(hex: course.color), in: RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
+        .frame(width: 170, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius)
+                .stroke(
+                    isNow ? Color(hex: course.color).opacity(0.5) : Color.clear,
+                    lineWidth: 1.5
+                )
+        )
+        .opacity(isPast ? 0.6 : 1)
+    }
+
+    private func isCourseInPast(_ course: Course) -> Bool {
+        let now = Date()
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: now)
+        let minute = cal.component(.minute, from: now)
+        let currentMinutes = hour * 60 + minute
+        let parts = FJUPeriod.startTime(for: course.endPeriod).split(separator: ":")
+        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return false }
+        return (h * 60 + m) < currentMinutes
+    }
+
+    private func isCourseOngoing(_ course: Course) -> Bool {
+        let now = Date()
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: now)
+        let minute = cal.component(.minute, from: now)
+        let currentMinutes = hour * 60 + minute
+
+        let startParts = FJUPeriod.startTime(for: course.startPeriod).split(separator: ":")
+        let endParts = FJUPeriod.startTime(for: course.endPeriod).split(separator: ":")
+        guard startParts.count == 2, endParts.count == 2,
+              let sh = Int(startParts[0]), let sm = Int(startParts[1]),
+              let eh = Int(endParts[0]), let em = Int(endParts[1]) else { return false }
+
+        let startMinutes = sh * 60 + sm
+        let endMinutes = eh * 60 + em + 50 // add period duration
+        return currentMinutes >= startMinutes && currentMinutes <= endMinutes
     }
 
     // MARK: - Module Grid
@@ -144,31 +303,23 @@ struct HomeView: View {
     private var moduleGridSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("功能")
-                    .font(.headline)
+                SectionHeader(title: "功能", icon: "square.grid.2x2.fill", iconColor: .orange)
                 Spacer()
                 Button(action: { isEditing = true }) {
-                    Text("編輯")
-                        .font(.subheadline)
+                    HStack(spacing: 4) {
+                        Image(systemName: "pencil")
+                            .font(.caption)
+                        Text("編輯")
+                            .font(.subheadline)
+                    }
+                    .foregroundStyle(AppTheme.accent)
                 }
             }
 
             if preferences.selectedModules.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "square.grid.2x2")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text("尚未選擇功能")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text("點擊「編輯」加入常用功能")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 40)
+                emptyModulesPlaceholder
             } else {
-                LazyVGrid(columns: columns, spacing: 10) {
+                LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(preferences.selectedModules) { module in
                         ModuleCard(module: module)
                     }
@@ -177,12 +328,33 @@ struct HomeView: View {
         }
     }
 
+    private var emptyModulesPlaceholder: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "square.grid.2x2.badge.plus")
+                .font(.system(size: 36))
+                .foregroundStyle(AppTheme.accent.opacity(0.6))
+            Text("尚未選擇功能")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Button(action: { isEditing = true }) {
+                Text("點此新增功能")
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.accent, in: Capsule())
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+    }
+
     // MARK: - Bulletin Notifications
 
     private var bulletinSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("公告通知")
-                .font(.headline)
+            SectionHeader(title: "公告通知", icon: "bell.fill", iconColor: .red)
 
             VStack(spacing: 8) {
                 ForEach(bulletinNotifications) { notification in
@@ -194,27 +366,49 @@ struct HomeView: View {
     }
 
     private func bulletinRow(_ notification: TronClassNotification) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(notification.bulletinTitle ?? "公告")
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(2)
-            if let courseName = notification.courseName {
-                Text(courseName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let content = notification.bulletinContent.flatMap({ stripHTML($0) }), !content.isEmpty {
-                Text(content)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            // Colored accent bar
+            RoundedRectangle(cornerRadius: 2)
+                .fill(AppTheme.accent)
+                .frame(width: 3)
+                .frame(maxHeight: .infinity)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notification.bulletinTitle ?? "公告")
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    if let courseName = notification.courseName {
+                        Text(courseName)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.accent)
+                            .lineLimit(1)
+                        Text("·")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(notification.date, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if let content = notification.bulletinContent.flatMap({ stripHTML($0) }), !content.isEmpty {
+                    Text(content)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
-            Text(notification.date, style: .relative)
-                .font(.caption2)
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
                 .foregroundStyle(.tertiary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
     }
 
@@ -227,7 +421,6 @@ struct HomeView: View {
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
             .replacingOccurrences(of: "&quot;", with: "\"")
-            // Collapse runs of whitespace / newlines into a single space
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
@@ -235,7 +428,6 @@ struct HomeView: View {
     }
 
     private func loadBulletinNotifications() async {
-        // Escalate the fetch limit until we collect at least 5 bulletin_created entries.
         let limits = [50, 100, 200]
         do {
             for limit in limits {
@@ -251,7 +443,6 @@ struct HomeView: View {
     // MARK: - Data Loading
 
     private func loadTodayCourses(forceRefresh: Bool) async {
-        // Serve cached courses for today without showing a spinner
         if !forceRefresh {
             let todayKey = todayDayString()
             if let cachedSemesters = cache.getSemesters(),
@@ -356,14 +547,33 @@ struct HomeView: View {
     private func todayDayString() -> String {
         let weekday = Calendar.current.component(.weekday, from: Date())
         switch weekday {
-        case 2: return "一" // Monday
-        case 3: return "二" // Tuesday
-        case 4: return "三" // Wednesday
-        case 5: return "四" // Thursday
-        case 6: return "五" // Friday
-        case 7: return "六" // Saturday
-        case 1: return "日" // Sunday
+        case 2: return "一"
+        case 3: return "二"
+        case 4: return "三"
+        case 5: return "四"
+        case 6: return "五"
+        case 7: return "六"
+        case 1: return "日"
         default: return ""
         }
     }
 }
+
+// MARK: - Section Header
+
+private struct SectionHeader: View {
+    let title: String
+    let icon: String
+    let iconColor: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(iconColor)
+            Text(title)
+                .font(.headline)
+        }
+    }
+}
+

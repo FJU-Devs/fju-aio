@@ -45,24 +45,38 @@ struct ModuleCard: View {
     }
 
     private var cardContent: some View {
-        VStack(spacing: 7) {
+        HStack(spacing: 14) {
             Image(systemName: module.icon)
-                .font(.system(size: 20))
-                .foregroundStyle(AppTheme.accent)
-                .frame(width: 38, height: 38)
-                .background(AppTheme.accent.opacity(0.10))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(module.color)
+                .frame(width: 42, height: 42)
+                .background(module.color.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 11))
 
-            Text(module.name)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(module.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                if case .webLink = module.type {
+                    Text("外部連結")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
-        .frame(maxWidth: .infinity, minHeight: 76)
-        .padding(.vertical, 10)
-        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
         .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallCornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
     }
 }
