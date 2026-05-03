@@ -1,0 +1,227 @@
+import SwiftUI
+
+// MARK: - Data Models
+
+private struct EmergencyContact: Identifiable {
+    let id = UUID()
+    let name: String
+    let phone: String
+}
+
+private struct DepartmentContact: Identifiable {
+    let id = UUID()
+    let name: String
+    let phones: [String]
+    let fax: String?
+    let email: String?
+}
+
+// MARK: - Contact Data
+
+private let emergencyContacts: [EmergencyContact] = [
+    EmergencyContact(name: "校安 24 小時緊急聯絡", phone: "(02) 2905-2885"),
+    EmergencyContact(name: "校安行動電話", phone: "0905-298-885"),
+    EmergencyContact(name: "學校總機", phone: "(02) 2905-2000"),
+    EmergencyContact(name: "警衛室", phone: "(02) 2905-2119"),
+    EmergencyContact(name: "附設醫院急診室", phone: "(02) 8512-8888"),
+    EmergencyContact(name: "衛生保健組", phone: "(02) 2905-2995"),
+    EmergencyContact(name: "輔大診所", phone: "(02) 2905-2526"),
+    EmergencyContact(name: "學生輔導中心", phone: "(02) 2905-3003"),
+    EmergencyContact(name: "法律服務中心", phone: "(02) 2905-2642"),
+]
+
+private let departmentContacts: [DepartmentContact] = [
+    DepartmentContact(name: "董事會",       phones: ["02-2905-3117"],                                           fax: "02-2908-6242", email: "trust@mail.fju.edu.tw"),
+    DepartmentContact(name: "校長室",       phones: ["02-2905-2202"],                                           fax: nil,            email: "president@mail.fju.edu.tw"),
+    DepartmentContact(name: "公共事務室",   phones: ["02-2905-2211"],                                           fax: "02-2902-6201", email: "pro@mail.fju.edu.tw"),
+    DepartmentContact(name: "祕書室",       phones: ["02-2905-2204"],                                           fax: "02-2904-4938", email: "secret@mail.fju.edu.tw"),
+    DepartmentContact(name: "教務處",       phones: ["02-2905-2217", "02-2905-2218", "02-2905-3042 (註冊組)", "02-2905-3097 (課務組)", "02-2905-2224 (招生組)"],
+                                                                                                                fax: "02-2905-2225", email: "dean@mail.fju.edu.tw"),
+    DepartmentContact(name: "學務處",       phones: ["02-2905-3174"],                                           fax: "02-2905-3174", email: "dsa@mail.fju.edu.tw"),
+    DepartmentContact(name: "總務處",       phones: ["02-2905-2239"],                                           fax: "02-2904-1679", email: "glafair@mail.fju.edu.tw"),
+    DepartmentContact(name: "研究發展處",   phones: ["02-2905-3109", "02-2905-3136"],                           fax: "02-2904-1563", email: "rdo@mail.fju.edu.tw"),
+    DepartmentContact(name: "國際教育處",   phones: ["02-2905-3137"],                                           fax: "02-2903-5524", email: "oie@mail.fju.edu.tw"),
+    DepartmentContact(name: "人事室",       phones: ["02-2905-2206"],                                           fax: "02-2908-6210", email: "person@mail.fju.edu.tw"),
+    DepartmentContact(name: "法務室",       phones: ["02-2905-3124"],                                           fax: "02-2904-1947", email: "legal@mail.fju.edu.tw"),
+    DepartmentContact(name: "軍訓室",       phones: ["02-2905-2885", "0905-298-885 (行動)"],                    fax: "02-2902-3419", email: "smt@mail.fju.edu.tw"),
+    DepartmentContact(name: "體育室",       phones: ["02-2905-3073", "02-2905-2234"],                           fax: "02-2901-7051", email: "gl6@mail.fju.edu.tw"),
+    DepartmentContact(name: "會計室",       phones: ["02-2905-2300", "02-2905-3009", "02-2905-2410"],           fax: "02-2908-8360", email: "fjdp0046@mail.fju.edu.tw"),
+    DepartmentContact(name: "校史室",       phones: ["02-2905-3046"],                                           fax: "02-2905-3152", email: "fuho@mail.fju.edu.tw"),
+    DepartmentContact(name: "資訊中心",     phones: ["02-2905-3093", "02-2905-2712"],                           fax: "02-2902-9557", email: "pubwww@mail.fju.edu.tw"),
+    DepartmentContact(name: "宗輔中心",     phones: ["02-2905-2260", "02-2905-2256"],                           fax: "02-2902-5017", email: "religion@mail.fju.edu.tw"),
+    DepartmentContact(name: "學輔中心",     phones: ["02-2905-2278", "02-2905-2237"],                           fax: "02-2904-4597", email: "scc@mail.fju.edu.tw"),
+    DepartmentContact(name: "進修部",       phones: ["02-2905-2855"],                                           fax: "02-2902-8002", email: "dean@mail.fju.edu.tw"),
+    DepartmentContact(name: "推廣部",       phones: ["02-2905-2269", "02-2905-2259", "02-2905-3731"],           fax: "02-2901-0673", email: "ext@mail.fju.edu.tw"),
+    DepartmentContact(name: "婦女大學",     phones: ["02-2905-2252", "02-2905-2276"],                           fax: "02-2905-2187", email: "029863@mail.fju.edu.tw"),
+    DepartmentContact(name: "圖書館",       phones: ["02-2905-2673"],                                           fax: "02-2905-3158", email: "library@mail.fju.edu.tw"),
+    DepartmentContact(name: "輔大出版社",   phones: ["02-2905-6199"],                                           fax: "02-2905-6170", email: "fjcup@mail.fju.edu.tw"),
+    DepartmentContact(name: "輔大診所",     phones: ["02-2905-2526", "02-2905-3130"],                           fax: "02-2901-6040", email: "fj02101@mail.fju.edu.tw"),
+    DepartmentContact(name: "輔大附設醫院", phones: ["02-8512-8888 (總機)", "02-8512-8800 (預約掛號)"],         fax: nil,            email: "fjuhospital@mail.fju.edu.tw"),
+    DepartmentContact(name: "神學院",       phones: ["02-2905-2792"],                                           fax: "02-2906-2439", email: "theology@mail.fju.edu.tw"),
+]
+
+// MARK: - View
+
+struct ContactInfoView: View {
+    @State private var searchText = ""
+
+    private var filteredEmergency: [EmergencyContact] {
+        guard !searchText.isEmpty else { return emergencyContacts }
+        return emergencyContacts.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.phone.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private var filteredDepartments: [DepartmentContact] {
+        guard !searchText.isEmpty else { return departmentContacts }
+        return departmentContacts.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            ($0.email?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+            $0.phones.contains { $0.localizedCaseInsensitiveContains(searchText) }
+        }
+    }
+
+    var body: some View {
+        List {
+            if searchText.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("天主教輔仁大學")
+                            .font(.headline)
+                        Text("242062 新北市新莊區中正路 510 號")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        ContactPhoneLink(phone: "(02) 2905-2000")
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
+            if !filteredEmergency.isEmpty {
+                Section("緊急聯絡") {
+                    ForEach(filteredEmergency) { contact in
+                        ContactRow(name: contact.name, phone: contact.phone)
+                    }
+                }
+            }
+
+            if !filteredDepartments.isEmpty {
+                Section("業務單位") {
+                    ForEach(filteredDepartments) { dept in
+                        DepartmentRow(contact: dept)
+                    }
+                }
+            }
+        }
+        .navigationTitle("常用聯絡資訊")
+        .navigationBarTitleDisplayMode(.large)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜尋單位、電話或 Email")
+    }
+}
+
+// MARK: - Subviews
+
+private struct ContactRow: View {
+    let name: String
+    let phone: String
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.subheadline)
+                ContactPhoneLink(phone: phone)
+            }
+            Spacer()
+            Image(systemName: "phone.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        }
+    }
+}
+
+private struct DepartmentRow: View {
+    let contact: DepartmentContact
+
+    private var primaryPhone: URL? {
+        guard let first = contact.phones.first else { return nil }
+        let base = first.components(separatedBy: " (").first ?? first
+        let digits = base.filter { $0.isNumber || $0 == "+" }
+        guard !digits.isEmpty else { return nil }
+        return URL(string: "tel:\(digits)")
+    }
+
+    private var mailURL: URL? {
+        guard let email = contact.email else { return nil }
+        return URL(string: "mailto:\(email)")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(contact.name)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                if let first = contact.phones.first {
+                    Text(first)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            HStack(spacing: 8) {
+                if let url = primaryPhone {
+                    Link(destination: url) {
+                        Image(systemName: "phone.fill")
+                            .font(.subheadline)
+                            .frame(width: 36, height: 36)
+                            .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(.green)
+                    }
+                }
+                if let url = mailURL {
+                    Link(destination: url) {
+                        Image(systemName: "envelope.fill")
+                            .font(.subheadline)
+                            .frame(width: 36, height: 36)
+                            .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(.blue)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ContactPhoneLink: View {
+    let phone: String
+
+    /// Returns a tel:-dialable number by stripping parenthetical labels like "(總機)"
+    private var callURL: URL? {
+        let base = phone.components(separatedBy: " (").first ?? phone
+        let digits = base.filter { $0.isNumber || $0 == "+" }
+        guard !digits.isEmpty else { return nil }
+        return URL(string: "tel:\(digits)")
+    }
+
+    var body: some View {
+        if let url = callURL {
+            Link(phone, destination: url)
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else {
+            Text(phone)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+
+#Preview {
+    NavigationStack {
+        ContactInfoView()
+    }
+}

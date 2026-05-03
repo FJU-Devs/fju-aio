@@ -17,6 +17,7 @@ enum AppDestination: Hashable {
     case campusMapLocation(location: String)
     case friends
     case myProfile
+    case contactInfo
 
     init?(deepLinkPath: String) {
         switch deepLinkPath {
@@ -32,6 +33,7 @@ enum AppDestination: Hashable {
         case "campusMap":               self = .campusMap
         case "friends":                 self = .friends
         case "myProfile":               self = .myProfile
+        case "contactInfo":             self = .contactInfo
         default:                        return nil
         }
     }
@@ -209,6 +211,7 @@ struct ContentView: View {
             CampusMapView(highlightLocation: location)
         case .friends:                  FriendListView()
         case .myProfile:                MyProfileView()
+        case .contactInfo:              ContactInfoView()
         }
     }
 }

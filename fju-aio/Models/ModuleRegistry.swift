@@ -42,6 +42,8 @@ enum ModuleRegistry {
         // In-app features (life)
         AppModule(id: "campusMap", name: "校園地圖", icon: "map.fill",
                   color: .green, category: .life, type: .inApp(.campusMap)),
+        AppModule(id: "contactInfo", name: "常用聯絡資訊", icon: "phone.fill",
+                  color: .teal, category: .life, type: .inApp(.contactInfo)),
         AppModule(id: "webDorm", name: "宿舍系統", icon: "house.fill",
                   color: .brown, category: .life,
                   type: .webLink(URL(string: "https://dorm.fju.edu.tw/dormstu/#/")!)),
