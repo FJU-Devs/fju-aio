@@ -5,3 +5,6 @@
 因為還沒開發完所以還沒放到 App Store，不過你可以自己拉下來跑
 ## Contributing
 如果你覺得有什麼功能可以寫，歡迎發 issue，如果你自己寫完了，可以發 pr，但記得 xcode 的 project 檔案不要 commit，不然因為 apple 很爛會把簽名弄爛，順便把我們的 CICD 一起弄爛...
+
+### maintainer
+main code [@nelsonGX](https://github.com/nelsonGX) api logic [@JasonWu5](https://github.com/JasonWu5)
