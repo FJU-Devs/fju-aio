@@ -180,7 +180,7 @@ struct SettingsView: View {
 
                 Link(destination: URL(string: "https://github.com/FJU-Devs/fju-aio")!) {
                     HStack {
-                        Text("在 GitHub 上查看")
+                        Text("去 Github 給我們點顆星星吧！")
                         Spacer()
                         Image(systemName: "arrow.up.right")
                             .font(.caption)
