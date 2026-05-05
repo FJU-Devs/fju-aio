@@ -11,8 +11,12 @@ struct CheckInView: View {
     @State private var selectedRollcall: Rollcall? = nil
     @State private var errorMessage: String? = nil
 
-    // Per-rollcall: empNos of classmates who are credentialed friends
+    // Per-rollcall: credentialed friends in this course
     @State private var rollcallFriends: [Int: [FriendRecord]] = [:]
+    // Friends + their pre-authenticated sessions for QR group mode
+    @State private var pendingQRFriendSessions: [(FriendRecord, TronClassSession)] = []
+    // Friends to include in the next manual number check-in
+    @State private var pendingManualFriends: [FriendRecord] = []
 
     var body: some View {
         List {
@@ -30,7 +34,8 @@ struct CheckInView: View {
                     rollcall: rollcall,
                     result: checkInResults[rollcall.rollcall_id],
                     proxyFriends: rollcallFriends[rollcall.rollcall_id] ?? [],
-                    onManualEntry: {
+                    onManualEntry: { friends in
+                        pendingManualFriends = friends
                         selectedRollcall = rollcall
                         showManualEntry = true
                     },
@@ -41,9 +46,16 @@ struct CheckInView: View {
                         selectedRollcall = rollcall
                         showQRScanner = true
                     },
-                    onProxyCheckIn: { selected in
-                        Task { await doProxyCheckIn(rollcall: rollcall, friends: selected) }
-                    }
+                    onProxyRadarCheckIn: { friends in
+                        Task { await doRadarCheckIn(rollcall: rollcall, includingFriends: friends) }
+                    },
+                    onProxyQRCheckin: { sessions in
+                        // Sessions are already pre-loaded by RollcallRowView
+                        pendingQRFriendSessions = sessions
+                        selectedRollcall = rollcall
+                        showQRScanner = true
+                    },
+
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
             }
@@ -66,7 +78,9 @@ struct CheckInView: View {
             if let rollcall = selectedRollcall {
                 ManualCheckInSheet(rollcall: rollcall) { code in
                     showManualEntry = false
-                    Task { await doManualCheckIn(rollcall: rollcall, code: code) }
+                    let friends = pendingManualFriends
+                    pendingManualFriends = []
+                    Task { await doManualCheckIn(rollcall: rollcall, code: code, includingFriends: friends.isEmpty ? nil : friends) }
                 }
             }
         }
@@ -74,7 +88,9 @@ struct CheckInView: View {
             if let rollcall = selectedRollcall {
                 QRScannerSheet(rollcall: rollcall) { qrContent in
                     showQRScanner = false
-                    Task { await doQRCheckIn(rollcall: rollcall, qrContent: qrContent) }
+                    let sessions = pendingQRFriendSessions
+                    pendingQRFriendSessions = []
+                    Task { await doQRCheckIn(rollcall: rollcall, qrContent: qrContent, friendSessions: sessions) }
                 }
             }
         }
@@ -101,7 +117,7 @@ struct CheckInView: View {
 
         await withTaskGroup(of: (Int, [FriendRecord]).self) { group in
             for rollcall in rollcalls {
-                let courseCode = rollcall.course_title  // fallback key; API matches by title/code
+                let courseCode = rollcall.course_title
                 let rid = rollcall.rollcall_id
                 group.addTask {
                     let (students, _) = (try? await TronClassAPIService.shared.getEnrollments(courseCode: courseCode)) ?? ([], [:])
@@ -116,60 +132,118 @@ struct CheckInView: View {
         }
     }
 
-    // MARK: - Own check-in
+    // MARK: - Own check-in (+ optional simultaneous friend check-in)
 
-    private func doManualCheckIn(rollcall: Rollcall, code: String) async {
-        do {
-            let success = try await RollcallService.shared.manualCheckIn(rollcall: rollcall, code: code)
-            checkInResults[rollcall.rollcall_id] = success ? .success(code) : .failure("數字碼錯誤，請再試一次")
-        } catch {
-            checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
-        }
-    }
+    private func doManualCheckIn(rollcall: Rollcall, code: String, includingFriends: [FriendRecord]?) async {
+        async let selfCheckIn: Bool = {
+            do { return try await RollcallService.shared.manualCheckIn(rollcall: rollcall, code: code) }
+            catch { return false }
+        }()
 
-    private func doRadarCheckIn(rollcall: Rollcall) async {
-        do {
-            let success = try await RollcallService.shared.radarCheckIn(
-                rollcall: rollcall,
-                latitude: 25.036238, longitude: 121.432292, accuracy: 50
-            )
-            checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("雷達點名失敗，可能不在教室範圍內")
-        } catch {
-            checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
-        }
-    }
-
-    private func doQRCheckIn(rollcall: Rollcall, qrContent: String) async {
-        do {
-            let success = try await RollcallService.shared.qrCheckIn(rollcall: rollcall, qrContent: qrContent)
-            checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("QR Code 點名失敗，請再試一次")
-        } catch {
-            checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
-        }
-    }
-
-    // MARK: - Proxy check-in for selected friends
-
-    private func doProxyCheckIn(rollcall: Rollcall, friends: [FriendRecord]) async {
-        await withTaskGroup(of: Void.self) { group in
-            for friend in friends {
-                let f = friend
-                group.addTask {
-                    guard let creds = try? CredentialStore.shared.retrieveFriendCredentials(empNo: f.empNo) else { return }
-                    do {
-                        let session = try await GroupRollcallService.shared.authenticateWithCredentials(
-                            username: creds.username, password: creds.password
-                        )
-                        if rollcall.isRadar {
-                            _ = try await GroupRollcallService.shared.radarCheckIn(
-                                rollcall: rollcall,
-                                latitude: 25.036238, longitude: 121.432292, accuracy: 50,
-                                using: session
+        if let friends = includingFriends, !friends.isEmpty {
+            async let friendsCheckIn: Void = {
+                await withTaskGroup(of: Void.self) { group in
+                    for friend in friends {
+                        let f = friend
+                        group.addTask {
+                            guard let creds = try? CredentialStore.shared.retrieveFriendCredentials(empNo: f.empNo) else { return }
+                            guard let session = try? await GroupRollcallService.shared.authenticateWithCredentials(
+                                username: creds.username, password: creds.password
+                            ) else { return }
+                            _ = try? await GroupRollcallService.shared.manualCheckIn(
+                                rollcall: rollcall, numberCode: code, using: session
                             )
                         }
-                        // Number/QR rollcalls: the code is shared — handled by the row UI
-                    } catch { /* per-friend errors are surfaced in ProxyResultsState */ }
+                    }
                 }
+            }()
+            let success = await selfCheckIn
+            await friendsCheckIn
+            checkInResults[rollcall.rollcall_id] = success ? .success(code) : .failure("數字碼錯誤，請再試一次")
+        } else {
+            do {
+                let success = try await RollcallService.shared.manualCheckIn(rollcall: rollcall, code: code)
+                checkInResults[rollcall.rollcall_id] = success ? .success(code) : .failure("數字碼錯誤，請再試一次")
+            } catch {
+                checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func doRadarCheckIn(rollcall: Rollcall, includingFriends: [FriendRecord]? = nil) async {
+        let lat: Double = 25.036238
+        let lon: Double = 121.432292
+        let acc: Double = 50
+
+        if let friends = includingFriends, !friends.isEmpty {
+            // Authenticate all friends first, then fire all check-ins simultaneously
+            var friendSessions: [(FriendRecord, TronClassSession)] = []
+            for friend in friends {
+                guard let creds = try? CredentialStore.shared.retrieveFriendCredentials(empNo: friend.empNo),
+                      let session = try? await GroupRollcallService.shared.authenticateWithCredentials(
+                          username: creds.username, password: creds.password
+                      ) else { continue }
+                friendSessions.append((friend, session))
+            }
+
+            // Self + friends check-in in parallel
+            async let selfResult: Bool = {
+                do { return try await RollcallService.shared.radarCheckIn(rollcall: rollcall, latitude: lat, longitude: lon, accuracy: acc) }
+                catch { return false }
+            }()
+            let capturedFriendSessions = friendSessions
+            async let friendsResult: Void = {
+                await withTaskGroup(of: Void.self) { group in
+                    for (_, session) in capturedFriendSessions {
+                        let s = session
+                        group.addTask {
+                            _ = try? await GroupRollcallService.shared.radarCheckIn(
+                                rollcall: rollcall, latitude: lat, longitude: lon, accuracy: acc, using: s
+                            )
+                        }
+                    }
+                }
+            }()
+            let success = await selfResult
+            await friendsResult
+            checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("雷達點名失敗，可能不在教室範圍內")
+        } else {
+            do {
+                let success = try await RollcallService.shared.radarCheckIn(rollcall: rollcall, latitude: lat, longitude: lon, accuracy: acc)
+                checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("雷達點名失敗，可能不在教室範圍內")
+            } catch {
+                checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func doQRCheckIn(rollcall: Rollcall, qrContent: String, friendSessions: [(FriendRecord, TronClassSession)] = []) async {
+        if !friendSessions.isEmpty {
+            async let selfResult: Bool = {
+                do { return try await RollcallService.shared.qrCheckIn(rollcall: rollcall, qrContent: qrContent) }
+                catch { return false }
+            }()
+            async let friendsResult: Void = {
+                await withTaskGroup(of: Void.self) { group in
+                    for (_, session) in friendSessions {
+                        let s = session
+                        group.addTask {
+                            _ = try? await GroupRollcallService.shared.qrCheckIn(
+                                rollcall: rollcall, qrContent: qrContent, using: s
+                            )
+                        }
+                    }
+                }
+            }()
+            let success = await selfResult
+            await friendsResult
+            checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("QR Code 點名失敗，請再試一次")
+        } else {
+            do {
+                let success = try await RollcallService.shared.qrCheckIn(rollcall: rollcall, qrContent: qrContent)
+                checkInResults[rollcall.rollcall_id] = success ? .success(nil) : .failure("QR Code 點名失敗，請再試一次")
+            } catch {
+                checkInResults[rollcall.rollcall_id] = .failure(error.localizedDescription)
             }
         }
     }
@@ -181,26 +255,26 @@ private struct RollcallRowView: View {
     let rollcall: Rollcall
     let result: RollcallCheckInResult?
     let proxyFriends: [FriendRecord]
-    let onManualEntry: () -> Void
+    /// Called when user wants to enter a number code; passes selected proxy friends (empty if group mode off)
+    let onManualEntry: ([FriendRecord]) -> Void
     let onRadarCheckIn: () -> Void
     let onQRCheckIn: () -> Void
-    let onProxyCheckIn: ([FriendRecord]) -> Void
+    /// Called when group mode is on and user taps radar check-in (friends list)
+    let onProxyRadarCheckIn: ([FriendRecord]) -> Void
+    /// Called when group mode is on and user taps QR check-in (passes pre-loaded sessions)
+    let onProxyQRCheckin: ([(FriendRecord, TronClassSession)]) -> Void
 
-    /// Which friends the user has selected for proxy check-in
-    @State private var selectedForProxy: Set<String> = []
-    /// Per-friend proxy results for this rollcall
-    @State private var proxyResults: [String: ProxyStatus] = [:]
-    @State private var isProxyRunning = false
-    @State private var showProxySection = false
+    /// Group rollcall toggle state
+    @State private var groupModeEnabled = false
+    /// Which friends are currently selected (default: all)
+    @State private var selectedFriendIds: Set<String> = []
+    /// Pre-authenticated friend sessions for QR/radar check-in
+    @State private var friendSessions: [String: TronClassSession] = [:]
+    @State private var isPreloadingSessions = false
 
-    enum ProxyStatus {
-        case running, success, failure(String)
-        var icon: String {
-            switch self { case .running: return ""; case .success: return "checkmark.circle.fill"; case .failure: return "xmark.circle.fill" }
-        }
-        var color: Color {
-            switch self { case .running: return .secondary; case .success: return .green; case .failure: return .red }
-        }
+    /// Computed: friends currently selected
+    private var selectedFriends: [FriendRecord] {
+        proxyFriends.filter { selectedFriendIds.contains($0.id) }
     }
 
     var body: some View {
@@ -232,60 +306,99 @@ private struct RollcallRowView: View {
                 if let result {
                     resultView(result)
                 } else if rollcall.isNumber {
-                    Button(action: onManualEntry) {
+                    Button(action: {
+                        // Pass selected friends; empty if group mode is off
+                        onManualEntry(groupModeEnabled ? selectedFriends : [])
+                    }) {
                         Label("輸入數字碼", systemImage: "keyboard").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).tint(AppTheme.accent)
                 } else if rollcall.isQR {
-                    Button(action: onQRCheckIn) {
+                    Button(action: {
+                        if groupModeEnabled && !selectedFriends.isEmpty {
+                            // Pass pre-loaded sessions so the QR content can be sent immediately after scan
+                            let sessions = selectedFriends.compactMap { f -> (FriendRecord, TronClassSession)? in
+                                guard let s = friendSessions[f.id] else { return nil }
+                                return (f, s)
+                            }
+                            onProxyQRCheckin(sessions)
+                        } else {
+                            onQRCheckIn()
+                        }
+                    }) {
                         Label("掃描 QR Code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).tint(AppTheme.accent)
+                    .disabled(groupModeEnabled && isPreloadingSessions)
+                    .overlay(alignment: .trailing) {
+                        if groupModeEnabled && isPreloadingSessions {
+                            ProgressView().controlSize(.small).padding(.trailing, 12)
+                        }
+                    }
                 } else if rollcall.isRadar {
-                    Button(action: onRadarCheckIn) {
+                    Button(action: {
+                        if groupModeEnabled && !selectedFriends.isEmpty {
+                            onProxyRadarCheckIn(selectedFriends)
+                        } else {
+                            onRadarCheckIn()
+                        }
+                    }) {
                         Label("雷達簽到", systemImage: "location.fill").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).tint(.blue)
                 }
             }
 
-            // Proxy section (only if there are credentialed friends in this course)
+            // Group rollcall section (only if there are credentialed friends)
             if !proxyFriends.isEmpty && rollcall.isActive {
                 Divider()
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { showProxySection.toggle() }
-                } label: {
-                    HStack {
-                        Image(systemName: "person.2.fill").font(.caption)
-                        Text("替朋友點名（\(proxyFriends.count) 人可選）").font(.caption.weight(.medium))
-                        Spacer()
-                        Image(systemName: showProxySection ? "chevron.up" : "chevron.down")
-                            .font(.caption2)
-                    }
-                    .foregroundStyle(AppTheme.accent)
+                // Toggle row
+                HStack {
+                    Image(systemName: "person.2.fill").font(.caption)
+                    Text("代替朋友同時點名").font(.caption.weight(.medium))
+                    Spacer()
+                    Toggle("", isOn: $groupModeEnabled)
+                        .labelsHidden()
+                        .tint(AppTheme.accent)
+                        .onChange(of: groupModeEnabled) { _, enabled in
+                            if enabled {
+                                // Default: select all friends
+                                selectedFriendIds = Set(proxyFriends.map(\.id))
+                                // For radar/QR: pre-load sessions to avoid QR timeout
+                                if rollcall.isRadar || rollcall.isQR {
+                                    Task { await preloadFriendSessions() }
+                                }
+                            } else {
+                                selectedFriendIds = []
+                                friendSessions = [:]
+                            }
+                        }
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(AppTheme.accent)
 
-                if showProxySection {
+                // Friend list (only shown when toggle is on)
+                if groupModeEnabled {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(proxyFriends) { friend in
                             HStack(spacing: 10) {
-                                // Selection toggle
                                 Button {
-                                    if selectedForProxy.contains(friend.id) {
-                                        selectedForProxy.remove(friend.id)
+                                    if selectedFriendIds.contains(friend.id) {
+                                        selectedFriendIds.remove(friend.id)
                                     } else {
-                                        selectedForProxy.insert(friend.id)
+                                        selectedFriendIds.insert(friend.id)
+                                        // Load session for this friend if needed
+                                        if (rollcall.isRadar || rollcall.isQR) && friendSessions[friend.id] == nil {
+                                            Task { await preloadFriendSession(friend) }
+                                        }
                                     }
                                 } label: {
-                                    Image(systemName: selectedForProxy.contains(friend.id)
+                                    Image(systemName: selectedFriendIds.contains(friend.id)
                                           ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(selectedForProxy.contains(friend.id)
+                                        .foregroundStyle(selectedFriendIds.contains(friend.id)
                                                          ? AppTheme.accent : .secondary)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(proxyResults[friend.id] != nil)
 
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(friend.displayName).font(.subheadline)
@@ -293,34 +406,32 @@ private struct RollcallRowView: View {
                                 }
                                 Spacer()
 
-                                // Status
-                                if let status = proxyResults[friend.id] {
-                                    if case .running = status {
+                                // Session pre-load indicator (for radar/QR)
+                                if (rollcall.isRadar || rollcall.isQR) && selectedFriendIds.contains(friend.id) {
+                                    if friendSessions[friend.id] != nil {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.green)
+                                    } else if isPreloadingSessions {
                                         ProgressView().controlSize(.mini)
-                                    } else {
-                                        Image(systemName: status.icon)
-                                            .foregroundStyle(status.color)
                                     }
                                 }
                             }
                         }
 
-                        Button {
-                            let toCheck = proxyFriends.filter { selectedForProxy.contains($0.id) }
-                            guard !toCheck.isEmpty else { return }
-                            isProxyRunning = true
-                            for f in toCheck { proxyResults[f.id] = .running }
-                            Task {
-                                await runProxy(rollcall: rollcall, friends: toCheck)
-                                isProxyRunning = false
+                        if rollcall.isRadar || rollcall.isQR {
+                            let readyCount = selectedFriends.filter { friendSessions[$0.id] != nil }.count
+                            let totalSelected = selectedFriends.count
+                            if isPreloadingSessions {
+                                Label("正在登入朋友的帳號... (\(readyCount)/\(totalSelected))", systemImage: "arrow.clockwise")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else if readyCount < totalSelected && totalSelected > 0 {
+                                Label("部分帳號登入失敗（\(totalSelected - readyCount) 人）", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
                             }
-                        } label: {
-                            Text("替選取的朋友點名（\(selectedForProxy.count) 人）")
-                                .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.orange)
-                        .disabled(selectedForProxy.isEmpty || isProxyRunning)
                     }
                     .padding(.top, 4)
                 }
@@ -328,38 +439,39 @@ private struct RollcallRowView: View {
         }
     }
 
-    private func runProxy(rollcall: Rollcall, friends: [FriendRecord]) async {
-        await withTaskGroup(of: (String, ProxyStatus).self) { group in
-            for friend in friends {
+    // MARK: - Session Pre-loading
+
+    private func preloadFriendSessions() async {
+        isPreloadingSessions = true
+        defer { isPreloadingSessions = false }
+
+        await withTaskGroup(of: (String, TronClassSession?).self) { group in
+            for friend in proxyFriends {
                 let f = friend
                 group.addTask {
                     guard let creds = try? CredentialStore.shared.retrieveFriendCredentials(empNo: f.empNo) else {
-                        return (f.id, .failure("未找到帳密"))
+                        return (f.id, nil)
                     }
-                    do {
-                        let session = try await GroupRollcallService.shared.authenticateWithCredentials(
-                            username: creds.username, password: creds.password
-                        )
-                        let ok: Bool
-                        if rollcall.isRadar {
-                            ok = try await GroupRollcallService.shared.radarCheckIn(
-                                rollcall: rollcall,
-                                latitude: 25.036238, longitude: 121.432292, accuracy: 50,
-                                using: session
-                            )
-                        } else {
-                            // Number / QR rollcalls: not automated — report as unsupported
-                            return (f.id, .failure("此點名方式不支援代為點名"))
-                        }
-                        return (f.id, ok ? .success : .failure("點名失敗"))
-                    } catch {
-                        return (f.id, .failure(error.localizedDescription))
-                    }
+                    let session = try? await GroupRollcallService.shared.authenticateWithCredentials(
+                        username: creds.username, password: creds.password
+                    )
+                    return (f.id, session)
                 }
             }
-            for await (id, status) in group {
-                await MainActor.run { proxyResults[id] = status }
+            for await (id, session) in group {
+                if let session {
+                    friendSessions[id] = session
+                }
             }
+        }
+    }
+
+    private func preloadFriendSession(_ friend: FriendRecord) async {
+        guard let creds = try? CredentialStore.shared.retrieveFriendCredentials(empNo: friend.empNo) else { return }
+        if let session = try? await GroupRollcallService.shared.authenticateWithCredentials(
+            username: creds.username, password: creds.password
+        ) {
+            friendSessions[friend.id] = session
         }
     }
 

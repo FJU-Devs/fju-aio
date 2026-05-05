@@ -159,6 +159,46 @@ actor GroupRollcallService {
         return status == "on_call" || status == "late"
     }
 
+    // MARK: - QR Check-In with friend's session
+
+    func qrCheckIn(
+        rollcall: Rollcall,
+        qrContent: String,
+        using session: TronClassSession
+    ) async throws -> Bool {
+        // Parse the data segment from the QR content (same format as RollcallService)
+        let data = try Self.parseQRData(from: qrContent)
+
+        let url = URL(string: "\(baseURL)/api/rollcall/\(rollcall.rollcall_id)/answer_qr_rollcall")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        applyHeaders(&request, sessionId: session.sessionId)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: String] = ["data": data, "deviceId": generateDeviceId()]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (responseData, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { return false }
+        if http.statusCode == 401 || http.statusCode == 403 { throw RollcallError.sessionExpired }
+        guard http.statusCode == 200 else { return false }
+
+        let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        let status = json?["status"] as? String ?? ""
+        logger.info("Group QR check-in result: \(status) for rollcall \(rollcall.rollcall_id)")
+        return status == "on_call" || status == "late"
+    }
+
+    private static func parseQRData(from qrContent: String) throws -> String {
+        let segments = qrContent.split(separator: "!", omittingEmptySubsequences: true)
+        for segment in segments {
+            if segment.hasPrefix("3~") {
+                return String(segment.dropFirst(2))
+            }
+        }
+        throw RollcallError.invalidQRCode
+    }
+
     // MARK: - Fetch Active Rollcalls with friend's session
 
     func fetchActiveRollcalls(using session: TronClassSession) async throws -> [Rollcall] {

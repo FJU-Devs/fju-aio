@@ -56,12 +56,17 @@ final class ScannerViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        DispatchQueue.global(qos: .userInitiated).async { self.captureSession?.startRunning() }
+        // Resume a previously set up session (e.g. returning from background)
+        if let session = captureSession, !session.isRunning {
+            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if captureSession == nil {
+            // Defer setup until viewDidAppear so the view is fully in the window hierarchy,
+            // which is required for AVCaptureVideoPreviewLayer to display correctly.
             checkCameraPermissionAndSetup()
         }
     }
@@ -126,9 +131,9 @@ final class ScannerViewController: UIViewController {
         captureSession = session
         issueView?.removeFromSuperview()
         issueView = nil
-        if view.window != nil {
-            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
-        }
+        // Start the session on a background thread; called from viewDidAppear so the view
+        // is guaranteed to be in the window hierarchy at this point.
+        DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
     }
 
     private func showCameraPermissionIssue() {
