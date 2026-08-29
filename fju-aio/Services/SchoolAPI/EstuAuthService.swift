@@ -88,8 +88,13 @@ actor EstuAuthService {
             logger.error("❌ No stored credentials found")
             throw EstuError.sessionExpired
         }
-        
-        return try await login(username: credentials.username, password: credentials.password)
+
+        do {
+            return try await login(username: credentials.username, password: credentials.password)
+        } catch EstuError.invalidCredentials {
+            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            throw EstuError.invalidCredentials
+        }
     }
     
     func logout() throws {

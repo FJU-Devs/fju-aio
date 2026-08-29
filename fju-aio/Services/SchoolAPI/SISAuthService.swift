@@ -77,7 +77,12 @@ actor SISAuthService {
         }
         
         logger.info("🔄 Refreshing session with stored credentials")
-        return try await login(username: credentials.username, password: credentials.password)
+        do {
+            return try await login(username: credentials.username, password: credentials.password)
+        } catch SISError.invalidCredentials {
+            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            throw SISError.invalidCredentials
+        }
     }
     
     func logout() async throws {

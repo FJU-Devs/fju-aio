@@ -48,7 +48,12 @@ actor DormAuthService {
             throw DormAuthError.noCredentials
         }
 
-        return try await login(username: credentials.username, password: credentials.password)
+        do {
+            return try await login(username: credentials.username, password: credentials.password)
+        } catch DormAuthError.invalidCredentials {
+            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            throw DormAuthError.invalidCredentials
+        }
     }
 
     func login(username: String, password: String) async throws -> DormSession {

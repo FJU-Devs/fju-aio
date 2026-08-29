@@ -114,6 +114,22 @@ final class AuthenticationManager {
         return try await sisAuthService.getValidSession()
     }
 
+    var storedUsername: String? {
+        try? CredentialStore.shared.retrieveLDAPCredentials().username
+    }
+
+    /// Re-validates and updates the stored LDAP password without touching any other
+    /// local data. Use this to recover from a stale password (e.g. after the school's
+    /// semester password change) instead of forcing a full sign-out.
+    @MainActor
+    func updatePassword(_ newPassword: String) async throws {
+        guard let username = storedUsername else {
+            throw AuthenticationError.sessionExpired
+        }
+        try await login(username: username, password: newPassword)
+        CredentialErrorMonitor.shared.clear()
+    }
+
     @MainActor
     func clearLastSignOutReason() {
         lastSignOutReason = nil

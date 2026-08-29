@@ -216,9 +216,10 @@ private struct FriendListContent: View {
 
     @MainActor
     private func refreshFriendProfiles() async {
-        // Re-fetch CloudKit profiles for all friends to get latest avatars/profile data
+        // Re-fetch CloudKit profiles for all friends to get latest avatars/profile data.
+        // Skip manually-added friends — they have no CloudKit record and would be deleted.
         await withTaskGroup(of: ProfileRefreshResult.self) { group in
-            for friend in friendStore.friends {
+            for friend in friendStore.friends where !friend.isManuallyAdded {
                 group.addTask {
                     do {
                         guard let profile = try await Self.loadProfileWithFriendSchedule(friend: friend) else {

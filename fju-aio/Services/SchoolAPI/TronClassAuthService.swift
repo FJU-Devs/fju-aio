@@ -72,7 +72,12 @@ actor TronClassAuthService {
         }
         
         logger.info("🔄 Refreshing session with stored credentials")
-        return try await login(username: credentials.username, password: credentials.password)
+        do {
+            return try await login(username: credentials.username, password: credentials.password)
+        } catch AuthenticationError.invalidCredentials {
+            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            throw AuthenticationError.invalidCredentials
+        }
     }
     
     func logout() async throws {

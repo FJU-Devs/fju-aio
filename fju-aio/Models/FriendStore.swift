@@ -226,7 +226,8 @@ final class FriendStore {
     }
 
     private func encodedCloudSnapshot(_ snapshot: [FriendRecord]) -> Data? {
-        let sanitized = snapshot.map { friend in
+        // Exclude manually-added local friends — they have no CloudKit record.
+        let sanitized = snapshot.filter { !$0.isManuallyAdded }.map { friend in
             var copy = friend
             copy.hasStoredCredentials = false
             return copy

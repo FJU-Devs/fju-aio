@@ -87,6 +87,7 @@ struct ContentView: View {
     @State private var allFunctionsPath = NavigationPath()
     @Binding private var pendingDeepLinkDestination: AppDestination?
     @State private var networkMonitor = NetworkMonitor.shared
+    @State private var credentialMonitor = CredentialErrorMonitor.shared
     @Environment(SyncStatusManager.self) private var syncStatus
 
     init(pendingDeepLinkDestination: Binding<AppDestination?> = .constant(nil)) {
@@ -132,6 +133,20 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: syncStatus.isSyncing)
         .animation(.easeInOut(duration: 0.3), value: networkMonitor.isConnected)
+        .sheet(isPresented: passwordChangeSheetBinding) {
+            PasswordChangeView()
+        }
+    }
+
+    private var passwordChangeSheetBinding: Binding<Bool> {
+        Binding(
+            get: { credentialMonitor.isPasswordInvalid },
+            set: { isPresented in
+                if !isPresented {
+                    credentialMonitor.clear()
+                }
+            }
+        )
     }
 
     @ViewBuilder
