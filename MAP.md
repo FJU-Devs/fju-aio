@@ -202,6 +202,8 @@ fju-aio/Services/AppleAPI/NearbyFriendService.swift
 
 Friend features use CloudKit for public profiles and schedule sharing, QR codes for profile/schedule tokens, and Bluetooth nearby discovery. Friends can provide cached schedule snapshots that are displayed on the course grid and included in widget course payloads.
 
+Public profile publishes (`CloudKitProfileService.publishProfile`, friend-schedule publishing, and `CloudKitProfileIdentityService.ensureIdentity`'s public binding write) are gated by an on-demand FJU identity attestation from `Services/Identity/IdentityAttestationService.swift`. It exchanges the current SIS bearer token for a short-lived, ES256-signed JWT from the identity server (`app-auth.fju.me`), verifies the signature/claims on-device (`ES256JWTVerifier.swift`), and requires the attested 學號 to match the SIS session before the empNo actually written to CloudKit is taken from the attestation. It is fetched fresh per publish action, never persisted, and is not involved in login, TronClass/SIS session refresh, or reading friends/public profiles.
+
 ## Service Layer
 
 ```mermaid

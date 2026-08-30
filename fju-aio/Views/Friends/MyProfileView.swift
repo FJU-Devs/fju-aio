@@ -354,13 +354,26 @@ struct MyProfileView: View {
 
         let effectiveName = displayName.isEmpty ? session.userName : displayName
         let visibility = self.scheduleVisibility
-        snapshotLogger.info("📤 publishProfileNow: scheduleVisibility=\(visibility.rawValue, privacy: .public), userId=\(session.userId, privacy: .private), empNo=\(session.empNo, privacy: .private)")
+        snapshotLogger.info("📤 publishProfileNow: scheduleVisibility=\(visibility.rawValue, privacy: .public), userId=\(session.userId, privacy: .private)")
+
+        // Gather a fresh identity attestation for this publish action only. It is not
+        // persisted and must be re-fetched on the next save — see IdentityAttestationService.
+        let attested: VerifiedStudentIdentity
+        do {
+            attested = try await IdentityAttestationService.shared.attestCurrentStudent()
+        } catch {
+            snapshotLogger.error("❌ publishProfileNow: identity attestation failed — \(error.localizedDescription, privacy: .public)")
+            publishError = error.localizedDescription
+            isPublished = false
+            return
+        }
 
         let publicRecordName: String
         do {
             publicRecordName = try await CloudKitProfileIdentityService.shared.ensureIdentity(
                 for: session,
-                forceRefresh: true
+                forceRefresh: true,
+                attestedStudentID: attested.studentID
             )
         } catch {
             snapshotLogger.error("❌ publishProfileNow: identity validation failed — \(error.localizedDescription, privacy: .public)")
@@ -418,7 +431,7 @@ struct MyProfileView: View {
                 let profile = PublicProfile(
                     cloudKitRecordName: publicRecordName,
                     userId: session.userId,
-                    empNo: session.empNo,
+                    empNo: attested.studentID,
                     displayName: displayNameToPublish,
                     avatarURLString: avatarURLStringToPublish,
                     bio: bioToPublish,
@@ -435,7 +448,7 @@ struct MyProfileView: View {
                             snapshot,
                             token: token,
                             ownerRecordName: profile.cloudKitRecordName,
-                            ownerEmpNo: session.empNo
+                            ownerEmpNo: attested.studentID
                         )
                     }
                 } else if visibility == .off || visibility == .public {

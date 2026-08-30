@@ -50,6 +50,7 @@ actor CloudKitProfileIdentityService {
         case iCloudUnavailable
         case accountTakenOver
         case missingSaveResult(recordName: String)
+        case attestationMismatch
 
         var errorDescription: String? {
             switch self {
@@ -59,6 +60,8 @@ actor CloudKitProfileIdentityService {
                 return "你的帳號好像在其他不屬於你的裝置上登入了。我們將登出這裡的帳號，如果你認為這不太對，請盡快更改 LDAP 密碼後重新在這裡登入。"
             case .missingSaveResult(let recordName):
                 return "CloudKit did not return a save result for recordName=\(recordName)"
+            case .attestationMismatch:
+                return "驗證結果與學號不符，已取消發佈"
             }
         }
     }
@@ -91,19 +94,30 @@ actor CloudKitProfileIdentityService {
         static let lastUpdated = "lastUpdated"
     }
 
+    /// - Parameter attestedStudentID: The signature-verified 學號 from `IdentityAttestationService`.
+    ///   When supplied, it must match `session.empNo` (after normalization) or the call aborts —
+    ///   and it, not `session.empNo`, is the value written to public identity records.
+    ///   Pass `nil` for non-publishing paths (login, friend import) where no new public data is written.
     @discardableResult
     func ensureIdentity(
         for session: SISSession,
         allowTakeover: Bool = false,
-        forceRefresh: Bool = false
+        forceRefresh: Bool = false,
+        attestedStudentID: String? = nil
     ) async throws -> String {
+        if let attestedStudentID,
+           IdentityAttestationService.normalizeStudentID(attestedStudentID) != IdentityAttestationService.normalizeStudentID(session.empNo) {
+            throw IdentityError.attestationMismatch
+        }
+        let resolvedEmpNo = attestedStudentID ?? session.empNo
+
         let availability = iCloudAvailabilityService.shared
 
         // MARK: No-Account path — device-local identity
         // When there is no iCloud account at all, we cannot use any CloudKit database.
         // Generate a stable record name anchored to this device via a Keychain-stored key.
         if availability.isDeviceOnly {
-            return deviceOnlyIdentity(for: session)
+            return deviceOnlyIdentity(for: session, empNo: resolvedEmpNo)
         }
 
         // MARK: Quota-Exceeded path — real iCloud identity, public DB only
@@ -112,7 +126,7 @@ actor CloudKitProfileIdentityService {
         // so public profile publishing and binding still work.
         // We skip the private DB write (ensurePrivateIdentity) and store tokens locally.
         if availability.syncMode == .quotaExceeded {
-            return try await quotaExceededIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh)
+            return try await quotaExceededIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh, empNo: resolvedEmpNo)
         }
 
         // MARK: Full-Available path
@@ -122,7 +136,7 @@ actor CloudKitProfileIdentityService {
         } catch {
             await availability.handleCloudKitError(error)
             // Mode may have changed — recurse once to apply the correct path
-            return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh)
+            return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh, attestedStudentID: attestedStudentID)
         }
 
         let iCloudBindingKey = bindingKey(for: iCloudUserID)
@@ -132,7 +146,7 @@ actor CloudKitProfileIdentityService {
            !forceRefresh,
            let cached = ensuredIdentityCache[session.userId],
            cached.publicRecordName == publicRecordName,
-           cached.empNo == session.empNo,
+           cached.empNo == resolvedEmpNo,
            cached.iCloudBindingKey == iCloudBindingKey,
            Date().timeIntervalSince(cached.cachedAt) < ensuredIdentityCacheTTL {
             return cached.publicRecordName
@@ -143,26 +157,28 @@ actor CloudKitProfileIdentityService {
                 session: session,
                 publicRecordName: publicRecordName,
                 iCloudBindingKey: iCloudBindingKey,
-                allowTakeover: allowTakeover
+                allowTakeover: allowTakeover,
+                empNo: resolvedEmpNo
             )
             try await ensurePrivateIdentity(
                 session: session,
                 publicRecordName: publicRecordName,
-                iCloudBindingKey: iCloudBindingKey
+                iCloudBindingKey: iCloudBindingKey,
+                empNo: resolvedEmpNo
             )
         } catch {
             await availability.handleCloudKitError(error)
             if case .accountTakenOver = error as? IdentityError { throw error }
             // Mode changed (e.g. quota just exceeded) — recurse to apply correct path
             if availability.syncMode != .available {
-                return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: false)
+                return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: false, attestedStudentID: attestedStudentID)
             }
             logger.warning("⚠️ Binding write failed: \(error.localizedDescription, privacy: .public)")
         }
 
         ensuredIdentityCache[session.userId] = EnsuredIdentityCacheEntry(
             publicRecordName: publicRecordName,
-            empNo: session.empNo,
+            empNo: resolvedEmpNo,
             iCloudBindingKey: iCloudBindingKey,
             cachedAt: Date()
         )
@@ -170,12 +186,12 @@ actor CloudKitProfileIdentityService {
     }
 
     /// Device-local identity: no iCloud account, Keychain-stored binding key.
-    private func deviceOnlyIdentity(for session: SISSession) -> String {
+    private func deviceOnlyIdentity(for session: SISSession, empNo: String) -> String {
         let local = deviceLocalPublicRecordName(for: session.userId)
         logger.info("ℹ️ No-account identity: \(local, privacy: .private)")
         ensuredIdentityCache[session.userId] = EnsuredIdentityCacheEntry(
             publicRecordName: local,
-            empNo: session.empNo,
+            empNo: empNo,
             iCloudBindingKey: "device",
             cachedAt: Date()
         )
@@ -187,7 +203,8 @@ actor CloudKitProfileIdentityService {
     private func quotaExceededIdentity(
         for session: SISSession,
         allowTakeover: Bool,
-        forceRefresh: Bool
+        forceRefresh: Bool,
+        empNo: String
     ) async throws -> String {
         let iCloudUserID = try await currentICloudUserID()
         let iCloudBindingKey = bindingKey(for: iCloudUserID)
@@ -196,7 +213,7 @@ actor CloudKitProfileIdentityService {
         if !forceRefresh,
            let cached = ensuredIdentityCache[session.userId],
            cached.publicRecordName == publicRecordName,
-           cached.empNo == session.empNo,
+           cached.empNo == empNo,
            Date().timeIntervalSince(cached.cachedAt) < ensuredIdentityCacheTTL {
             return cached.publicRecordName
         }
@@ -207,7 +224,8 @@ actor CloudKitProfileIdentityService {
                 session: session,
                 publicRecordName: publicRecordName,
                 iCloudBindingKey: iCloudBindingKey,
-                allowTakeover: allowTakeover
+                allowTakeover: allowTakeover,
+                empNo: empNo
             )
         } catch {
             if case .accountTakenOver = error as? IdentityError { throw error }
@@ -220,7 +238,7 @@ actor CloudKitProfileIdentityService {
 
         ensuredIdentityCache[session.userId] = EnsuredIdentityCacheEntry(
             publicRecordName: publicRecordName,
-            empNo: session.empNo,
+            empNo: empNo,
             iCloudBindingKey: iCloudBindingKey,
             cachedAt: Date()
         )
@@ -299,7 +317,8 @@ actor CloudKitProfileIdentityService {
     private func ensurePrivateIdentity(
         session: SISSession,
         publicRecordName: String,
-        iCloudBindingKey: String
+        iCloudBindingKey: String,
+        empNo: String
     ) async throws {
         let recordID = CKRecord.ID(recordName: privateIdentityRecordName(userId: session.userId))
         let record = try await privateIdentityRecord(recordID: recordID)
@@ -319,7 +338,7 @@ actor CloudKitProfileIdentityService {
         }
 
         record[PrivateIdentityField.ownerUserId] = session.userId as CKRecordValue
-        record[PrivateIdentityField.empNo] = session.empNo as CKRecordValue
+        record[PrivateIdentityField.empNo] = empNo as CKRecordValue
         record[PrivateIdentityField.activePublicRecordName] = publicRecordName as CKRecordValue
         record[PrivateIdentityField.boundICloudUserID] = iCloudBindingKey as CKRecordValue
         record[PrivateIdentityField.scheduleShareToken] = scheduleShareToken as CKRecordValue
@@ -333,7 +352,8 @@ actor CloudKitProfileIdentityService {
         session: SISSession,
         publicRecordName: String,
         iCloudBindingKey: String,
-        allowTakeover: Bool
+        allowTakeover: Bool,
+        empNo: String
     ) async throws {
         let activeClaim = try await latestPublicBindingClaim(userId: session.userId)
         if let activeClaim,
@@ -352,7 +372,7 @@ actor CloudKitProfileIdentityService {
         let record = try await publicBindingRecord(recordID: recordID)
 
         record[PublicBindingField.ownerUserId] = session.userId as CKRecordValue
-        record[PublicBindingField.empNo] = session.empNo as CKRecordValue
+        record[PublicBindingField.empNo] = empNo as CKRecordValue
         record[PublicBindingField.activePublicRecordName] = publicRecordName as CKRecordValue
         record[PublicBindingField.boundICloudUserID] = iCloudBindingKey as CKRecordValue
         record[PublicBindingField.lastUpdated] = Date() as CKRecordValue

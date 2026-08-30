@@ -17,6 +17,7 @@ struct HomeView: View {
     @State private var navigateToCampusMap = false
     @State private var bulletinNotifications: [TronClassNotification] = []
     @State private var selectedBulletin: TronClassNotification?
+    @State private var upcomingAssignments: [Assignment] = []
     @State private var loadError: String?
     @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
 
@@ -39,6 +40,10 @@ struct HomeView: View {
 
                 todayScheduleSection
 
+                if !relevantAssignments.isEmpty {
+                    upcomingAssignmentsSection
+                }
+
                 moduleGridSection
 
                 if !bulletinNotifications.isEmpty {
@@ -52,8 +57,10 @@ struct HomeView: View {
         .navigationTitle("輔大 All In One")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
-            await loadTodayCourses(forceRefresh: true)
-            await loadBulletinNotifications()
+            async let coursesTask: Void = loadTodayCourses(forceRefresh: true)
+            async let bulletinsTask: Void = loadBulletinNotifications()
+            async let assignmentsTask: Void = loadUpcomingAssignments(forceRefresh: true)
+            _ = await (coursesTask, bulletinsTask, assignmentsTask)
         }
         .sheet(isPresented: $isEditing) {
             HomeEditView()
@@ -75,59 +82,75 @@ struct HomeView: View {
             BulletinDetailView(notification: bulletin)
         }
         .task {
-            await loadTodayCourses(forceRefresh: false)
-            await loadBulletinNotifications()
+            async let coursesTask: Void = loadTodayCourses(forceRefresh: false)
+            async let bulletinsTask: Void = loadBulletinNotifications()
+            async let assignmentsTask: Void = loadUpcomingAssignments(forceRefresh: false)
+            _ = await (coursesTask, bulletinsTask, assignmentsTask)
         }
     }
 
     // MARK: - Hero Section
 
     private var heroSection: some View {
-        ZStack(alignment: .bottomLeading) {
-            // Gradient background
-            RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
-                .fill(
-                    LinearGradient(
-                        colors: heroGradientColors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(maxWidth: .infinity)
-                .frame(height: 160)
-
-            // Decorative circles
-            Circle()
-                .fill(.white.opacity(0.07))
-                .frame(width: 200, height: 200)
-                .offset(x: 120, y: -30)
-                .allowsHitTesting(false)
-            Circle()
-                .fill(.white.opacity(0.05))
-                .frame(width: 110, height: 110)
-                .offset(x: 60, y: -80)
-                .allowsHitTesting(false)
-
-            // Content
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(greetingText)
-                    .font(.title.weight(.bold))
+                    .font(.title2.weight(.bold))
                     .foregroundStyle(.white)
                 Text(dateString)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.75))
             }
-            .padding(20)
+
+            Divider().background(.white.opacity(0.25))
+
+            heroStatusRow
         }
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
-        .overlay(alignment: .bottomTrailing) {
-            if let next = nextUpcomingCourse {
-                nextCoursePill(next)
-                    .padding(.bottom, 14)
-                    .padding(.trailing, 16)
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(colors: heroGradientColors, startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
+        )
+        .padding(.top, 8)
+    }
+
+    private var heroStatusRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: heroStatusIcon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 26, height: 26)
+                .background(.white.opacity(0.18), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(heroStatusTitle)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                Text(heroStatusDetail)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if !todayCourses.isEmpty {
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("\(completedTodayCourseCount)/\(todayCourses.count) 堂課")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                    Capsule()
+                        .fill(.white.opacity(0.2))
+                        .frame(width: 60, height: 4)
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 60 * todayCourseProgress, height: 4)
+                        }
+                }
             }
         }
-        .padding(.top, 8)
     }
 
     private var heroGradientColors: [Color] {
@@ -142,20 +165,31 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
-    private func nextCoursePill(_ course: Course) -> some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text("接下來")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.white.opacity(0.7))
-            Text(course.name)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
+    private var heroStatusIcon: String {
+        if ongoingCourse != nil { return "book.fill" }
+        if nextUpcomingCourse != nil { return "clock.fill" }
+        return todayCourses.isEmpty ? "moon.stars.fill" : "checkmark.circle.fill"
+    }
+
+    private var heroStatusTitle: String {
+        if ongoingCourse != nil { return "上課中" }
+        if nextUpcomingCourse != nil { return "下一堂" }
+        return "今天"
+    }
+
+    private var heroStatusDetail: String {
+        if let ongoing = ongoingCourse {
+            return "\(ongoing.name) · \(ongoing.location)"
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial.opacity(0.8), in: RoundedRectangle(cornerRadius: 10))
+        if let next = nextUpcomingCourse {
+            return "\(next.name) · \(FJUPeriod.startTime(for: next.startPeriod))"
+        }
+        return todayCourses.isEmpty ? "沒有課，好好休息" : "課程已全部結束"
+    }
+
+    /// The course currently in session, if any.
+    private var ongoingCourse: Course? {
+        todayCourses.first { isCourseOngoing($0) }
     }
 
     /// The first upcoming course today (start time hasn't passed yet).
@@ -173,6 +207,15 @@ struct HomeView: View {
                   let m = Int(parts[1]) else { return false }
             return (h * 60 + m) > currentMinutes
         }
+    }
+
+    private var completedTodayCourseCount: Int {
+        todayCourses.filter(isCourseInPast).count
+    }
+
+    private var todayCourseProgress: Double {
+        guard !todayCourses.isEmpty else { return 0 }
+        return Double(completedTodayCourseCount) / Double(todayCourses.count)
     }
 
     // MARK: - Greeting
@@ -312,6 +355,129 @@ struct HomeView: View {
         let startMinutes = sh * 60 + sm
         let endMinutes = eh * 60 + em + 50 // add period duration
         return currentMinutes >= startMinutes && currentMinutes <= endMinutes
+    }
+
+    // MARK: - Upcoming Assignments
+
+    /// Overdue or due-within-a-week assignments, soonest first, capped for the home card.
+    private var relevantAssignments: [Assignment] {
+        let now = Date()
+        let horizon = Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now
+        return upcomingAssignments
+            .filter { $0.dueDate <= horizon }
+            .sorted { $0.dueDate < $1.dueDate }
+            .prefix(4)
+            .map { $0 }
+    }
+
+    private var overdueAssignmentCount: Int {
+        upcomingAssignments.filter { $0.dueDate < Date() }.count
+    }
+
+    private var upcomingAssignmentsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                SectionHeader(title: "作業截止")
+                if overdueAssignmentCount > 0 {
+                    Text("\(overdueAssignmentCount) 項逾期")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(.red, in: Capsule())
+                }
+                Spacer()
+                NavigationLink(value: AppDestination.assignments) {
+                    Text("全部")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.accent)
+                }
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(relevantAssignments.enumerated()), id: \.element.id) { index, assignment in
+                    NavigationLink(value: AppDestination.assignments) {
+                        homeAssignmentRow(assignment, isLast: index == relevantAssignments.count - 1)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+        }
+    }
+
+    private func homeAssignmentRow(_ assignment: Assignment, isLast: Bool) -> some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(assignmentUrgencyColor(assignment))
+                .frame(width: 3)
+                .padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(assignment.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text(assignment.courseName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(assignmentDueLabel(assignment))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(assignmentUrgencyColor(assignment))
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Divider().padding(.leading, 20)
+            }
+        }
+    }
+
+    private func assignmentUrgencyColor(_ assignment: Assignment) -> Color {
+        let calendar = Calendar.current
+        if assignment.dueDate < Date() { return .red }
+        if calendar.isDateInToday(assignment.dueDate) || calendar.isDateInTomorrow(assignment.dueDate) {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private func assignmentDueLabel(_ assignment: Assignment) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: now),
+            to: calendar.startOfDay(for: assignment.dueDate)
+        ).day ?? 0
+
+        switch days {
+        case ..<0: return "已過期 \(abs(days)) 天"
+        case 0: return "今天截止"
+        case 1: return "明天截止"
+        default: return "\(days) 天後截止"
+        }
+    }
+
+    private func loadUpcomingAssignments(forceRefresh: Bool) async {
+        if !forceRefresh, let cached = cache.getAssignments() {
+            upcomingAssignments = cached
+        }
+        do {
+            let fetched = try await service.fetchAssignments()
+            upcomingAssignments = fetched
+            cache.setAssignments(fetched)
+        } catch {
+            if upcomingAssignments.isEmpty, let cached = cache.getAssignments() {
+                upcomingAssignments = cached
+            }
+        }
     }
 
     // MARK: - Module Grid (icon launcher style)

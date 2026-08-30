@@ -239,11 +239,17 @@ struct FJUApp: App {
 
         onboardingStatusText = "建立課表分享資料..."
         let snapshot = visibility == .off ? nil : await buildOnboardingScheduleSnapshot(session: session)
-        onboardingStatusText = "儲存公開個人檔案..."
+        onboardingStatusText = "驗證身分中..."
         do {
+            // Gathered fresh for this publish action only — not persisted, and reused
+            // for both the identity binding write and the profile write below.
+            let attested = try await IdentityAttestationService.shared.attestCurrentStudent()
+
+            onboardingStatusText = "儲存公開個人檔案..."
             let publicRecordName = try await CloudKitProfileIdentityService.shared.ensureIdentity(
                 for: session,
-                forceRefresh: true
+                forceRefresh: true,
+                attestedStudentID: attested.studentID
             )
             let existingProfile = try? await CloudKitProfileService.shared.fetchProfile(
                 recordName: ProfileIdentity.publicRecordName(userId: session.userId)
@@ -260,7 +266,7 @@ struct FJUApp: App {
             let profile = PublicProfile(
                 cloudKitRecordName: publicRecordName,
                 userId: session.userId,
-                empNo: session.empNo,
+                empNo: attested.studentID,
                 displayName: displayNameToPublish,
                 avatarURLString: avatarURLString ?? existingProfile?.avatarURLString,
                 bio: bioToPublish,
@@ -276,7 +282,7 @@ struct FJUApp: App {
                         snapshot,
                         token: token,
                         ownerRecordName: profile.cloudKitRecordName,
-                        ownerEmpNo: session.empNo
+                        ownerEmpNo: attested.studentID
                     )
                 }
             } else if visibility == .off || visibility == .public {
@@ -288,7 +294,11 @@ struct FJUApp: App {
             if await authManager.handleProfileIdentityError(error) {
                 return
             }
-            onboardingStatusText = "公開資料稍後可在好友頁重試"
+            if error is IdentityAttestationService.AttestationError {
+                onboardingStatusText = error.localizedDescription
+            } else {
+                onboardingStatusText = "公開資料稍後可在好友頁重試"
+            }
             UserDefaults.standard.set(false, forKey: "myProfile.isPublished")
             try? await Task.sleep(for: .milliseconds(700))
         }
