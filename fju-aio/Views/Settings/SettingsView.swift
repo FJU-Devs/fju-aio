@@ -19,7 +19,6 @@ struct SettingsView: View {
     @State private var syncSettingsError: String?
     @State private var reenablePrompt: AutoSyncReenablePrompt?
     @State private var liveActivityPermissionAlert = false
-    @State private var showPasswordChangeSheet = false
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
     private let cache = AppCache.shared
@@ -126,12 +125,6 @@ struct SettingsView: View {
                                 .controlSize(.small)
                         }
                     }
-                }
-
-                Button {
-                    showPasswordChangeSheet = true
-                } label: {
-                    Label("更新學校密碼", systemImage: "key.fill")
                 }
             }
 
@@ -287,9 +280,6 @@ struct SettingsView: View {
         .navigationTitle("設定")
         .navigationDestination(isPresented: $showDebugScreen) {
             DebugView()
-        }
-        .sheet(isPresented: $showPasswordChangeSheet) {
-            PasswordChangeView()
         }
         .alert("你真的要登出嗎？", isPresented: $showLogoutAlert) {
             Button("先不要", role: .cancel) {}

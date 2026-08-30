@@ -12,7 +12,8 @@ actor TronClassAuthService {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "Auth")
     
     private var currentSession: TronClassSession?
-    
+    private var refreshTask: Task<TronClassSession, Error>?
+
     private init() {
         Task { await loadSession() }
     }
@@ -63,17 +64,31 @@ actor TronClassAuthService {
             return session
         }
         
+        // Piggyback on an in-flight refresh instead of firing a second concurrent
+        // login with the same credentials — the CAS server can reject a duplicate
+        // concurrent ticket request, which would otherwise look like a bad password.
+        if let refreshTask {
+            logger.info("⏳ Awaiting in-flight session refresh")
+            return try await refreshTask.value
+        }
+
         logger.info("⚠️ Session expired or missing, attempting refresh...")
-        
+
         // Try to refresh with stored credentials
         guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
             logger.error("❌ No stored credentials found")
             throw AuthenticationError.sessionExpired
         }
-        
+
         logger.info("🔄 Refreshing session with stored credentials")
+        let task = Task<TronClassSession, Error> {
+            try await login(username: credentials.username, password: credentials.password)
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+
         do {
-            return try await login(username: credentials.username, password: credentials.password)
+            return try await task.value
         } catch AuthenticationError.invalidCredentials {
             await CredentialErrorMonitor.shared.markPasswordInvalid()
             throw AuthenticationError.invalidCredentials

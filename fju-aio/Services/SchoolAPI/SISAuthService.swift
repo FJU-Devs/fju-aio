@@ -12,7 +12,8 @@ actor SISAuthService {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "SISAuth")
     
     private var currentSession: SISSession?
-    
+    private var refreshTask: Task<SISSession, Error>?
+
     private init() {
         Task { await loadSession() }
     }
@@ -69,16 +70,27 @@ actor SISAuthService {
             return session
         }
         
+        if let refreshTask {
+            logger.info("⏳ Awaiting in-flight session refresh")
+            return try await refreshTask.value
+        }
+
         logger.info("⚠️ Session expired or missing, attempting refresh...")
-        
+
         guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
             logger.error("❌ No stored credentials found")
             throw SISError.tokenExpired
         }
-        
+
         logger.info("🔄 Refreshing session with stored credentials")
+        let task = Task<SISSession, Error> {
+            try await login(username: credentials.username, password: credentials.password)
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+
         do {
-            return try await login(username: credentials.username, password: credentials.password)
+            return try await task.value
         } catch SISError.invalidCredentials {
             await CredentialErrorMonitor.shared.markPasswordInvalid()
             throw SISError.invalidCredentials

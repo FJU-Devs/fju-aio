@@ -28,7 +28,8 @@ actor EstuAuthService {
     private let logger = NetworkLogger.shared
     
     private var currentSession: EstuSession?
-    
+    private var refreshTask: Task<EstuSession, Error>?
+
     private init() {
         Task { await loadSession() }
     }
@@ -73,24 +74,37 @@ actor EstuAuthService {
     
     /// Force a fresh login, clearing any cached session. Use when cookies are lost (e.g. app restart).
     func forceRelogin() async throws -> EstuSession {
+        // Concurrent callers (getValidSession plus retry call sites in EstuCourseService)
+        // must not clear cookies and re-login independently — that would stomp on each
+        // other's in-progress session and look like a bad password. Share one attempt.
+        if let refreshTask {
+            return try await refreshTask.value
+        }
+
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
         logger.info("🔄 Force re-login...")
-        
+
         currentSession = nil
-        
+
         // Clear ESTU cookies to avoid stale session state before re-login
         if let url = URL(string: "\(baseURL)\(loginPath)") {
             let storage = HTTPCookieStorage.shared
             storage.cookies(for: url)?.forEach { storage.deleteCookie($0) }
         }
-        
+
         guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
             logger.error("❌ No stored credentials found")
             throw EstuError.sessionExpired
         }
 
+        let task = Task<EstuSession, Error> {
+            try await login(username: credentials.username, password: credentials.password)
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+
         do {
-            return try await login(username: credentials.username, password: credentials.password)
+            return try await task.value
         } catch EstuError.invalidCredentials {
             await CredentialErrorMonitor.shared.markPasswordInvalid()
             throw EstuError.invalidCredentials

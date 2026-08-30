@@ -27,6 +27,7 @@ actor DormAuthService {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "DormAuth")
 
     private var currentSession: DormSession?
+    private var refreshTask: Task<DormSession, Error>?
 
     private init() {
         Task { await loadSession() }
@@ -41,6 +42,10 @@ actor DormAuthService {
             return session
         }
 
+        if let refreshTask {
+            return try await refreshTask.value
+        }
+
         logger.info("⚠️ Dorm session expired or missing, refreshing...")
 
         guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
@@ -48,8 +53,14 @@ actor DormAuthService {
             throw DormAuthError.noCredentials
         }
 
+        let task = Task<DormSession, Error> {
+            try await login(username: credentials.username, password: credentials.password)
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+
         do {
-            return try await login(username: credentials.username, password: credentials.password)
+            return try await task.value
         } catch DormAuthError.invalidCredentials {
             await CredentialErrorMonitor.shared.markPasswordInvalid()
             throw DormAuthError.invalidCredentials
