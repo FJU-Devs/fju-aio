@@ -205,8 +205,13 @@ struct FriendDetailView: View {
         do {
             guard var fresh = try await CloudKitProfileService.shared.fetchProfile(recordName: friend.id) else {
                 profile = nil
+                // See FriendListView.refreshFriendProfiles() — a missing profile is only a
+                // trustworthy signal on Release builds. DEBUG builds hit CloudKit's empty
+                // Development environment, where every profile looks missing.
+                #if !DEBUG
                 friendStore.removeFriend(id: friend.id)
                 loadError = "此朋友的公開資料已不存在，已從好友列表移除。"
+                #endif
                 return
             }
 

@@ -237,7 +237,13 @@ private struct FriendListContent: View {
                 case .updated(let profile, let id):
                     friendStore.updateCachedProfile(profile, for: id)
                 case .missing(let id):
+                    // A missing profile normally means the friend deleted it or turned off
+                    // public visibility. But Xcode debug builds always hit CloudKit's empty
+                    // Development environment (TestFlight/App Store use Production), so every
+                    // friend looks "missing" there — that signal isn't trustworthy in DEBUG.
+                    #if !DEBUG
                     friendStore.removeFriend(id: id)
+                    #endif
                 case .failed:
                     break
                 }
@@ -335,10 +341,14 @@ private struct FriendListContent: View {
             }) else { return }
             do {
                 guard let profile = try await Self.loadProfileWithFriendSchedule(friend: friend) else {
+                    // See refreshFriendProfiles() — this signal is unreliable on DEBUG builds
+                    // because they hit CloudKit's Development environment, not Production.
+                    #if !DEBUG
                     await MainActor.run {
                         friendStore.removeFriend(id: recordName)
                         scanError = "此公開資料已不存在，已從好友列表移除。"
                     }
+                    #endif
                     return
                 }
                 await MainActor.run {
