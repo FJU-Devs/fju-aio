@@ -1,5 +1,15 @@
 import SwiftUI
+import UIKit
 import os.log
+
+// MARK: - Profile Snapshot (for unsaved-changes tracking)
+
+private struct ProfileSnapshot: Equatable {
+    var isPublished: Bool
+    var bio: String
+    var socialLinks: [SocialLink]
+    var scheduleVisibilityRaw: String
+}
 
 // MARK: - MyProfileView
 
@@ -7,6 +17,7 @@ struct MyProfileView: View {
     @Environment(AuthenticationManager.self) private var authManager
     @Environment(\.fjuService) private var service
     @Environment(iCloudAvailabilityService.self) private var iCloudAvailability
+    @Environment(\.dismiss) private var dismiss
 
     @AppStorage("myProfile.displayName") private var displayName = ""
     @AppStorage("myProfile.bio") private var bio = ""
@@ -21,18 +32,30 @@ struct MyProfileView: View {
     @State private var isLoading = false
     @State private var showAddLink = false
     @State private var showDisableConfirm = false
+    @State private var showDiscardConfirm = false
     @State private var profileAvatarURL: URL?
     @State private var showAvatarMessage = false
 
-    // Auto-save state
-    @State private var saveTask: Task<Void, Never>?
-    @State private var hasPendingProfileSave = false
+    // Manual save state
+    @State private var lastSavedSnapshot: ProfileSnapshot?
     @State private var isPublishingProfile = false
-    @State private var isApplyingRemoteProfile = false
-    @State private var suppressProfileSaveUntil = Date.distantPast
     @State private var publishError: String?
 
     private let syncStatus = SyncStatusManager.shared
+
+    private var currentSnapshot: ProfileSnapshot {
+        ProfileSnapshot(
+            isPublished: isPublished,
+            bio: bio,
+            socialLinks: socialLinks,
+            scheduleVisibilityRaw: scheduleVisibilityRaw
+        )
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard let lastSavedSnapshot else { return false }
+        return currentSnapshot != lastSavedSnapshot
+    }
 
     var body: some View {
         List {
@@ -108,7 +131,6 @@ struct MyProfileView: View {
                     set: { newValue in
                         if newValue {
                             isPublished = true
-                            scheduleSave()
                         } else {
                             showDisableConfirm = true
                         }
@@ -142,7 +164,7 @@ struct MyProfileView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } footer: {
-                    Text("變更後將自動同步到雲端。")
+                    Text("變更後請按下右上方「儲存」以同步到雲端。")
                 }
 
                 // Bio
@@ -158,8 +180,6 @@ struct MyProfileView: View {
                     }
                     .onDelete { offsets in
                         socialLinks.remove(atOffsets: offsets)
-                        saveSocialLinks()
-                        scheduleSave()
                     }
 
                     Button {
@@ -183,6 +203,7 @@ struct MyProfileView: View {
         .adaptiveListContentMargins()
         .navigationTitle("我的資料")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(hasUnsavedChanges)
         .overlay {
             if isLoading { ProgressView() }
         }
@@ -191,25 +212,40 @@ struct MyProfileView: View {
             loadSocialLinks()
             await importRemoteProfileIfNeeded()
             await loadProfileAvatar()
+            lastSavedSnapshot = currentSnapshot
         }
-        .onDisappear {
-            // Flush only real pending edits. Preview navigation also triggers onDisappear.
-            saveTask?.cancel()
-            if hasPendingProfileSave, isPublished, sisSession != nil {
-                Task { await publishProfileNow() }
-            }
-        }
-        .onChange(of: bio) { _, _ in scheduleSave() }
-        .onChange(of: scheduleVisibilityRaw) { _, _ in scheduleSave() }
         .onChange(of: socialLinks) { _, _ in
             saveSocialLinks()
-            scheduleSave()
         }
+        .toolbar {
+            if hasUnsavedChanges {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showDiscardConfirm = true
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if hasUnsavedChanges {
+                    Button {
+                        Task { await publishProfileNow() }
+                    } label: {
+                        if isPublishingProfile {
+                            ProgressView()
+                        } else {
+                            Text("儲存")
+                        }
+                    }
+                    .disabled(isPublishingProfile)
+                }
+            }
+        }
+        .interactivePopGestureDisabled(hasUnsavedChanges)
         .sheet(isPresented: $showAddLink) {
             AddSocialLinkSheet { newLink in
                 socialLinks.append(newLink)
-                saveSocialLinks()
-                scheduleSave()
             }
         }
         .confirmationDialog(
@@ -223,6 +259,19 @@ struct MyProfileView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("關閉後，你的公開資料（包含課表與社群連結）將從雲端刪除，好友將無法再看到你的資料。")
+        }
+        .confirmationDialog(
+            "放棄未儲存的變更？",
+            isPresented: $showDiscardConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("放棄變更", role: .destructive) {
+                discardChanges()
+                dismiss()
+            }
+            Button("繼續編輯", role: .cancel) {}
+        } message: {
+            Text("你所做的變更尚未儲存，離開後將會遺失。")
         }
         .alert("頭貼", isPresented: $showAvatarMessage) {
             Button("確定", role: .cancel) {}
@@ -259,14 +308,6 @@ struct MyProfileView: View {
         guard iCloudAvailability.isPublicDBAvailable else { return }
         let recordName = ProfileIdentity.publicRecordName(for: session)
         guard let remote = try? await CloudKitProfileService.shared.fetchProfile(recordName: recordName) else { return }
-
-        isApplyingRemoteProfile = true
-        suppressProfileSaveUntil = Date().addingTimeInterval(1)
-        defer {
-            suppressProfileSaveUntil = Date().addingTimeInterval(1)
-            isApplyingRemoteProfile = false
-            hasPendingProfileSave = false
-        }
 
         isPublished = true
         displayName = remote.displayName
@@ -318,31 +359,28 @@ struct MyProfileView: View {
         }
     }
 
-    // MARK: - Auto-save (debounced)
+    // MARK: - Discard unsaved changes
 
-    /// Schedule a debounced save 0.8 s after the last change.
-    private func scheduleSave() {
-        guard iCloudAvailability.isPublicDBAvailable else { return }
-        guard !isApplyingRemoteProfile, Date() >= suppressProfileSaveUntil else { return }
-        guard isPublished, sisSession != nil else { return }
-        hasPendingProfileSave = true
-        saveTask?.cancel()
-        saveTask = Task {
-            try? await Task.sleep(for: .milliseconds(800))
-            guard !Task.isCancelled else { return }
-            await publishProfileNow()
-        }
+    private func discardChanges() {
+        guard let snapshot = lastSavedSnapshot else { return }
+        isPublished = snapshot.isPublished
+        bio = snapshot.bio
+        socialLinks = snapshot.socialLinks
+        saveSocialLinks()
+        scheduleVisibilityRaw = snapshot.scheduleVisibilityRaw
+        shareSchedule = ScheduleVisibility(rawValue: snapshot.scheduleVisibilityRaw) == .public
+        publishError = nil
     }
+
+    // MARK: - Manual save
 
     @MainActor
     private func publishProfileNow() async {
         guard let session = sisSession, isPublished else { return }
         guard iCloudAvailability.isPublicDBAvailable else {
             snapshotLogger.info("ℹ️ No iCloud account — skipping CloudKit profile publish")
-            hasPendingProfileSave = false
             return
         }
-        guard hasPendingProfileSave || profileAvatarURL == nil else { return }
         guard !isPublishingProfile else { return }
         isPublishingProfile = true
         defer { isPublishingProfile = false }
@@ -421,8 +459,8 @@ struct MyProfileView: View {
            ),
            !friendScheduleChanged {
             snapshotLogger.info("📦 publishProfileNow: no profile changes, skipping CloudKit save")
-            hasPendingProfileSave = false
             isPublished = true
+            lastSavedSnapshot = currentSnapshot
             return
         }
 
@@ -458,7 +496,7 @@ struct MyProfileView: View {
                 }
                 snapshotLogger.info("✅ publishProfileNow: CloudKit save succeeded")
                 isPublished = true
-                hasPendingProfileSave = false
+                lastSavedSnapshot = currentSnapshot
             } catch {
                 snapshotLogger.error("❌ publishProfileNow: CloudKit save failed — \(error.localizedDescription, privacy: .public)")
                 if await authManager.handleProfileIdentityError(error) {
@@ -539,10 +577,12 @@ struct MyProfileView: View {
     private func disableProfile() async {
         guard let session = sisSession else {
             isPublished = false
+            lastSavedSnapshot = currentSnapshot
             return
         }
         guard iCloudAvailability.isPublicDBAvailable else {
             isPublished = false
+            lastSavedSnapshot = currentSnapshot
             return
         }
         do {
@@ -561,6 +601,7 @@ struct MyProfileView: View {
             try? await CloudKitProfileService.shared.deleteFriendSchedule(token: token)
         }
         isPublished = false
+        lastSavedSnapshot = currentSnapshot
     }
 
     // MARK: - Schedule Snapshot
@@ -745,6 +786,30 @@ private struct AddSocialLinkSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Interactive pop gesture control
+
+/// Lets us disable the swipe-back gesture while there are unsaved changes, so leaving
+/// the screen always goes through the custom back button's discard confirmation.
+private struct PopGestureDisabler: UIViewControllerRepresentable {
+    let isDisabled: Bool
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        DispatchQueue.main.async {
+            uiViewController.parent?.navigationController?.interactivePopGestureRecognizer?.isEnabled = !isDisabled
+        }
+    }
+}
+
+private extension View {
+    func interactivePopGestureDisabled(_ isDisabled: Bool) -> some View {
+        background(PopGestureDisabler(isDisabled: isDisabled))
     }
 }
 
