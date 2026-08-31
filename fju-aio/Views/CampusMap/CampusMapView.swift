@@ -13,6 +13,20 @@ private extension CampusAmenity.Category {
     }
 }
 
+/// Shared marker palette so pins, search results, and detail cards read as one design.
+private enum MapPalette {
+    static let buildingDefault = Color(hex: "#4F46E5")
+    static let buildingSelected = Color(hex: "#2563EB")
+    static let currentClass = Color(hex: "#EA580C")
+}
+
+private extension Color {
+    /// Subtle top-to-bottom gradient that gives flat marker colors a bit of depth.
+    var markerGradient: LinearGradient {
+        LinearGradient(colors: [self.opacity(0.82), self], startPoint: .top, endPoint: .bottom)
+    }
+}
+
 // MARK: - Campus Map View
 
 struct CampusMapView: View {
@@ -411,8 +425,9 @@ private struct SearchOverlay: View {
                         HStack(spacing: 12) {
                             ZStack {
                                 Circle()
-                                    .fill(Color.green)
+                                    .fill(MapPalette.buildingDefault.markerGradient)
                                     .frame(width: 36, height: 36)
+                                    .shadow(color: MapPalette.buildingDefault.opacity(0.35), radius: 3, y: 1)
                                 Text(building.code)
                                     .font(.caption2.bold())
                                     .foregroundStyle(.white)
@@ -450,8 +465,9 @@ private struct SearchOverlay: View {
                         HStack(spacing: 12) {
                             ZStack {
                                 Circle()
-                                    .fill(amenity.category.color)
+                                    .fill(amenity.category.color.markerGradient)
                                     .frame(width: 36, height: 36)
+                                    .shadow(color: amenity.category.color.opacity(0.35), radius: 3, y: 1)
                                 Image(systemName: amenity.category.iconName)
                                     .font(.system(size: 15, weight: .bold))
                                     .foregroundStyle(.white)
@@ -488,6 +504,36 @@ private struct SearchOverlay: View {
     }
 }
 
+// MARK: - Shared Card Components
+
+/// A small centered handle that gives the bottom-anchored cards a "sheet" affordance.
+private struct CardGrabber: View {
+    var body: some View {
+        Capsule()
+            .fill(Color.secondary.opacity(0.35))
+            .frame(width: 36, height: 5)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+/// A compact colored chip used to surface a status at a glance. Reserved for
+/// genuinely notable state (e.g. "in class now") so it doesn't compete with
+/// the card's own accent color.
+private struct StatusPill: View {
+    let text: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(color)
+            .background(color.opacity(0.15), in: Capsule())
+    }
+}
+
 // MARK: - Current Class Card
 
 private struct CurrentClassCard: View {
@@ -495,43 +541,59 @@ private struct CurrentClassCard: View {
     let buildingName: String?
     let onLocate: () -> Void
 
+    private let accentColor = MapPalette.currentClass
+
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Label("現在上課", systemImage: "clock.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                Text(course.name)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(course.location)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if buildingName != nil {
-                if #available(iOS 26.0, *) {
-                    Button(action: onLocate) {
-                        Label("定位", systemImage: "location.fill")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.glass)
-                    .tint(.orange)
-                } else {
-                    Button(action: onLocate) {
-                        Label("定位", systemImage: "location.fill")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.orange, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
+        VStack(spacing: 10) {
+            CardGrabber()
+
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(accentColor.markerGradient)
+                        .frame(width: 44, height: 44)
+                        .shadow(color: accentColor.opacity(0.35), radius: 4, y: 2)
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
                 }
-            } else {
-                Image(systemName: "mappin.slash")
-                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    StatusPill(text: "現在上課", icon: "clock.fill", color: accentColor)
+                    Text(course.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(course.location)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if buildingName != nil {
+                    if #available(iOS 26.0, *) {
+                        Button(action: onLocate) {
+                            Label("定位", systemImage: "location.fill")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.glass)
+                        .tint(accentColor)
+                    } else {
+                        Button(action: onLocate) {
+                            Label("定位", systemImage: "location.fill")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(accentColor, in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                    }
+                } else {
+                    Image(systemName: "mappin.slash")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(14)
@@ -549,13 +611,22 @@ private struct BuildingDetailCard: View {
     let onNavigate: () -> Void
     let onClose: () -> Void
 
+    /// One accent per card state — everything (icon, status pill, nav button) uses this,
+    /// rather than mixing unrelated hues in the same header.
+    private var accentColor: Color {
+        isCurrentClassBuilding ? MapPalette.currentClass : MapPalette.buildingSelected
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            CardGrabber()
+
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     Circle()
-                        .fill(isCurrentClassBuilding ? Color.orange : Color.blue)
+                        .fill(accentColor.markerGradient)
                         .frame(width: 44, height: 44)
+                        .shadow(color: accentColor.opacity(0.35), radius: 4, y: 2)
                     Text(building.code)
                         .font(.caption.bold())
                         .foregroundStyle(.white)
@@ -564,6 +635,9 @@ private struct BuildingDetailCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(building.name)
                         .font(.headline)
+                    if isCurrentClassBuilding {
+                        StatusPill(text: "現在上課", icon: "clock.fill", color: accentColor)
+                    }
                     Text(courses.isEmpty ? "尚無你的課程" : "\(courses.count) 門課在這棟建築")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -588,13 +662,14 @@ private struct BuildingDetailCard: View {
                             .padding(.vertical, 10)
                     }
                     .buttonStyle(.glassProminent)
+                    .tint(accentColor)
                 } else {
                     Button(action: onNavigate) {
                         Label("導航", systemImage: "figure.walk")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
-                            .background(Color.blue, in: RoundedRectangle(cornerRadius: 12))
+                            .background(accentColor, in: RoundedRectangle(cornerRadius: 12))
                             .foregroundStyle(.white)
                     }
                 }
@@ -603,7 +678,7 @@ private struct BuildingDetailCard: View {
             if !courses.isEmpty {
                 Divider()
                 ScrollView {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 8) {
                         ForEach(courses) { course in
                             CourseRow(course: course)
                         }
@@ -634,25 +709,21 @@ private struct CourseRow: View {
                 Text(course.scheduleDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    Image(systemName: "mappin.and.ellipse")
-                    Text(course.location)
+                HStack(spacing: 14) {
+                    Label(course.location, systemImage: "mappin.and.ellipse")
+                    if !course.instructor.isEmpty {
+                        Label(course.instructor, systemImage: "person.fill")
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                if !course.instructor.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.fill")
-                        Text(course.instructor)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
             }
 
             Spacer(minLength: 0)
         }
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -665,11 +736,14 @@ private struct AmenityDetailCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            CardGrabber()
+
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     Circle()
-                        .fill(amenity.category.color)
+                        .fill(amenity.category.color.markerGradient)
                         .frame(width: 44, height: 44)
+                        .shadow(color: amenity.category.color.opacity(0.35), radius: 4, y: 2)
                     Image(systemName: amenity.category.iconName)
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.white)
@@ -706,6 +780,7 @@ private struct AmenityDetailCard: View {
                         .padding(.vertical, 10)
                 }
                 .buttonStyle(.glassProminent)
+                .tint(amenity.category.color)
             } else {
                 Button(action: onNavigate) {
                     Label("導航", systemImage: "figure.walk")
@@ -746,47 +821,62 @@ private struct BuildingPin: View {
     let isSelected: Bool
     let isCurrentClass: Bool
 
+    @State private var pulse = false
+
     private var pinColor: Color {
-        if isCurrentClass { return .orange }
-        if isSelected { return .blue }
-        return .green
+        if isCurrentClass { return MapPalette.currentClass }
+        if isSelected { return MapPalette.buildingSelected }
+        return MapPalette.buildingDefault
     }
 
+    private var size: CGFloat { (isSelected || isCurrentClass) ? 44 : 36 }
+    /// Distance from the pin's bounding-box center up to the center of its circular head.
+    private var glyphOffset: CGFloat { size * 0.13 }
+
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
+        ZStack {
+            if isCurrentClass {
                 Circle()
-                    .fill(pinColor)
-                    .frame(width: (isSelected || isCurrentClass) ? 44 : 36,
-                           height: (isSelected || isCurrentClass) ? 44 : 36)
-                    .shadow(radius: (isSelected || isCurrentClass) ? 6 : 3)
+                    .fill(pinColor.opacity(0.22))
+                    .frame(width: size * 1.8, height: size * 1.8)
+                    .scaleEffect(pulse ? 1 : 0.6)
+                    .opacity(pulse ? 0 : 1)
+                    .offset(y: -glyphOffset)
+                    .animation(.easeOut(duration: 1.5).repeatForever(autoreverses: false), value: pulse)
+            }
+
+            PinShape()
+                .fill(pinColor.markerGradient)
+                .overlay(PinShape().stroke(.white, lineWidth: 2))
+                .frame(width: size, height: size * 1.3)
+                .shadow(color: pinColor.opacity(0.45), radius: (isSelected || isCurrentClass) ? 6 : 3, y: 2)
+
+            Group {
                 if isCurrentClass {
                     Image(systemName: "clock.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: size * 0.4, weight: .bold))
                 } else {
                     Text(building.code)
-                        .font(.caption2.bold())
-                        .foregroundStyle(.white)
-                }
-
-                if courseCount > 0 {
-                    Text("\(courseCount)")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 19, minHeight: 19)
-                        .background(Color.red, in: Circle())
-                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                        .offset(x: 16, y: -16)
-                        .accessibilityLabel("\(courseCount) 門課")
+                        .font(.system(size: size * 0.3, weight: .bold))
                 }
             }
-            Triangle()
-                .fill(pinColor)
-                .frame(width: 10, height: 6)
+            .foregroundStyle(.white)
+            .offset(y: -glyphOffset)
+
+            if courseCount > 0 {
+                Text("\(courseCount)")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 19, minHeight: 19)
+                    .background(Color.red, in: Circle())
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .offset(x: size * 0.38, y: -(glyphOffset + size * 0.38))
+                    .accessibilityLabel("\(courseCount) 門課")
+            }
         }
         .animation(.spring(response: 0.3), value: isSelected)
         .animation(.spring(response: 0.3), value: isCurrentClass)
+        .onAppear { pulse = true }
     }
 }
 
@@ -796,33 +886,52 @@ private struct AmenityPin: View {
     let amenity: CampusAmenity
     let isSelected: Bool
 
+    private var size: CGFloat { isSelected ? 42 : 34 }
+    private var glyphOffset: CGFloat { size * 0.13 }
+
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Circle()
-                    .fill(amenity.category.color)
-                    .frame(width: isSelected ? 42 : 34, height: isSelected ? 42 : 34)
-                    .shadow(radius: isSelected ? 6 : 3)
-                Image(systemName: amenity.category.iconName)
-                    .font(.system(size: isSelected ? 17 : 14, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            Triangle()
-                .fill(amenity.category.color)
-                .frame(width: 10, height: 6)
+        ZStack {
+            PinShape()
+                .fill(amenity.category.color.markerGradient)
+                .overlay(PinShape().stroke(.white, lineWidth: 2))
+                .frame(width: size, height: size * 1.3)
+                .shadow(color: amenity.category.color.opacity(0.45), radius: isSelected ? 6 : 3, y: 2)
+
+            Image(systemName: amenity.category.iconName)
+                .font(.system(size: isSelected ? 17 : 14, weight: .bold))
+                .foregroundStyle(.white)
+                .offset(y: -glyphOffset)
         }
         .animation(.spring(response: 0.3), value: isSelected)
     }
 }
 
-// MARK: - Triangle Shape
+// MARK: - Pin Shape
 
-private struct Triangle: Shape {
+/// A rounded map-pin balloon: a circular head that tapers to a point at the bottom.
+private struct PinShape: Shape {
     func path(in rect: CGRect) -> Path {
+        let w = rect.width
+        let h = rect.height
         var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.move(to: CGPoint(x: w / 2, y: h))
+        path.addCurve(
+            to: CGPoint(x: 0, y: h * 0.4),
+            control1: CGPoint(x: w * 0.15, y: h * 0.85),
+            control2: CGPoint(x: 0, y: h * 0.68)
+        )
+        path.addArc(
+            center: CGPoint(x: w / 2, y: h * 0.4),
+            radius: w / 2,
+            startAngle: .degrees(180),
+            endAngle: .degrees(0),
+            clockwise: false
+        )
+        path.addCurve(
+            to: CGPoint(x: w / 2, y: h),
+            control1: CGPoint(x: w, y: h * 0.68),
+            control2: CGPoint(x: w * 0.85, y: h * 0.85)
+        )
         path.closeSubpath()
         return path
     }
