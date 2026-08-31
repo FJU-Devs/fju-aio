@@ -38,8 +38,6 @@ struct HomeView: View {
                         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
 
-                todayScheduleSection
-
                 if !relevantAssignments.isEmpty {
                     upcomingAssignmentsSection
                 }
@@ -92,26 +90,29 @@ struct HomeView: View {
     // MARK: - Hero Section
 
     private var heroSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(greetingText)
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(.white)
-                Text(dateString)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.75))
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(greetingText)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(dateString)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+
+                Divider().background(.white.opacity(0.25))
+
+                heroStatusRow
             }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.accent.gradient)
 
-            Divider().background(.white.opacity(0.25))
-
-            heroStatusRow
+            todayScheduleList
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(colors: heroGradientColors, startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
-        )
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
         .padding(.top, 8)
     }
 
@@ -150,18 +151,6 @@ struct HomeView: View {
                         }
                 }
             }
-        }
-    }
-
-    private var heroGradientColors: [Color] {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 0..<6:   return [Color(hex: "#1a1a2e"), Color(hex: "#16213e")]
-        case 6..<10:  return [Color(hex: "#f093fb"), Color(hex: "#f5576c")]
-        case 10..<14: return [Color(hex: "#4facfe"), Color(hex: "#00f2fe")]
-        case 14..<18: return [Color(hex: "#43e97b"), Color(hex: "#38f9d7")]
-        case 18..<21: return [Color(hex: "#fa709a"), Color(hex: "#fee140")]
-        default:      return [Color(hex: "#a18cd1"), Color(hex: "#fbc2eb")]
         }
     }
 
@@ -239,10 +228,12 @@ struct HomeView: View {
 
     // MARK: - Today's Schedule (vertical list)
 
-    private var todayScheduleSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private var todayScheduleList: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                SectionHeader(title: "今日課程")
+                Text("今日課程")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 NavigationLink(value: AppDestination.courseSchedule) {
                     Text("課表")
@@ -250,24 +241,24 @@ struct HomeView: View {
                         .foregroundStyle(AppTheme.accent)
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
 
             if todayCourses.isEmpty {
                 Text(isLoading ? "載入中..." : "今天沒有課，好好休息吧")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 16)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(todayCourses.enumerated()), id: \.element.id) { index, course in
-                        Button { selectedCourse = course } label: {
-                            todayCourseRow(course, isLast: index == todayCourses.count - 1)
-                        }
-                        .buttonStyle(.plain)
+                ForEach(Array(todayCourses.enumerated()), id: \.element.id) { index, course in
+                    Button { selectedCourse = course } label: {
+                        todayCourseRow(course, isLast: index == todayCourses.count - 1)
                     }
+                    .buttonStyle(.plain)
                 }
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
             }
         }
     }
@@ -535,13 +526,25 @@ struct HomeView: View {
 
     // MARK: - Bulletin Notifications
 
+    private var visibleBulletinNotifications: [TronClassNotification] {
+        Array(bulletinNotifications.prefix(3))
+    }
+
     private var bulletinSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "公告通知")
+            HStack(spacing: 8) {
+                SectionHeader(title: "公告通知")
+                if bulletinNotifications.count > visibleBulletinNotifications.count {
+                    Text("僅顯示最新 \(visibleBulletinNotifications.count) 則")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
 
             VStack(spacing: 0) {
-                ForEach(Array(bulletinNotifications.enumerated()), id: \.element.id) { index, notification in
-                    bulletinRow(notification, isLast: index == bulletinNotifications.count - 1)
+                ForEach(Array(visibleBulletinNotifications.enumerated()), id: \.element.id) { index, notification in
+                    bulletinRow(notification, isLast: index == visibleBulletinNotifications.count - 1)
                         .onTapGesture { selectedBulletin = notification }
                 }
             }
