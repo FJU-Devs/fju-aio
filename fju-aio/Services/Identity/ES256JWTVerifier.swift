@@ -110,6 +110,61 @@ nonisolated enum ES256JWTVerifier {
         )
     }
 
+    struct VerifiedProfile {
+        let profileData: Data
+        let fjuUserID: String
+        let studentID: String
+    }
+
+    static func verifyProfile(compactJWS: String, config: IdentityServerConfig) throws -> VerifiedProfile {
+        let segments = compactJWS.components(separatedBy: ".")
+        guard segments.count == 3 else {
+            throw VerificationError.malformed("profile segment count")
+        }
+        let headerSegment = segments[0]
+        let payloadSegment = segments[1]
+        guard let headerData = base64URLDecode(headerSegment),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],
+              header["alg"] as? String == "ES256",
+              header["typ"] as? String == "fju-aio-profile+jwt",
+              let kid = header["kid"] as? String,
+              let publicKey = config.publicKey(forKid: kid),
+              let signatureData = base64URLDecode(segments[2]),
+              signatureData.count == 64,
+              let signature = try? P256.Signing.ECDSASignature(rawRepresentation: signatureData) else {
+            throw VerificationError.malformed("profile header")
+        }
+
+        let signingInput = Data("\(headerSegment).\(payloadSegment)".utf8)
+        guard publicKey.isValidSignature(signature, for: signingInput),
+              let payloadData = base64URLDecode(payloadSegment),
+              let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              payload["iss"] as? String == config.issuer,
+              payload["aud"] as? String == config.audience,
+              payload["purpose"] as? String == "public-profile",
+              intValue(payload["ver"]) == 1,
+              let issuedAt = dateValue(payload["iat"]),
+              issuedAt <= Date().addingTimeInterval(300),
+              let jti = payload["jti"] as? String,
+              !jti.isEmpty,
+              let sub = payload["sub"] as? String,
+              let studentID = payload["studentID"] as? String,
+              let fjuUserID = payload["fjuUserID"] as? String,
+              IdentityAttestationService.normalizeStudentID(sub) ==
+                IdentityAttestationService.normalizeStudentID(studentID),
+              let encodedProfile = payload["profileData"] as? String,
+              encodedProfile.count <= 65_536,
+              let profileData = Data(base64Encoded: encodedProfile) else {
+            throw VerificationError.malformed("profile claims")
+        }
+
+        return VerifiedProfile(
+            profileData: profileData,
+            fjuUserID: fjuUserID,
+            studentID: studentID
+        )
+    }
+
     private static func base64URLDecode(_ value: String) -> Data? {
         var base64 = value
             .replacingOccurrences(of: "-", with: "+")

@@ -12,6 +12,7 @@ nonisolated struct IdentityServerConfig: Sendable {
 
     var challengeURL: URL { baseURL.appendingPathComponent("v1/auth/challenge") }
     var verifyURL: URL { baseURL.appendingPathComponent("v1/identity/verify") }
+    var profileSignURL: URL { baseURL.appendingPathComponent("v1/profile/sign") }
 
     func publicKey(forKid kid: String) -> P256.Signing.PublicKey? {
         guard let pem = pinnedKeys[kid] else { return nil }

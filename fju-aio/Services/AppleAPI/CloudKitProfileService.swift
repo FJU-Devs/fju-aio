@@ -39,7 +39,7 @@ actor CloudKitProfileService {
 
     // MARK: - Publish Own Profile
 
-    func publishProfile(_ profile: PublicProfile) async throws {
+    func publishProfile(_ profile: PublicProfile, signedProfileJWS: String) async throws {
         let recordID = CKRecord.ID(recordName: profile.cloudKitRecordName)
 
         // Fetch the existing record so we have a valid recordChangeTag.
@@ -61,6 +61,7 @@ actor CloudKitProfileService {
         record[PublicProfile.CKField.avatarURLString] = profile.avatarURLString as CKRecordValue?
         record[PublicProfile.CKField.bio] = profile.bio as CKRecordValue?
         record[PublicProfile.CKField.lastUpdated] = profile.lastUpdated as CKRecordValue
+        record[PublicProfile.CKField.signedProfileJWS] = signedProfileJWS as CKRecordValue
 
         if let linksData = try? JSONEncoder().encode(profile.socialLinks) {
             record[PublicProfile.CKField.socialLinksData] = linksData as CKRecordValue
@@ -92,15 +93,46 @@ actor CloudKitProfileService {
     // MARK: - Fetch a Friend's Profile
 
     func fetchProfile(recordName: String) async throws -> PublicProfile? {
-        if let userId = ProfileIdentity.userIdFromAliasRecordName(recordName),
-           let activeRecordName = try await CloudKitProfileIdentityService.shared.activePublicRecordName(userId: userId),
-           activeRecordName != recordName {
-            if let activeProfile = try await fetchProfileRecord(recordName: activeRecordName) {
-                return activeProfile
-            }
+        if let userId = ProfileIdentity.userIdFromAliasRecordName(recordName) {
+            return try await fetchVerifiedProfile(userId: userId)
         }
-
         return try await fetchProfileRecord(recordName: recordName)
+    }
+
+    private func fetchVerifiedProfile(userId: Int) async throws -> PublicProfile? {
+        let query = CKQuery(
+            recordType: PublicProfile.CKField.recordType,
+            predicate: NSPredicate(format: "%K == %d", PublicProfile.CKField.userId, userId)
+        )
+        var profiles: [PublicProfile] = []
+        let (results, cursor) = try await publicDB.records(
+            matching: query,
+            desiredKeys: [PublicProfile.CKField.signedProfileJWS],
+            resultsLimit: CKQueryOperation.maximumResults
+        )
+        profiles.append(contentsOf: results.compactMap { _, result in
+            guard case .success(let record) = result,
+                  let profile = decode(record: record),
+                  profile.userId == userId else { return nil }
+            return profile
+        })
+
+        var nextCursor = cursor
+        while let cursor = nextCursor {
+            let (results, cursor) = try await publicDB.records(
+                continuingMatchFrom: cursor,
+                desiredKeys: [PublicProfile.CKField.signedProfileJWS],
+                resultsLimit: CKQueryOperation.maximumResults
+            )
+            profiles.append(contentsOf: results.compactMap { _, result in
+                guard case .success(let record) = result,
+                      let profile = decode(record: record),
+                      profile.userId == userId else { return nil }
+                return profile
+            })
+            nextCursor = cursor
+        }
+        return profiles.max { $0.lastUpdated < $1.lastUpdated }
     }
 
     private func fetchProfileRecord(recordName: String) async throws -> PublicProfile? {
@@ -221,37 +253,20 @@ actor CloudKitProfileService {
     // MARK: - Decode CKRecord → PublicProfile
 
     private func decode(record: CKRecord) -> PublicProfile? {
-        guard
-            let userId = intValue(for: PublicProfile.CKField.userId, in: record),
-            let empNo = record[PublicProfile.CKField.empNo] as? String,
-            let displayName = record[PublicProfile.CKField.displayName] as? String,
-            let lastUpdated = record[PublicProfile.CKField.lastUpdated] as? Date
-        else {
-            logger.error("❌ Failed to decode PublicProfile record \(record.recordID.recordName, privacy: .public)")
+        guard let signedProfileJWS = record[PublicProfile.CKField.signedProfileJWS] as? String,
+              let verified = try? ES256JWTVerifier.verifyProfile(
+                compactJWS: signedProfileJWS,
+                config: IdentityServerConfig.current
+              ),
+              let profile = try? JSONDecoder().decode(PublicProfile.self, from: verified.profileData),
+              profile.cloudKitRecordName == record.recordID.recordName,
+              String(profile.userId) == verified.fjuUserID,
+              IdentityAttestationService.normalizeStudentID(profile.empNo) ==
+                IdentityAttestationService.normalizeStudentID(verified.studentID) else {
+            logger.error("❌ Rejected unsigned or invalid PublicProfile \(record.recordID.recordName, privacy: .public)")
             return nil
         }
-
-        var links: [SocialLink] = []
-        if let linksData = record[PublicProfile.CKField.socialLinksData] as? Data {
-            links = (try? JSONDecoder().decode([SocialLink].self, from: linksData)) ?? []
-        }
-
-        var snapshot: FriendScheduleSnapshot? = nil
-        if let snapshotData = record[PublicProfile.CKField.scheduleSnapshotData] as? Data {
-            snapshot = try? JSONDecoder().decode(FriendScheduleSnapshot.self, from: snapshotData)
-        }
-
-        return PublicProfile(
-            cloudKitRecordName: record.recordID.recordName,
-            userId: userId,
-            empNo: empNo,
-            displayName: displayName,
-            avatarURLString: record[PublicProfile.CKField.avatarURLString] as? String,
-            bio: record[PublicProfile.CKField.bio] as? String,
-            socialLinks: links,
-            scheduleSnapshot: snapshot,
-            lastUpdated: lastUpdated
-        )
+        return profile
     }
 
     private func friendScheduleRecordName(token: String) -> String {

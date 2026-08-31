@@ -67,8 +67,36 @@ actor IdentityAttestationService {
         return VerifiedStudentIdentity(
             studentID: claims.studentID,
             fjuUserID: claims.fjuUserID,
+            signedAttestation: attestationJWS,
             verifiedName: claims.verifiedName
         )
+    }
+
+    func signProfile(_ profile: PublicProfile, using identity: VerifiedStudentIdentity) async throws -> String {
+        let profileData = try JSONEncoder().encode(profile)
+        var request = URLRequest(url: config.profileSignURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(identity.signedAttestation)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "profileData": profileData.base64EncodedString()
+        ])
+
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await NetworkService.shared.performRequest(request)
+        } catch {
+            throw AttestationError.serverUnavailable
+        }
+        guard response.statusCode == 200,
+              let envelope = try? JSONDecoder().decode(ProfileSignEnvelope.self, from: data),
+              let signedProfile = envelope.data?.signedProfile else {
+            throw response.statusCode == 401 || response.statusCode == 403
+                ? AttestationError.verificationFailed
+                : AttestationError.serverUnavailable
+        }
+        return signedProfile
     }
 
     /// Unicode NFKC, trimmed, locale-independent uppercase — matches the server's normalization.
@@ -146,13 +174,13 @@ actor IdentityAttestationService {
     }
 }
 
-private struct ChallengeEnvelope: Decodable {
+private nonisolated struct ChallengeEnvelope: Decodable {
     let version: String
     let data: Payload?
     struct Payload: Decodable { let challenge: String }
 }
 
-private struct VerifyEnvelope: Decodable {
+private nonisolated struct VerifyEnvelope: Decodable {
     let version: String
     let data: Payload?
     struct Payload: Decodable {
@@ -163,7 +191,13 @@ private struct VerifyEnvelope: Decodable {
     }
 }
 
-private struct ErrorEnvelope: Decodable {
+private nonisolated struct ProfileSignEnvelope: Decodable {
+    let version: String
+    let data: Payload?
+    struct Payload: Decodable { let signedProfile: String }
+}
+
+private nonisolated struct ErrorEnvelope: Decodable {
     let error: ErrorPayload?
     struct ErrorPayload: Decodable {
         let code: String

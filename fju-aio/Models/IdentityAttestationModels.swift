@@ -6,6 +6,8 @@ nonisolated struct VerifiedStudentIdentity: Sendable {
     /// Signature-verified 學號, normalized the same way as `SISSession.empNo`.
     let studentID: String
     let fjuUserID: String
+    /// Short-lived server proof used only to authorize profile signing.
+    let signedAttestation: String
     /// School-verified display name. May only fill an empty display name field —
     /// never overwrite a user-chosen one.
     let verifiedName: String?

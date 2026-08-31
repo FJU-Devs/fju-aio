@@ -169,6 +169,7 @@ nonisolated struct PublicProfile: Codable, Identifiable, Hashable, Sendable {
         static let socialLinksData = "socialLinksData"
         static let scheduleSnapshotData = "scheduleSnapshotData"
         static let lastUpdated = "lastUpdated"
+        static let signedProfileJWS = "signedProfileJWS"
     }
 }
 

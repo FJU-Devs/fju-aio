@@ -492,7 +492,8 @@ struct MyProfileView: View {
                 )
 
                 snapshotLogger.info("☁️ publishProfileNow: sending to CloudKit — displayName=\(displayNameToPublish, privacy: .public), bio=\(profile.bio ?? "nil", privacy: .public), socialLinks=\(socialLinksToPublish.count, privacy: .public), hasSnapshot=\(profile.scheduleSnapshot != nil, privacy: .public)")
-                try await CloudKitProfileService.shared.publishProfile(profile)
+                let signedProfileJWS = try await IdentityAttestationService.shared.signProfile(profile, using: attested)
+                try await CloudKitProfileService.shared.publishProfile(profile, signedProfileJWS: signedProfileJWS)
                 if visibility == .friendsOnly, let snapshot {
                     for token in scheduleTokens {
                         try await CloudKitProfileService.shared.publishFriendSchedule(

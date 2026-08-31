@@ -274,7 +274,8 @@ struct FJUApp: App {
                 scheduleSnapshot: visibility == .public ? snapshot : nil,
                 lastUpdated: Date()
             )
-            try await CloudKitProfileService.shared.publishProfile(profile)
+            let signedProfileJWS = try await IdentityAttestationService.shared.signProfile(profile, using: attested)
+            try await CloudKitProfileService.shared.publishProfile(profile, signedProfileJWS: signedProfileJWS)
             let scheduleTokens = ProfileQRService.scheduleShareTokensForPublishing()
             if visibility == .friendsOnly, let snapshot {
                 for token in scheduleTokens {
