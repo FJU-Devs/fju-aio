@@ -103,6 +103,8 @@ struct PasswordChangeView: View {
                 }
             }
             .background(Color(.systemGroupedBackground))
+            .scrollDismissesKeyboard(.interactively)
+            .dismissKeyboardOnTap()
             .navigationTitle("更新密碼")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -11,6 +11,11 @@ private struct ProfileSnapshot: Equatable {
     var scheduleVisibilityRaw: String
 }
 
+private enum ProfileField: Hashable {
+    case bio
+    case socialLink(String)
+}
+
 // MARK: - MyProfileView
 
 struct MyProfileView: View {
@@ -35,6 +40,7 @@ struct MyProfileView: View {
     @State private var showDiscardConfirm = false
     @State private var profileAvatarURL: URL?
     @State private var showAvatarMessage = false
+    @FocusState private var focusedField: ProfileField?
 
     // Manual save state
     @State private var lastSavedSnapshot: ProfileSnapshot?
@@ -171,12 +177,13 @@ struct MyProfileView: View {
                 Section("自我介紹") {
                     TextField("讓朋友認識你（選填）", text: $bio, axis: .vertical)
                         .lineLimit(3, reservesSpace: true)
+                        .focused($focusedField, equals: .bio)
                 }
 
                 // Social Links
                 Section {
                     ForEach($socialLinks) { $link in
-                        SocialLinkEditRow(link: $link)
+                        SocialLinkEditRow(link: $link, focusedField: $focusedField)
                     }
                     .onDelete { offsets in
                         socialLinks.remove(atOffsets: offsets)
@@ -201,6 +208,8 @@ struct MyProfileView: View {
             }
         }
         .adaptiveListContentMargins()
+        .scrollDismissesKeyboard(.interactively)
+        .dismissKeyboardOnTap()
         .navigationTitle("我的資料")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(hasUnsavedChanges)
@@ -240,6 +249,10 @@ struct MyProfileView: View {
                     }
                     .disabled(isPublishingProfile)
                 }
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") { focusedField = nil }
             }
         }
         .interactivePopGestureDisabled(hasUnsavedChanges)
@@ -708,6 +721,7 @@ struct MyProfileView: View {
 
 private struct SocialLinkEditRow: View {
     @Binding var link: SocialLink
+    var focusedField: FocusState<ProfileField?>.Binding
 
     var body: some View {
         HStack(spacing: 12) {
@@ -721,6 +735,7 @@ private struct SocialLinkEditRow: View {
                     .font(.body)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .focused(focusedField, equals: .socialLink(link.id))
             }
         }
     }
@@ -734,6 +749,7 @@ private struct AddSocialLinkSheet: View {
 
     @State private var selectedPlatform: SocialPlatform = .instagram
     @State private var handle = ""
+    @FocusState private var isHandleFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -758,6 +774,7 @@ private struct AddSocialLinkSheet: View {
                         TextField(selectedPlatform.placeholder, text: $handle)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .focused($isHandleFocused)
                     }
                 }
 
@@ -772,6 +789,8 @@ private struct AddSocialLinkSheet: View {
             }
             .navigationTitle("新增社群連結")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
+            .dismissKeyboardOnTap()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
@@ -783,6 +802,10 @@ private struct AddSocialLinkSheet: View {
                         dismiss()
                     }
                     .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { isHandleFocused = false }
                 }
             }
         }

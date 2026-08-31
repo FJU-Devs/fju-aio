@@ -139,6 +139,8 @@ struct LoginView: View {
                 .readableContent(maxWidth: 520)
             }
             .background(Color(.systemGroupedBackground))
+            .scrollDismissesKeyboard(.interactively)
+            .dismissKeyboardOnTap()
             .navigationBarTitleDisplayMode(.inline)
         }
         .alert("帳號已登出", isPresented: signOutReasonPresented) {

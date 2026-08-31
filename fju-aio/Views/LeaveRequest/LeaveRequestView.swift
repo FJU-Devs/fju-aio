@@ -531,6 +531,7 @@ private struct RevokeLeaveSheet: View {
     @State private var isRevoking = false
     @State private var errorMessage: String?
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isMemoFocused: Bool
 
     private var canSubmit: Bool {
         !cancelMemo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -569,6 +570,7 @@ private struct RevokeLeaveSheet: View {
                             .font(.subheadline)
                         TextEditor(text: $cancelMemo)
                             .frame(minHeight: 100)
+                            .focused($isMemoFocused)
                             .overlay(
                                 Group {
                                     if cancelMemo.isEmpty {
@@ -604,6 +606,7 @@ private struct RevokeLeaveSheet: View {
             }
             .navigationTitle("撤銷假單")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("取消") { dismiss() }
@@ -614,6 +617,10 @@ private struct RevokeLeaveSheet: View {
                         showConfirmAlert = true
                     }
                     .disabled(!canSubmit || isRevoking)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { isMemoFocused = false }
                 }
             }
             .overlay {
@@ -771,6 +778,8 @@ private struct LeaveApplyWizard: View {
                     EmptyView()
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
+            .dismissKeyboardOnTap()
 
             if let err = processError {
                 Text(err)
@@ -1186,6 +1195,11 @@ private struct Step2FormView: View {
     @State private var attachmentError: String?
     private let maxAttachmentSize = 10 * 1024 * 1024
 
+    private enum Field: Hashable {
+        case phone, email, reason
+    }
+    @FocusState private var focusedField: Field?
+
     // Helper: does the selected subtype require family relationship fields?
     private var isBereavementLeave: Bool {
         leaveSubtypes.first { $0.value == draft.refLeaveSn }?.requiresFamilyFields ?? false
@@ -1360,6 +1374,7 @@ private struct Step2FormView: View {
                         .frame(width: 20)
                     TextField("聯絡電話（必填）", text: $draft.phoneNumber)
                         .keyboardType(.phonePad)
+                        .focused($focusedField, equals: .phone)
                 }
                 .padding(10)
                 .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -1372,6 +1387,7 @@ private struct Step2FormView: View {
                         .keyboardType(.emailAddress)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                        .focused($focusedField, equals: .email)
                 }
                 .padding(10)
                 .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -1389,6 +1405,7 @@ private struct Step2FormView: View {
                 }
                 TextField("請填寫請假原因（必填）", text: $draft.leaveReason, axis: .vertical)
                     .lineLimit(4...8)
+                    .focused($focusedField, equals: .reason)
                     .onChange(of: draft.leaveReason) { _, v in
                         if v.count > 500 { draft.leaveReason = String(v.prefix(500)) }
                     }
@@ -1461,6 +1478,12 @@ private struct Step2FormView: View {
             Button("確定", role: .cancel) { attachmentError = nil }
         } message: {
             Text(attachmentError ?? "")
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") { focusedField = nil }
+            }
         }
     }
 

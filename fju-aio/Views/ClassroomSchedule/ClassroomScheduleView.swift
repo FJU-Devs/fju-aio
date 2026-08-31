@@ -40,6 +40,8 @@ struct ClassroomScheduleView: View {
             .padding(.vertical, 16)
         }
         .background(Color(.systemGroupedBackground))
+        .scrollDismissesKeyboard(.interactively)
+        .dismissKeyboardOnTap()
         .navigationTitle("教室課表")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
@@ -71,6 +73,7 @@ struct ClassroomScheduleView: View {
                 .autocorrectionDisabled()
                 .focused($isSearchFocused)
                 .submitLabel(.search)
+                .onSubmit { isSearchFocused = false }
             if !query.isEmpty {
                 Button {
                     query = ""

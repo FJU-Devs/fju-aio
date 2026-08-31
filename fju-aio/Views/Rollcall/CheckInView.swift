@@ -724,6 +724,7 @@ struct ManualCheckInSheet: View {
 
     @State private var code = ""
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isCodeFocused: Bool
 
     private var paddedCode: String {
         String(repeating: "0", count: max(0, 4 - code.count)) + code
@@ -741,6 +742,7 @@ struct ManualCheckInSheet: View {
                     .font(.system(size: 40, weight: .bold, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .keyboardType(.numberPad)
+                    .focused($isCodeFocused)
                     .onChange(of: code) { _, new in code = String(new.filter(\.isNumber).prefix(4)) }
                     .padding()
                     .frame(maxWidth: 200)
@@ -758,10 +760,15 @@ struct ManualCheckInSheet: View {
                 Spacer()
             }
             .padding(.top, 32)
+            .dismissKeyboardOnTap()
             .navigationTitle("手動輸入數字碼")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { isCodeFocused = false }
+                }
             }
         }
     }
@@ -820,6 +827,11 @@ struct ManualFriendAddSheet: View {
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case displayName, empNo, username, password
+    }
 
     private var canSubmit: Bool {
         !displayName.trimmingCharacters(in: .whitespaces).isEmpty &&
@@ -835,10 +847,12 @@ struct ManualFriendAddSheet: View {
                     TextField("姓名", text: $displayName)
                         .textContentType(.name)
                         .autocorrectionDisabled()
+                        .focused($focusedField, equals: .displayName)
                     TextField("學號（empNo）", text: $empNo)
                         .textContentType(.username)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                        .focused($focusedField, equals: .empNo)
                 } header: {
                     Text("基本資料")
                 } footer: {
@@ -850,8 +864,10 @@ struct ManualFriendAddSheet: View {
                         .textContentType(.username)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                        .focused($focusedField, equals: .username)
                     SecureField("密碼", text: $password)
                         .textContentType(.password)
+                        .focused($focusedField, equals: .password)
                 } header: {
                     Text("學校帳號（LDAP）")
                 } footer: {
@@ -868,6 +884,7 @@ struct ManualFriendAddSheet: View {
             }
             .navigationTitle("手動新增朋友")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
@@ -881,6 +898,10 @@ struct ManualFriendAddSheet: View {
                         }
                         .disabled(!canSubmit)
                     }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { focusedField = nil }
                 }
             }
         }

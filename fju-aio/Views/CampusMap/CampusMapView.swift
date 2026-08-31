@@ -348,6 +348,8 @@ private struct SearchOverlay: View {
     let onSelect: (CampusBuilding) -> Void
     let onSelectAmenity: (CampusAmenity) -> Void
 
+    @FocusState private var isSearchFocused: Bool
+
     var body: some View {
         if #available(iOS 26.0, *) {
             GlassEffectContainer(spacing: 8) {
@@ -383,6 +385,9 @@ private struct SearchOverlay: View {
             TextField("搜尋建築、餐廳、商店...", text: $searchText)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+                .focused($isSearchFocused)
+                .onSubmit { isSearchFocused = false }
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -400,6 +405,7 @@ private struct SearchOverlay: View {
             VStack(spacing: 0) {
                 ForEach(filteredBuildings) { building in
                     Button {
+                        isSearchFocused = false
                         onSelect(building)
                     } label: {
                         HStack(spacing: 12) {
@@ -438,6 +444,7 @@ private struct SearchOverlay: View {
 
                 ForEach(filteredAmenities) { amenity in
                     Button {
+                        isSearchFocused = false
                         onSelectAmenity(amenity)
                     } label: {
                         HStack(spacing: 12) {
@@ -476,6 +483,7 @@ private struct SearchOverlay: View {
             }
             .modifier(GlassOrMaterialBackground(cornerRadius: 14))
         }
+        .scrollDismissesKeyboard(.interactively)
         .frame(maxHeight: 280)
     }
 }
