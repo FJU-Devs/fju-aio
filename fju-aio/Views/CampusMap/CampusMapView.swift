@@ -73,47 +73,51 @@ struct CampusMapView: View {
         return CampusBuildingRegistry.building(for: course.location)
     }
 
-    private var locationButtonTopPadding: CGFloat {
-        searchText.isEmpty ? 72 : 360
-    }
-
     var body: some View {
         ZStack(alignment: .top) {
             Map(position: $cameraPosition) {
                 UserAnnotation()
                 ForEach(filteredBuildings) { building in
                     Annotation(building.name, coordinate: building.coordinate, anchor: .bottom) {
-                        BuildingPin(
-                            building: building,
-                            courseCount: coursesForBuilding(building).count,
-                            isSelected: selectedBuilding?.id == building.id,
-                            isCurrentClass: currentCourseBuilding?.id == building.id
-                        )
-                        .onTapGesture {
+                        Button {
                             withAnimation(.spring(response: 0.4)) {
                                 selectedBuilding = building
                                 selectedAmenity = nil
                                 searchText = ""
                                 fly(to: building.coordinate)
                             }
+                        } label: {
+                            BuildingPin(
+                                building: building,
+                                courseCount: distinctCourseCount(for: building),
+                                isSelected: selectedBuilding?.id == building.id,
+                                isCurrentClass: currentCourseBuilding?.id == building.id
+                            )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(building.name)
+                        .accessibilityAddTraits(selectedBuilding?.id == building.id ? .isSelected : [])
                     }
                 }
 
                 ForEach(filteredAmenities) { amenity in
                     Annotation(amenity.name, coordinate: amenity.coordinate, anchor: .bottom) {
-                        AmenityPin(
-                            amenity: amenity,
-                            isSelected: selectedAmenity?.id == amenity.id
-                        )
-                        .onTapGesture {
+                        Button {
                             withAnimation(.spring(response: 0.4)) {
                                 selectedAmenity = amenity
                                 selectedBuilding = nil
                                 searchText = ""
                                 fly(to: amenity.coordinate)
                             }
+                        } label: {
+                            AmenityPin(
+                                amenity: amenity,
+                                isSelected: selectedAmenity?.id == amenity.id
+                            )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(amenity.name)
+                        .accessibilityAddTraits(selectedAmenity?.id == amenity.id ? .isSelected : [])
                     }
                 }
             }
@@ -121,59 +125,52 @@ struct CampusMapView: View {
             .mapControlVisibility(.hidden)
             .ignoresSafeArea(edges: .bottom)
 
-            // Search bar + results overlay
-            SearchOverlay(
-                searchText: $searchText,
-                filteredBuildings: filteredBuildings,
-                filteredAmenities: filteredAmenities,
-                onSelect: { building in
-                    withAnimation(.spring(response: 0.4)) {
-                        selectedBuilding = building
-                        selectedAmenity = nil
-                        searchText = ""
-                        fly(to: building.coordinate)
-                    }
-                },
-                onSelectAmenity: { amenity in
-                    withAnimation(.spring(response: 0.4)) {
-                        selectedAmenity = amenity
-                        selectedBuilding = nil
-                        searchText = ""
-                        fly(to: amenity.coordinate)
-                    }
-                }
-            )
-
-            // User location button, kept below the search overlay.
-            VStack {
-                HStack(alignment: .top) {
-                    Spacer()
-
-                    VStack(spacing: 10) {
-                        Button {
-                            locationManager.requestWhenInUseAuthorization()
-                            cameraPosition = .userLocation(
-                                followsHeading: false,
-                                fallback: .region(MKCoordinateRegion(
-                                    center: CLLocationCoordinate2D(latitude: 25.0360, longitude: 121.4320),
-                                    span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
-                                ))
-                            )
-                        } label: {
-                            Image(systemName: "location.fill")
-                                .font(.system(size: 17, weight: .semibold))
-                                .frame(width: 44, height: 44)
+            // Search bar + results overlay, with the location button stacked directly below
+            // so it follows the overlay's actual height (results list, Dynamic Type, etc.).
+            VStack(alignment: .trailing, spacing: 10) {
+                SearchOverlay(
+                    searchText: $searchText,
+                    filteredBuildings: filteredBuildings,
+                    filteredAmenities: filteredAmenities,
+                    onSelect: { building in
+                        withAnimation(.spring(response: 0.4)) {
+                            selectedBuilding = building
+                            selectedAmenity = nil
+                            searchText = ""
+                            fly(to: building.coordinate)
                         }
-                        .foregroundStyle(.blue)
-                        .modifier(GlassOrMaterialBackground(cornerRadius: 14))
-                        .accessibilityLabel("定位目前位置")
+                    },
+                    onSelectAmenity: { amenity in
+                        withAnimation(.spring(response: 0.4)) {
+                            selectedAmenity = amenity
+                            selectedBuilding = nil
+                            searchText = ""
+                            fly(to: amenity.coordinate)
+                        }
                     }
+                )
+
+                // User location button
+                Button {
+                    locationManager.requestWhenInUseAuthorization()
+                    cameraPosition = .userLocation(
+                        followsHeading: false,
+                        fallback: .region(MKCoordinateRegion(
+                            center: CLLocationCoordinate2D(latitude: 25.0360, longitude: 121.4320),
+                            span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
+                        ))
+                    )
+                } label: {
+                    Image(systemName: "location.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
                 }
+                .foregroundStyle(.blue)
+                .modifier(GlassOrMaterialBackground(cornerRadius: 14))
+                .accessibilityLabel("定位目前位置")
                 .padding(.horizontal, 16)
-                .padding(.top, locationButtonTopPadding)
-                Spacer()
             }
-            .animation(.spring(response: 0.3), value: locationButtonTopPadding)
+            .animation(.spring(response: 0.3), value: searchText.isEmpty)
 
             if let building = selectedBuilding {
                 VStack {
@@ -244,7 +241,7 @@ struct CampusMapView: View {
             }
         }
         .onAppear {
-            locationManager.requestWhenInUseAuthorization()
+            // Location permission is requested only when the user taps the locate button.
             loadCoursesFromCache()
             if let location = highlightLocation,
                let building = CampusBuildingRegistry.building(for: location) {
@@ -272,6 +269,11 @@ struct CampusMapView: View {
             }
     }
 
+    /// Multi-slot courses appear once per time slot; count each course once.
+    private func distinctCourseCount(for building: CampusBuilding) -> Int {
+        Set(coursesForBuilding(building).map { $0.code.isEmpty ? $0.name : $0.code }).count
+    }
+
     private func fly(to coordinate: CLLocationCoordinate2D) {
         cameraPosition = .region(MKCoordinateRegion(
             center: coordinate,
@@ -286,24 +288,30 @@ struct CampusMapView: View {
         let dayMap: [Int: String] = [2: "一", 3: "二", 4: "三", 5: "四", 6: "五"]
         guard let todayString = dayMap[weekday] else { return nil }
 
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm"
-        let currentTime = timeFormatter.string(from: now)
+        let nowComponents = calendar.dateComponents([.hour, .minute], from: now)
+        guard let hour = nowComponents.hour, let minute = nowComponents.minute else { return nil }
+        let currentMinutes = hour * 60 + minute
 
         return courses.first { course in
             guard course.dayOfWeek == todayString else { return false }
             guard course.startPeriod >= 1, course.endPeriod <= FJUPeriod.periodTimes.count else { return false }
-            let start = FJUPeriod.periodTimes[course.startPeriod - 1].start
-            let end   = FJUPeriod.periodTimes[course.endPeriod - 1].end
-            return currentTime >= start && currentTime <= end
+            guard let start = minutesSinceMidnight(FJUPeriod.periodTimes[course.startPeriod - 1].start),
+                  let end = minutesSinceMidnight(FJUPeriod.periodTimes[course.endPeriod - 1].end) else { return false }
+            return currentMinutes >= start && currentMinutes <= end
         }
+    }
+
+    /// Parses an "HH:mm" period time into minutes since midnight.
+    private func minutesSinceMidnight(_ time: String) -> Int? {
+        let parts = time.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return parts[0] * 60 + parts[1]
     }
 
     @MainActor
     private func loadCoursesFromCache() {
         let cache = AppCache.shared
-        guard let semesters = cache.getSemesters(), let semester = semesters.first,
-              let cached = cache.getCourses(semester: semester) else { return }
+        guard let cached = cache.getCourses(semester: CurrentSemester.code()) else { return }
         courses = cached
         currentCourse = currentClassNow(from: cached)
     }
@@ -312,7 +320,8 @@ struct CampusMapView: View {
         if !courses.isEmpty { return }
         do {
             let semesters = try await service.fetchAvailableSemesters()
-            if let semester = semesters.first {
+            if !semesters.isEmpty {
+                let semester = CurrentSemester.resolve(available: semesters)
                 let fetched = try await service.fetchCourses(semester: semester)
                 await MainActor.run {
                     courses = fetched
@@ -407,6 +416,7 @@ private struct SearchOverlay: View {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
+                .accessibilityLabel("清除搜尋")
             }
         }
         .padding(.horizontal, 14)

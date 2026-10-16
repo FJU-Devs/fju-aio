@@ -12,7 +12,7 @@ enum SemesterCalendarResolver {
         for semester: String,
         events: [CalendarEvent],
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = CurrentSemester.taipeiCalendar
     ) -> SemesterNotificationWindow {
         guard let expectedWindow = estimatedWindow(for: semester, calendar: calendar) else {
             return fallbackWindow(for: semester, events: events, now: now)
@@ -112,5 +112,74 @@ enum SemesterCalendarResolver {
 
     private static func isFlexibleLearningWeek(_ event: CalendarEvent) -> Bool {
         event.title.localizedStandardContains("彈性多元學習週")
+    }
+}
+
+/// Shared "courses loaded" side effects: widget data + Live Activity scheduling.
+/// Only applied for the *current* semester, always with the resolved semester window,
+/// and de-duplicated so re-appearing views don't re-schedule unchanged data.
+@MainActor
+enum CurrentSemesterCourseSync {
+    /// Last snapshot written to the widget.
+    private static var lastWidgetSignature: Int?
+    /// Last snapshot the notification manager confirmed as synced. Kept separate so a
+    /// failed sync is retried on the next identical load.
+    private static var lastScheduledSignature: Int?
+
+    /// Writes widget data and schedules Live Activities in the background.
+    /// Returns false (and does nothing) when `semester` isn't the current semester.
+    @discardableResult
+    static func apply(courses: [Course], semester: String, calendarEvents: [CalendarEvent]) -> Bool {
+        guard isCurrent(semester) else { return false }
+        if let (window, signature) = prepare(courses: courses, semester: semester, calendarEvents: calendarEvents) {
+            Task(priority: .background) {
+                if await CourseNotificationManager.shared.scheduleAll(for: courses, window: window) {
+                    lastScheduledSignature = signature
+                }
+            }
+        }
+        return true
+    }
+
+    /// Same as `apply`, but waits for the Live Activity server sync to finish.
+    static func applyAndWait(courses: [Course], semester: String, calendarEvents: [CalendarEvent]) async {
+        guard isCurrent(semester),
+              let (window, signature) = prepare(courses: courses, semester: semester, calendarEvents: calendarEvents) else { return }
+        if await CourseNotificationManager.shared.scheduleAll(for: courses, window: window) {
+            lastScheduledSignature = signature
+        }
+    }
+
+    private static func isCurrent(_ semester: String) -> Bool {
+        !semester.isEmpty && semester == CurrentSemester.code()
+    }
+
+    /// Writes widget data when changed and returns the window (plus snapshot signature) to
+    /// schedule with, or nil when this snapshot was already synced successfully.
+    private static func prepare(
+        courses: [Course],
+        semester: String,
+        calendarEvents: [CalendarEvent]
+    ) -> (SemesterNotificationWindow, Int)? {
+        let window = SemesterCalendarResolver.notificationWindow(for: semester, events: calendarEvents)
+        var hasher = Hasher()
+        hasher.combine(semester)
+        hasher.combine(courses)
+        hasher.combine(window.startDate)
+        hasher.combine(window.endDate)
+        let signature = hasher.finalize()
+
+        if signature != lastWidgetSignature {
+            lastWidgetSignature = signature
+            WidgetDataWriter.shared.writeCourseData(courses: courses, friends: FriendStore.shared.friends)
+        }
+        guard signature != lastScheduledSignature else { return nil }
+        return (window, signature)
+    }
+
+    /// Forget the de-dup signature (e.g. on logout) so the next load re-applies.
+    static func reset() {
+        lastWidgetSignature = nil
+        lastScheduledSignature = nil
     }
 }

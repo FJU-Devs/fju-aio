@@ -66,8 +66,7 @@ struct SearchEngine {
         query: String,
         courses: [Course],
         assignments: [Assignment],
-        calendarEvents: [CalendarEvent],
-        checkInEnabled: Bool
+        calendarEvents: [CalendarEvent]
     ) -> [SearchResult] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return [] }
@@ -75,7 +74,7 @@ struct SearchEngine {
         var results: [SearchResult] = []
 
         // 1. App modules
-        results += searchModules(q: q, checkInEnabled: checkInEnabled)
+        results += searchModules(q: q)
 
         // 2. Courses
         results += searchCourses(q: q, courses: courses)
@@ -115,14 +114,13 @@ struct SearchEngine {
 
     // MARK: - Module Search
 
-    private func searchModules(q: String, checkInEnabled: Bool) -> [SearchResult] {
-        ModuleRegistry.allModules
-            .filter { !$0.isHidden || (checkInEnabled && $0.id == "checkIn") }
+    private func searchModules(q: String) -> [SearchResult] {
+        (ModuleRegistry.allModules + ModuleRegistry.searchOnlyModules)
             .compactMap { module in
                 let score = fieldScore(q: q,
                                        primary: module.name,
                                        secondary: module.category.rawValue,
-                                       keywords: [])
+                                       keywords: module.keywords)
                 guard score > 0 else { return nil }
                 return SearchResult(
                     id: "module-\(module.id)",
@@ -138,10 +136,12 @@ struct SearchEngine {
     // MARK: - Course Search
 
     private func searchCourses(q: String, courses: [Course]) -> [SearchResult] {
-        // Deduplicate by course id (same course may appear multiple times for multi-slot)
+        // Deduplicate by course code + semester: multi-slot courses are split into
+        // several entries with ids like "id_0", "id_1".
         var seen = Set<String>()
         return courses.compactMap { course in
-            guard seen.insert(course.id).inserted else { return nil }
+            let dedupeKey = course.code.isEmpty ? "\(course.name)|\(course.semester)" : "\(course.code)|\(course.semester)"
+            guard seen.insert(dedupeKey).inserted else { return nil }
             let score = fieldScore(
                 q: q,
                 primary: course.name,

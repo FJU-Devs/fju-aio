@@ -11,6 +11,12 @@ struct CourseCell: View {
     var ownerBadgeText: String?
     var ownerBadgeColor: Color = .white
 
+    // Scale with Dynamic Type, capped so text stays inside the fixed-height grid cells.
+    @ScaledMetric(relativeTo: .caption2) private var badgeFontSize: CGFloat = 8
+    @ScaledMetric(relativeTo: .caption2) private var nameFontSize: CGFloat = 11
+    @ScaledMetric(relativeTo: .caption2) private var locationFontSize: CGFloat = 9
+    private let maxFontGrowth: CGFloat = 1.35
+
     private var cellHeight: CGFloat {
         CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
     }
@@ -24,24 +30,27 @@ struct CourseCell: View {
             HStack(spacing: 3) {
                 if let ownerBadgeText {
                     Text(ownerBadgeText)
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: min(badgeFontSize, 8 * maxFontGrowth), weight: .bold))
+                        .minimumScaleFactor(0.6)
                         .foregroundStyle(baseColor.opacity(contentOpacity))
                         .frame(width: 14, height: 14)
                         .background(Circle().fill(ownerBadgeColor.opacity(0.95 * contentOpacity)))
                 }
 
                 Text(course.name)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: min(nameFontSize, 11 * maxFontGrowth), weight: .bold))
                     .foregroundStyle(.white.opacity(contentOpacity))
                     .lineLimit(cellHeight > periodHeight ? 2 : 1)
+                    .minimumScaleFactor(0.7)
                     .shadow(color: .black.opacity(0.25), radius: 1, x: 0, y: 1)
             }
 
             if cellHeight > periodHeight * 0.9 {
                 Text(course.location)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: min(locationFontSize, 9 * maxFontGrowth), weight: .medium))
                     .foregroundStyle(.white.opacity(0.92 * contentOpacity))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
         }
         .padding(.horizontal, 5)

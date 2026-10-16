@@ -25,7 +25,10 @@ struct ModuleCard: View {
                         browserURL = url
                         showBrowser = true
                     } else {
-                        openURL(url)
+                        openURL(url) { accepted in
+                            guard !accepted, let fallback = ModuleRegistry.webFallbackURL(for: url) else { return }
+                            openURL(fallback)
+                        }
                     }
                 } label: {
                     cardContent

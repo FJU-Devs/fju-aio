@@ -18,8 +18,8 @@ struct WidgetCourse: Codable, Identifiable, Hashable {
     let name: String
     let location: String
     let colorHex: String          // e.g. "#007AFF"
-    let dayOfWeekNumber: Int      // 1=Mon … 5=Fri
-    let dayOfWeekChinese: String  // "一" … "五"
+    let dayOfWeekNumber: Int      // 1=Mon … 6=Sat, 7=Sun
+    let dayOfWeekChinese: String  // "一" … "日"
     let startPeriod: Int          // 1-11
     let endPeriod: Int            // 1-11
     let startTimeString: String   // "08:10"

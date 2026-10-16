@@ -10,7 +10,8 @@ struct CalendarEventRow: View {
             // Category color bar
             RoundedRectangle(cornerRadius: 2)
                 .fill(categoryColor)
-                .frame(width: 4, height: 40)
+                .frame(width: 4)
+                .frame(minHeight: 24, maxHeight: .infinity)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.title)
@@ -39,6 +40,8 @@ struct CalendarEventRow: View {
 
             Spacer()
         }
+        // Let the color bar match the text height (supports Dynamic Type / multi-line titles).
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 2)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button {

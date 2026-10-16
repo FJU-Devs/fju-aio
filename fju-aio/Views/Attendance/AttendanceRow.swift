@@ -20,7 +20,7 @@ struct AttendanceRow: View {
 
             Spacer()
 
-            Text(record.status.rawValue)
+            Text(statusLabel)
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -36,6 +36,11 @@ struct AttendanceRow: View {
         case "number": return "number"
         default: return "checkmark.circle"
         }
+    }
+
+    /// `.leave` (TronClass "on_leave") is shown as「請假」to match the summary card.
+    private var statusLabel: String {
+        record.status == .leave ? "請假" : record.status.rawValue
     }
 
     private var statusColor: Color {

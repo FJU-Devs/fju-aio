@@ -7,6 +7,7 @@ enum AppStartupSettings {
 @main
 struct FJUApp: App {
     @State private var authManager = AuthenticationManager()
+    @State private var homePreferences = HomePreferences()
     @State private var iCloudAvailability = iCloudAvailabilityService.shared
     @State private var isPreloading = false
     @State private var isCompletingOnboarding = false
@@ -23,6 +24,7 @@ struct FJUApp: App {
 
     init() {
         _ = CourseNotificationManager.shared
+        CredentialStore.shared.purgeLegacyFriendCredentialsIfNeeded()
     }
 
     var body: some Scene {
@@ -64,7 +66,7 @@ struct FJUApp: App {
                     if hasCompletedOnboarding {
                         ContentView(pendingDeepLinkDestination: $pendingDeepLinkDestination)
                             .environment(\.fjuService, FJUService.shared)
-                            .environment(HomePreferences())
+                            .environment(homePreferences)
                             .environment(authManager)
                             .environment(syncStatus)
                             .environment(iCloudAvailability)
@@ -164,24 +166,16 @@ struct FJUApp: App {
             let semesters = try await service.fetchAvailableSemesters()
             cache.setSemesters(semesters)
 
-            if let current = semesters.first {
+            if !semesters.isEmpty {
+                let current = CurrentSemester.resolve(available: semesters)
                 preloadStatusText = "同步課程與行事曆..."
                 let c = try await service.fetchCourses(semester: current)
                 let e = (try? await service.fetchCalendarEvents(semester: current)) ?? []
                 preloadStatusText = "更新小工具資料..."
                 cache.setCourses(c, semester: current)
                 cache.setCalendarEvents(e, semester: current)
-                WidgetDataWriter.shared.writeCourseData(courses: c, friends: FriendStore.shared.friends)
-                let notificationWindow = SemesterCalendarResolver.notificationWindow(
-                    for: current,
-                    events: e
-                )
                 preloadStatusText = "同步 Live Activity 伺服器..."
-                await CourseNotificationManager.shared.scheduleAll(
-                    for: c,
-                    semesterStartDate: notificationWindow.startDate,
-                    semesterEndDate: notificationWindow.endDate
-                )
+                await CurrentSemesterCourseSync.applyAndWait(courses: c, semester: current, calendarEvents: e)
                 if EventKitSyncService.shared.isAutoCalendarSyncEnabled {
                     preloadStatusText = "同步系統行事曆..."
                     do {
@@ -327,7 +321,7 @@ struct FJUApp: App {
             return nil
         }
 
-        let semester = semesters[0]
+        let semester = CurrentSemester.resolve(available: semesters)
         let courses: [Course]
         if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
             courses = cached

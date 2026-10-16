@@ -60,7 +60,7 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
         entries.append(makeEntry(from: payload, configuration: configuration, date: Date()))
 
         // Entries at each period start time so the "current/next" indicator updates live
-        let calendar = Calendar.current
+        let calendar = WidgetDataReader.taipeiCalendar
         let dayComponents = calendar.dateComponents([.year, .month, .day], from: Date())
         for (hour, minute) in WidgetDataReader.allPeriodStartTimes {
             var dc = dayComponents
@@ -407,19 +407,32 @@ struct CourseLargeView: View {
     private let timeColWidth: CGFloat = 20
     private let headerHeight: CGFloat = 16
     private let periodHeight: CGFloat = 27
-    private let days = ["一", "二", "三", "四", "五"]
+    private let allDays = ["一", "二", "三", "四", "五", "六", "日"]
     private let periodCount = 11
 
+    /// Mon–Fri, extended to Sat/Sun when any shown course falls on them.
+    private var dayCount: Int {
+        var days = validCourses(entry.courses).map(\.dayOfWeekNumber)
+        if entry.showFriendCourses {
+            days += validFriendCourses.map(\.dayOfWeekNumber)
+        }
+        return min(7, max(5, days.max() ?? 5))
+    }
+
+    private var days: [String] {
+        Array(allDays.prefix(dayCount))
+    }
+
     private var todayIndex: Int? {
-        let wd = Calendar.current.component(.weekday, from: entry.date)
-        let idx = wd - 2  // 0=Mon … 4=Fri
-        return (0...4).contains(idx) ? idx : nil
+        guard let day = WidgetDataReader.todayDayNumber(at: entry.date) else { return nil }
+        let idx = day - 1  // 0=Mon … 6=Sun
+        return idx < dayCount ? idx : nil
     }
 
     var body: some View {
         GeometryReader { geo in
             let availWidth = geo.size.width - 8  // account for horizontal padding
-            let dayColWidth = (availWidth - timeColWidth) / 5
+            let dayColWidth = (availWidth - timeColWidth) / CGFloat(dayCount)
 
             VStack(spacing: 0) {
                 // Day header row
@@ -436,7 +449,7 @@ struct CourseLargeView: View {
                     selfCourseBlocks(dayColWidth: dayColWidth)
                 }
                 .frame(
-                    width: timeColWidth + 5 * dayColWidth,
+                    width: timeColWidth + CGFloat(dayCount) * dayColWidth,
                     height: CGFloat(periodCount) * periodHeight
                 )
             }
@@ -473,7 +486,7 @@ struct CourseLargeView: View {
                         .foregroundStyle(period == 5 ? Color.orange.opacity(0.7) : Color.primary.opacity(0.3))
                         .frame(width: timeColWidth, height: periodHeight)
 
-                    ForEach(0..<5, id: \.self) { dayIdx in
+                    ForEach(0..<dayCount, id: \.self) { dayIdx in
                         Rectangle()
                             .fill(dayIdx == todayIndex
                                   ? Color.accentColor.opacity(0.05)
@@ -514,10 +527,7 @@ struct CourseLargeView: View {
 
     @ViewBuilder
     private func friendCourseBlocks(dayColWidth: CGFloat) -> some View {
-        let allFriendCourses = entry.friendOverlays.flatMap(\.courses)
-            .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5
-                && $0.startPeriod >= 1 && $0.startPeriod <= periodCount
-                && $0.endPeriod >= $0.startPeriod }
+        let allFriendCourses = validFriendCourses
 
         ForEach(Array(allFriendCourses.enumerated()), id: \.offset) { _, course in
             let dayIdx = course.dayOfWeekNumber - 1
@@ -553,9 +563,16 @@ struct CourseLargeView: View {
 
     // MARK: Helpers
 
+    private var validFriendCourses: [WidgetFriendCourse] {
+        entry.friendOverlays.flatMap(\.courses)
+            .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 7
+                && $0.startPeriod >= 1 && $0.startPeriod <= periodCount
+                && $0.endPeriod >= $0.startPeriod }
+    }
+
     private func validCourses(_ courses: [WidgetCourse]) -> [WidgetCourse] {
         courses.filter {
-            $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5
+            $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 7
             && $0.startPeriod >= 1 && $0.startPeriod <= periodCount
             && $0.endPeriod >= $0.startPeriod
         }

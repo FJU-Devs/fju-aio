@@ -105,6 +105,24 @@ actor CloudKitProfileIdentityService {
         forceRefresh: Bool = false,
         attestedStudentID: String? = nil
     ) async throws -> String {
+        try await resolveIdentity(
+            for: session,
+            allowTakeover: allowTakeover,
+            forceRefresh: forceRefresh,
+            attestedStudentID: attestedStudentID,
+            allowModeRetry: true
+        )
+    }
+
+    /// - Parameter allowModeRetry: When true and a CloudKit error changes `iCloudSyncMode`,
+    ///   the resolution is retried exactly once under the new mode. Retries never recurse further.
+    private func resolveIdentity(
+        for session: SISSession,
+        allowTakeover: Bool,
+        forceRefresh: Bool,
+        attestedStudentID: String?,
+        allowModeRetry: Bool
+    ) async throws -> String {
         if let attestedStudentID,
            IdentityAttestationService.normalizeStudentID(attestedStudentID) != IdentityAttestationService.normalizeStudentID(session.empNo) {
             throw IdentityError.attestationMismatch
@@ -134,9 +152,17 @@ actor CloudKitProfileIdentityService {
         do {
             iCloudUserID = try await currentICloudUserID()
         } catch {
+            let modeBefore = availability.syncMode
             await availability.handleCloudKitError(error)
-            // Mode may have changed — recurse once to apply the correct path
-            return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh, attestedStudentID: attestedStudentID)
+            if case .iCloudUnavailable = error as? IdentityError {
+                // accountStatus != .available is not a CKError; re-check status so the mode can update.
+                await availability.refresh()
+            }
+            // Retry once only if the mode actually changed (e.g. → noAccount / quotaExceeded).
+            if allowModeRetry, availability.syncMode != modeBefore {
+                return try await resolveIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: forceRefresh, attestedStudentID: attestedStudentID, allowModeRetry: false)
+            }
+            throw error
         }
 
         let iCloudBindingKey = bindingKey(for: iCloudUserID)
@@ -167,13 +193,16 @@ actor CloudKitProfileIdentityService {
                 empNo: resolvedEmpNo
             )
         } catch {
-            await availability.handleCloudKitError(error)
             if case .accountTakenOver = error as? IdentityError { throw error }
-            // Mode changed (e.g. quota just exceeded) — recurse to apply correct path
-            if availability.syncMode != .available {
-                return try await ensureIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: false, attestedStudentID: attestedStudentID)
+            let modeChanged = await availability.handleCloudKitError(error)
+            // Mode changed (e.g. quota just exceeded) — retry once to apply the correct path
+            if allowModeRetry, modeChanged, availability.syncMode != .available {
+                return try await resolveIdentity(for: session, allowTakeover: allowTakeover, forceRefresh: false, attestedStudentID: attestedStudentID, allowModeRetry: false)
             }
+            // Non-takeover failure: return the computed name so callers can continue,
+            // but do NOT cache it as a verified binding — the next call must retry the write.
             logger.warning("⚠️ Binding write failed: \(error.localizedDescription, privacy: .public)")
+            return publicRecordName
         }
 
         ensuredIdentityCache[session.userId] = EnsuredIdentityCacheEntry(
@@ -230,6 +259,9 @@ actor CloudKitProfileIdentityService {
         } catch {
             if case .accountTakenOver = error as? IdentityError { throw error }
             logger.warning("⚠️ Quota mode: public binding failed: \(error.localizedDescription, privacy: .public)")
+            // Don't cache a failed binding as success — the next call retries the write.
+            _ = ProfileQRService.scheduleShareToken()
+            return publicRecordName
         }
 
         // Private DB write is skipped — store schedule token locally instead
@@ -296,12 +328,7 @@ actor CloudKitProfileIdentityService {
         guard iCloudAvailabilityService.shared.isPrivateDBAvailable else { return }
         let recordID = CKRecord.ID(recordName: friendListRecordName(userId: userId))
         let record = try await privateFriendListRecord(recordID: recordID)
-        let sanitized = friends.map { friend in
-            var copy = friend
-            copy.hasStoredCredentials = false
-            return copy
-        }
-        record[FriendListField.friendsData] = try JSONEncoder().encode(sanitized) as CKRecordValue
+        record[FriendListField.friendsData] = try JSONEncoder().encode(friends) as CKRecordValue
         record[FriendListField.lastUpdated] = Date() as CKRecordValue
         try await save(record, in: privateDB)
     }

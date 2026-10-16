@@ -103,7 +103,7 @@ extension WidgetCourse {
         self.startPeriod = course.startPeriod
         self.endPeriod = course.endPeriod
         self.startTimeString = FJUPeriod.startTime(for: course.startPeriod)
-        self.endTimeString = FJUPeriod.periodTimes[safe: course.endPeriod - 1]?.end ?? ""
+        self.endTimeString = FJUPeriod.endTime(for: course.endPeriod)
         self.timeSlotLabel = course.timeSlot
         self.weeks = course.weeks
         self.instructor = course.instructor
@@ -121,6 +121,8 @@ extension WidgetFriendCourse {
         case "三": dayNum = 3
         case "四": dayNum = 4
         case "五": dayNum = 5
+        case "六": dayNum = 6
+        case "日": dayNum = 7
         default:   dayNum = 0
         }
         self.name = info.name

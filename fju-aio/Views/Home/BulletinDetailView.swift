@@ -88,6 +88,10 @@ private struct BulletinWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        // SwiftUI calls this on every state change (e.g. presenting the in-app browser);
+        // reloading would reset the scroll position and re-fetch images.
+        guard context.coordinator.lastLoadedHTML != html else { return }
+        context.coordinator.lastLoadedHTML = html
         let styledHTML = """
         <!DOCTYPE html>
         <html>
@@ -122,6 +126,7 @@ private struct BulletinWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         @Binding var selectedURL: URL?
+        var lastLoadedHTML: String?
 
         init(selectedURL: Binding<URL?>) {
             _selectedURL = selectedURL

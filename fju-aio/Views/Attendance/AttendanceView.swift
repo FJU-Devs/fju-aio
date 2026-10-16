@@ -7,7 +7,7 @@ struct AttendanceView: View {
     @State private var selectedCourse = "全部"
     @State private var loadError: String?
 
-    private let semester = "113-2"
+    private var semester: String { CurrentSemester.code() }
     private let cache = AppCache.shared
 
     private var courseNames: [String] {
@@ -20,16 +20,17 @@ struct AttendanceView: View {
         return filtered.sorted { $0.date > $1.date }
     }
 
-    private var summary: (total: Int, present: Int, absent: Int, late: Int, excused: Int, publicLeave: Int, leave: Int, other: Int) {
+    /// `.excused` and `.leave` (TronClass "on_leave", e.g. 病假/事假) are both personal leave,
+    /// so they are counted together under「請假」.
+    private var summary: (total: Int, present: Int, absent: Int, late: Int, leave: Int, publicLeave: Int, other: Int) {
         let r = filteredRecords
         return (
             r.count,
             r.filter { $0.status == .present }.count,
             r.filter { $0.status == .absent }.count,
             r.filter { $0.status == .late }.count,
-            r.filter { $0.status == .excused }.count,
+            r.filter { $0.status == .excused || $0.status == .leave }.count,
             r.filter { $0.status == .publicLeave }.count,
-            r.filter { $0.status == .leave }.count,
             r.filter { $0.status == .other }.count
         )
     }
@@ -76,7 +77,7 @@ struct AttendanceView: View {
         .navigationTitle("出缺席查詢")
         .navigationBarTitleDisplayMode(.inline)
         .overlay {
-            if isLoading {
+            if isLoading && records.isEmpty {
                 ProgressView("載入中...")
             }
         }
@@ -88,13 +89,12 @@ struct AttendanceView: View {
         }
     }
 
+    /// Shows cached records immediately, then always refreshes from the network
+    /// without blanking the list. Refresh errors are shown non-destructively.
     private func loadRecords(forceRefresh: Bool) async {
-        loadError = nil
-        let cachedRecords = cache.getAttendance(semester: semester)
-        if let cached = cachedRecords, (!forceRefresh || records.isEmpty) {
+        let semester = semester
+        if records.isEmpty, let cached = cache.getAttendance(semester: semester) {
             records = cached
-            isLoading = false
-            if !forceRefresh { return }
         }
 
         isLoading = records.isEmpty
@@ -102,8 +102,13 @@ struct AttendanceView: View {
             let fetched = try await service.fetchAttendanceRecords(semester: semester)
             records = fetched
             cache.setAttendance(fetched, semester: semester)
+            loadError = nil
         } catch {
-            loadError = "載入出缺席失敗：\(error.localizedDescription)"
+            if !Task.isCancelled {
+                loadError = records.isEmpty
+                    ? "載入出缺席失敗：\(error.localizedDescription)"
+                    : "無法更新出缺席，目前顯示的是先前的資料：\(error.localizedDescription)"
+            }
         }
         isLoading = false
     }
@@ -117,16 +122,12 @@ struct AttendanceView: View {
                 Spacer()
                 summaryItem(label: "遲到", count: summary.late, color: .orange)
                 Spacer()
-                summaryItem(label: "請假", count: summary.excused, color: .blue)
+                summaryItem(label: "請假", count: summary.leave, color: .blue)
             }
-            if summary.publicLeave > 0 || summary.leave > 0 || summary.other > 0 {
+            if summary.publicLeave > 0 || summary.other > 0 {
                 HStack {
                     if summary.publicLeave > 0 {
                         summaryItem(label: "公假", count: summary.publicLeave, color: .purple)
-                        Spacer()
-                    }
-                    if summary.leave > 0 {
-                        summaryItem(label: "假", count: summary.leave, color: .teal)
                         Spacer()
                     }
                     if summary.other > 0 {

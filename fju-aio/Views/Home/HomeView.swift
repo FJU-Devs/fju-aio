@@ -8,11 +8,16 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(HomePreferences.self) private var preferences
     @Environment(SyncStatusManager.self) private var syncStatus
-    @State private var todayCourses: [Course] = []
+    @Environment(\.scenePhase) private var scenePhase
+    /// All courses of the current semester; today's list is derived from the clock so it
+    /// follows day changes without reloading.
+    @State private var semesterCourses: [Course] = []
     @State private var isLoading = true
+    @State private var courseLoadFailed = false
+    @State private var hasLoaded = false
+    @State private var lastLoadedAt: Date?
     @State private var isEditing = false
     @State private var selectedCourse: Course?
-    @State private var lastNotificationSyncSignature: String?
     @State private var mapHighlightLocation: String? = nil
     @State private var navigateToCampusMap = false
     @State private var bulletinNotifications: [TronClassNotification] = []
@@ -22,6 +27,8 @@ struct HomeView: View {
     @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
 
     private let cache = AppCache.shared
+    /// Reload when returning to the foreground after this long.
+    private static let staleInterval: TimeInterval = 5 * 60
 
     var body: some View {
         ScrollView {
@@ -55,10 +62,7 @@ struct HomeView: View {
         .navigationTitle("輔大 All In One")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
-            async let coursesTask: Void = loadTodayCourses(forceRefresh: true)
-            async let bulletinsTask: Void = loadBulletinNotifications()
-            async let assignmentsTask: Void = loadUpcomingAssignments(forceRefresh: true)
-            _ = await (coursesTask, bulletinsTask, assignmentsTask)
+            await loadAll(forceRefresh: true)
         }
         .sheet(isPresented: $isEditing) {
             HomeEditView()
@@ -71,7 +75,7 @@ struct HomeView: View {
                     navigateToCampusMap = true
                 }
             })
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         .navigationDestination(isPresented: $navigateToCampusMap) {
             CampusMapView(highlightLocation: mapHighlightLocation)
@@ -80,55 +84,84 @@ struct HomeView: View {
             BulletinDetailView(notification: bulletin)
         }
         .task {
-            async let coursesTask: Void = loadTodayCourses(forceRefresh: false)
-            async let bulletinsTask: Void = loadBulletinNotifications()
-            async let assignmentsTask: Void = loadUpcomingAssignments(forceRefresh: false)
-            _ = await (coursesTask, bulletinsTask, assignmentsTask)
+            // Only the first appearance loads; returning from a pushed screen shouldn't
+            // re-run bulletins / assignments / EventKit / widget work.
+            guard !hasLoaded else { return }
+            hasLoaded = true
+            await loadAll(forceRefresh: false)
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active, hasLoaded, !isLoading else { return }
+            if let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.staleInterval { return }
+            Task { await loadAll(forceRefresh: false) }
+        }
+    }
+
+    private func loadAll(forceRefresh: Bool) async {
+        async let coursesTask: Void = loadTodayCourses(forceRefresh: forceRefresh)
+        async let bulletinsTask: Void = loadBulletinNotifications()
+        async let assignmentsTask: Void = loadUpcomingAssignments(forceRefresh: forceRefresh)
+        _ = await (coursesTask, bulletinsTask, assignmentsTask)
+        lastLoadedAt = Date()
     }
 
     // MARK: - Hero Section
 
     private var heroSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // Re-evaluates every minute so "上課中 / 下一堂" and today's list stay current
+        // (including after midnight).
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            heroContent(now: context.date)
+        }
+    }
+
+    private func heroContent(now: Date) -> some View {
+        let courses = todayCourses(on: now)
+
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(greetingText)
+                    Text(greetingText(now: now))
                         .font(.title2.weight(.bold))
                         .foregroundStyle(.white)
-                    Text(dateString)
+                    Text(dateString(now: now))
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.75))
                 }
 
                 Divider().background(.white.opacity(0.25))
 
-                heroStatusRow
+                heroStatusRow(courses: courses, now: now)
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(AppTheme.accent.gradient)
 
-            todayScheduleList
+            todayScheduleList(courses: courses, now: now)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
         .padding(.top, 8)
     }
 
-    private var heroStatusRow: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: heroStatusIcon)
+    private func heroStatusRow(courses: [Course], now: Date) -> some View {
+        let ongoing = courses.first { isCourseOngoing($0, now: now) }
+        let next = courses.first { isCourseUpcoming($0, now: now) }
+        let completedCount = courses.filter { isCourseInPast($0, now: now) }.count
+        let progress = courses.isEmpty ? 0 : Double(completedCount) / Double(courses.count)
+
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: heroStatusIcon(courses: courses, ongoing: ongoing, next: next))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 26, height: 26)
                 .background(.white.opacity(0.18), in: Circle())
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(heroStatusTitle)
+                Text(heroStatusTitle(ongoing: ongoing, next: next))
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.7))
-                Text(heroStatusDetail)
+                Text(heroStatusDetail(courses: courses, ongoing: ongoing, next: next))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -136,9 +169,9 @@ struct HomeView: View {
 
             Spacer(minLength: 8)
 
-            if !todayCourses.isEmpty {
+            if !courses.isEmpty {
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(completedTodayCourseCount)/\(todayCourses.count) 堂課")
+                    Text("\(completedCount)/\(courses.count) 堂課")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.white.opacity(0.75))
                     Capsule()
@@ -147,70 +180,55 @@ struct HomeView: View {
                         .overlay(alignment: .leading) {
                             Capsule()
                                 .fill(.white)
-                                .frame(width: 60 * todayCourseProgress, height: 4)
+                                .frame(width: 60 * progress, height: 4)
                         }
                 }
             }
         }
     }
 
-    private var heroStatusIcon: String {
-        if ongoingCourse != nil { return "book.fill" }
-        if nextUpcomingCourse != nil { return "clock.fill" }
-        return todayCourses.isEmpty ? "moon.stars.fill" : "checkmark.circle.fill"
+    private func heroStatusIcon(courses: [Course], ongoing: Course?, next: Course?) -> String {
+        if ongoing != nil { return "book.fill" }
+        if next != nil { return "clock.fill" }
+        if courses.isEmpty && courseLoadFailed { return "exclamationmark.triangle.fill" }
+        return courses.isEmpty ? "moon.stars.fill" : "checkmark.circle.fill"
     }
 
-    private var heroStatusTitle: String {
-        if ongoingCourse != nil { return "上課中" }
-        if nextUpcomingCourse != nil { return "下一堂" }
+    private func heroStatusTitle(ongoing: Course?, next: Course?) -> String {
+        if ongoing != nil { return "上課中" }
+        if next != nil { return "下一堂" }
         return "今天"
     }
 
-    private var heroStatusDetail: String {
-        if let ongoing = ongoingCourse {
+    private func heroStatusDetail(courses: [Course], ongoing: Course?, next: Course?) -> String {
+        if let ongoing {
             return "\(ongoing.name) · \(ongoing.location)"
         }
-        if let next = nextUpcomingCourse {
-            return "\(next.name) · \(FJUPeriod.startTime(for: next.startPeriod))"
+        if let next {
+            return "\(next.name) · \(next.startTimeString)"
         }
-        return todayCourses.isEmpty ? "沒有課，好好休息" : "課程已全部結束"
-    }
-
-    /// The course currently in session, if any.
-    private var ongoingCourse: Course? {
-        todayCourses.first { isCourseOngoing($0) }
-    }
-
-    /// The first upcoming course today (start time hasn't passed yet).
-    private var nextUpcomingCourse: Course? {
-        let now = Date()
-        let cal = Calendar.current
-        let hour = cal.component(.hour, from: now)
-        let minute = cal.component(.minute, from: now)
-        let currentMinutes = hour * 60 + minute
-
-        return todayCourses.first { course in
-            let parts = FJUPeriod.startTime(for: course.startPeriod).split(separator: ":")
-            guard parts.count == 2,
-                  let h = Int(parts[0]),
-                  let m = Int(parts[1]) else { return false }
-            return (h * 60 + m) > currentMinutes
+        if courses.isEmpty {
+            if isLoading && semesterCourses.isEmpty { return "載入中..." }
+            if courseLoadFailed { return "無法載入課程" }
+            return "沒有課，好好休息"
         }
+        return "課程已全部結束"
     }
 
-    private var completedTodayCourseCount: Int {
-        todayCourses.filter(isCourseInPast).count
-    }
-
-    private var todayCourseProgress: Double {
-        guard !todayCourses.isEmpty else { return 0 }
-        return Double(completedTodayCourseCount) / Double(todayCourses.count)
+    /// Today's courses (Asia/Taipei weekday), sorted by start period.
+    private func todayCourses(on date: Date) -> [Course] {
+        let weekday = CurrentSemester.taipeiCalendar.component(.weekday, from: date)
+        // Calendar weekday 1=Sun … 7=Sat → Course.dayOfWeekNumber 1=Mon … 7=Sun
+        let courseDay = weekday == 1 ? 7 : weekday - 1
+        return semesterCourses
+            .filter { $0.dayOfWeekNumber == courseDay && $0.hasScheduledTime }
+            .sorted { $0.startPeriod < $1.startPeriod }
     }
 
     // MARK: - Greeting
 
-    private var greetingText: String {
-        let hour = Calendar.current.component(.hour, from: Date())
+    private func greetingText(now: Date) -> String {
+        let hour = Calendar.current.component(.hour, from: now)
         switch hour {
         case 0..<6: return "夜深了"
         case 6..<12: return "早安"
@@ -219,16 +237,16 @@ struct HomeView: View {
         }
     }
 
-    private var dateString: String {
+    private func dateString(now: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_TW")
         formatter.dateFormat = "M月d日 EEEE"
-        return formatter.string(from: Date())
+        return formatter.string(from: now)
     }
 
     // MARK: - Today's Schedule (vertical list)
 
-    private var todayScheduleList: some View {
+    private func todayScheduleList(courses: [Course], now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("今日課程")
@@ -245,17 +263,12 @@ struct HomeView: View {
             .padding(.top, 12)
             .padding(.bottom, 6)
 
-            if todayCourses.isEmpty {
-                Text(isLoading ? "載入中..." : "今天沒有課，好好休息吧")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 16)
+            if courses.isEmpty {
+                todayScheduleEmptyState
             } else {
-                ForEach(Array(todayCourses.enumerated()), id: \.element.id) { index, course in
+                ForEach(Array(courses.enumerated()), id: \.element.id) { index, course in
                     Button { selectedCourse = course } label: {
-                        todayCourseRow(course, isLast: index == todayCourses.count - 1)
+                        todayCourseRow(course, now: now, isLast: index == courses.count - 1)
                     }
                     .buttonStyle(.plain)
                 }
@@ -263,17 +276,52 @@ struct HomeView: View {
         }
     }
 
-    private func todayCourseRow(_ course: Course, isLast: Bool) -> some View {
-        let isPast = isCourseInPast(course)
-        let isNow = isCourseOngoing(course)
+    @ViewBuilder
+    private var todayScheduleEmptyState: some View {
+        if isLoading && semesterCourses.isEmpty {
+            Text("載入中...")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
+        } else if courseLoadFailed {
+            // Load failed and nothing cached — don't pretend there are no classes today.
+            HStack(spacing: 10) {
+                Label("無法載入今日課程", systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+                Spacer(minLength: 8)
+                Button("重試") {
+                    Task { await loadTodayCourses(forceRefresh: true) }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+        } else {
+            Text("今天沒有課，好好休息吧")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
+        }
+    }
+
+    private func todayCourseRow(_ course: Course, now: Date, isLast: Bool) -> some View {
+        let isPast = isCourseInPast(course, now: now)
+        let isNow = isCourseOngoing(course, now: now)
 
         return HStack(spacing: 12) {
             // Time column
             VStack(alignment: .trailing, spacing: 2) {
-                Text(FJUPeriod.startTime(for: course.startPeriod))
+                Text(course.startTimeString)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(isPast ? AnyShapeStyle(.tertiary) : (isNow ? AnyShapeStyle(Color(hex: course.color)) : AnyShapeStyle(.secondary)))
-                Text(FJUPeriod.startTime(for: course.endPeriod))
+                Text(course.endTimeString)
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
             }
@@ -319,33 +367,20 @@ struct HomeView: View {
         }
     }
 
-    private func isCourseInPast(_ course: Course) -> Bool {
-        let now = Date()
-        let cal = Calendar.current
-        let hour = cal.component(.hour, from: now)
-        let minute = cal.component(.minute, from: now)
-        let currentMinutes = hour * 60 + minute
-        let parts = FJUPeriod.startTime(for: course.endPeriod).split(separator: ":")
-        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return false }
-        return (h * 60 + m) < currentMinutes
+    private func isCourseInPast(_ course: Course, now: Date) -> Bool {
+        guard let end = course.endDate(on: now) else { return false }
+        return now >= end
     }
 
-    private func isCourseOngoing(_ course: Course) -> Bool {
-        let now = Date()
-        let cal = Calendar.current
-        let hour = cal.component(.hour, from: now)
-        let minute = cal.component(.minute, from: now)
-        let currentMinutes = hour * 60 + minute
+    private func isCourseOngoing(_ course: Course, now: Date) -> Bool {
+        guard let start = course.startDate(on: now),
+              let end = course.endDate(on: now) else { return false }
+        return now >= start && now < end
+    }
 
-        let startParts = FJUPeriod.startTime(for: course.startPeriod).split(separator: ":")
-        let endParts = FJUPeriod.startTime(for: course.endPeriod).split(separator: ":")
-        guard startParts.count == 2, endParts.count == 2,
-              let sh = Int(startParts[0]), let sm = Int(startParts[1]),
-              let eh = Int(endParts[0]), let em = Int(endParts[1]) else { return false }
-
-        let startMinutes = sh * 60 + sm
-        let endMinutes = eh * 60 + em + 50 // add period duration
-        return currentMinutes >= startMinutes && currentMinutes <= endMinutes
+    private func isCourseUpcoming(_ course: Course, now: Date) -> Bool {
+        guard let start = course.startDate(on: now) else { return false }
+        return start > now
     }
 
     // MARK: - Upcoming Assignments
@@ -544,8 +579,11 @@ struct HomeView: View {
 
             VStack(spacing: 0) {
                 ForEach(Array(visibleBulletinNotifications.enumerated()), id: \.element.id) { index, notification in
-                    bulletinRow(notification, isLast: index == visibleBulletinNotifications.count - 1)
-                        .onTapGesture { selectedBulletin = notification }
+                    Button { selectedBulletin = notification } label: {
+                        bulletinRow(notification, isLast: index == visibleBulletinNotifications.count - 1)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
@@ -637,6 +675,7 @@ struct HomeView: View {
         loadError = nil
         let showedCachedData = await loadCachedTodayCoursesIfAvailable()
         if !forceRefresh, showedCachedData {
+            courseLoadFailed = false
             return
         }
 
@@ -644,44 +683,42 @@ struct HomeView: View {
         do {
             try await syncStatus.withSync("正在載入課程…") {
                 let semesters = try await service.fetchAvailableSemesters()
-                guard let currentSemester = semesters.first else {
+                guard !semesters.isEmpty else {
                     throw SISError.invalidResponse
                 }
+                cache.setSemesters(semesters)
+                let currentSemester = CurrentSemester.resolve(available: semesters)
                 let all = try await service.fetchCourses(semester: currentSemester)
                 let calendarEvents = (try? await service.fetchCalendarEvents(semester: currentSemester)) ?? []
 
-                cache.setSemesters(semesters)
                 cache.setCourses(all, semester: currentSemester)
                 cache.setCalendarEvents(calendarEvents, semester: currentSemester)
-                WidgetDataWriter.shared.writeCourseData(courses: all, friends: FriendStore.shared.friends)
-
-                let todayKey = todayDayString()
-                todayCourses = all.filter { $0.dayOfWeek == todayKey }
-                    .sorted { $0.startPeriod < $1.startPeriod }
-                scheduleCourseNotifications(for: all, calendarEvents: calendarEvents)
+                semesterCourses = all
+                courseLoadFailed = false
+                CurrentSemesterCourseSync.apply(courses: all, semester: currentSemester, calendarEvents: calendarEvents)
                 await autoSyncCalendarIfNeeded(calendarEvents)
             }
         } catch {
+            logger.error("Home course load failed: \(error.localizedDescription, privacy: .public)")
             loadError = "載入首頁資料失敗：\(error.localizedDescription)"
+            courseLoadFailed = semesterCourses.isEmpty
         }
         isLoading = false
     }
 
     private func loadCachedTodayCoursesIfAvailable() async -> Bool {
-        let todayKey = todayDayString()
-        guard let cachedSemesters = cache.getSemesters(),
-              let currentSemester = cachedSemesters.first,
-              let cachedCourses = cache.getCourses(semester: currentSemester) else {
+        guard let cachedSemesters = cache.getSemesters(), !cachedSemesters.isEmpty else {
+            return false
+        }
+        let currentSemester = CurrentSemester.resolve(available: cachedSemesters)
+        guard let cachedCourses = cache.getCourses(semester: currentSemester) else {
             return false
         }
 
         let cachedCalendarEvents = cache.getCalendarEvents(semester: currentSemester) ?? []
-        todayCourses = cachedCourses
-            .filter { $0.dayOfWeek == todayKey }
-            .sorted { $0.startPeriod < $1.startPeriod }
+        semesterCourses = cachedCourses
         isLoading = false
-        WidgetDataWriter.shared.writeCourseData(courses: cachedCourses, friends: FriendStore.shared.friends)
-        scheduleCourseNotifications(for: cachedCourses, calendarEvents: cachedCalendarEvents)
+        CurrentSemesterCourseSync.apply(courses: cachedCourses, semester: currentSemester, calendarEvents: cachedCalendarEvents)
         await autoSyncCalendarIfNeeded(cachedCalendarEvents)
         return true
     }
@@ -694,71 +731,6 @@ struct HomeView: View {
             EventKitSyncService.shared.disableAutoCalendarSyncForPermissionIssue()
             autoSyncCalendar = false
         } catch {}
-    }
-
-    private func scheduleCourseNotifications(for courses: [Course], calendarEvents: [CalendarEvent]) {
-        let snapshot = courses
-        let semester = courses.first { !$0.semester.isEmpty }?.semester ?? ""
-        let window = SemesterCalendarResolver.notificationWindow(
-            for: semester,
-            events: calendarEvents
-        )
-        let signature = notificationSyncSignature(
-            courses: snapshot,
-            semester: semester,
-            window: window
-        )
-        guard signature != lastNotificationSyncSignature else { return }
-        lastNotificationSyncSignature = signature
-
-        logger.info("[CourseNotification] calendar window semester=\(window.semester), start=\(String(describing: window.startDate)), end=\(String(describing: window.endDate)), source=\(window.source)")
-        Task(priority: .background) {
-            await CourseNotificationManager.shared.scheduleAll(
-                for: snapshot,
-                semesterStartDate: window.startDate,
-                semesterEndDate: window.endDate
-            )
-        }
-    }
-
-    private func notificationSyncSignature(
-        courses: [Course],
-        semester: String,
-        window: SemesterNotificationWindow
-    ) -> String {
-        let courseSignature = courses
-            .sorted { $0.id < $1.id }
-            .map {
-                [
-                    $0.id,
-                    $0.dayOfWeek,
-                    String($0.startPeriod),
-                    String($0.endPeriod),
-                    $0.location,
-                    $0.weeks
-                ].joined(separator: ":")
-            }
-            .joined(separator: "|")
-        return [
-            semester,
-            String(window.startDate?.timeIntervalSince1970 ?? 0),
-            String(window.endDate?.timeIntervalSince1970 ?? 0),
-            courseSignature
-        ].joined(separator: "#")
-    }
-
-    private func todayDayString() -> String {
-        let weekday = Calendar.current.component(.weekday, from: Date())
-        switch weekday {
-        case 2: return "一"
-        case 3: return "二"
-        case 4: return "三"
-        case 5: return "四"
-        case 6: return "五"
-        case 7: return "六"
-        case 1: return "日"
-        default: return ""
-        }
     }
 }
 
@@ -780,6 +752,7 @@ private struct ModuleIconCell: View {
     @Environment(\.openURL) private var openURL
     @AppStorage("openLinksInApp") private var openLinksInApp = true
     @State private var showBrowser = false
+    @State private var browserURL: URL?
     @State private var showDormBrowser = false
     private static let dormHost = "dorm.fju.edu.tw"
 
@@ -801,7 +774,7 @@ private struct ModuleIconCell: View {
                 DormBrowserView().ignoresSafeArea()
             }
             .sheet(isPresented: $showBrowser) {
-                InAppBrowserView(url: url).ignoresSafeArea()
+                InAppBrowserView(url: browserURL ?? url).ignoresSafeArea()
             }
         }
     }
@@ -830,6 +803,19 @@ private struct ModuleIconCell: View {
         if url.host == Self.dormHost {
             showDormBrowser = true
         } else if openLinksInApp && (url.scheme == "https" || url.scheme == "http") {
+            openWebURL(url)
+        } else {
+            openURL(url) { accepted in
+                // e.g. tronclass:// when the TronClass app isn't installed
+                guard !accepted, let fallback = ModuleRegistry.webFallbackURL(for: url) else { return }
+                openWebURL(fallback)
+            }
+        }
+    }
+
+    private func openWebURL(_ url: URL) {
+        if openLinksInApp {
+            browserURL = url
             showBrowser = true
         } else {
             openURL(url)

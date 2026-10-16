@@ -480,6 +480,7 @@ private struct OnboardingProfilePage: View {
     @State private var showAddLink = false
     @State private var showDisableConfirm = false
     @State private var showAvatarMessage = false
+    @State private var hasLoadedInitialState = false
     @FocusState private var focusedField: ProfileField?
 
     private enum ProfileField: Hashable {
@@ -507,12 +508,15 @@ private struct OnboardingProfilePage: View {
                 VStack(spacing: 0) {
                     // MARK: Identity row
                     HStack(spacing: 16) {
-                        ProfileAvatarView(
-                            name: sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName),
-                            avatarURL: profileAvatarURL,
-                            size: 52
-                        )
-                        .onTapGesture { showAvatarMessage = true }
+                        Button { showAvatarMessage = true } label: {
+                            ProfileAvatarView(
+                                name: sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName),
+                                avatarURL: profileAvatarURL,
+                                size: 52
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("頭貼")
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName))
@@ -654,39 +658,37 @@ private struct OnboardingProfilePage: View {
                             .padding(.bottom, 6)
 
                         VStack(spacing: 0) {
-                            ForEach(socialLinks.indices, id: \.self) { i in
+                            ForEach($socialLinks) { $link in
+                                let linkID = link.id
                                 HStack(spacing: 12) {
-                                    SocialBrandIcon(platform: socialLinks[i].platform)
+                                    SocialBrandIcon(platform: link.platform)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(socialLinks[i].platform.label)
+                                        Text(link.platform.label)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        TextField(socialLinks[i].platform.placeholder,
-                                                  text: Binding(
-                                                    get: { socialLinks[i].handle },
-                                                    set: { socialLinks[i].handle = $0 }
-                                                  ))
+                                        TextField(link.platform.placeholder, text: $link.handle)
                                         .font(.body)
                                         .autocorrectionDisabled()
                                         .textInputAutocapitalization(.never)
-                                        .focused($focusedField, equals: .socialLink(socialLinks[i].id))
+                                        .focused($focusedField, equals: .socialLink(linkID))
                                     }
                                     Spacer()
                                     Button {
-                                        if focusedField == .socialLink(socialLinks[i].id) {
+                                        if focusedField == .socialLink(linkID) {
                                             focusedField = nil
                                         }
-                                        socialLinks.remove(at: i)
-                                        saveSocialLinks()
+                                        // Remove by id — index captured at render time may be stale.
+                                        socialLinks.removeAll { $0.id == linkID }
                                     } label: {
                                         Image(systemName: "minus.circle.fill")
                                             .foregroundStyle(.red)
                                     }
+                                    .accessibilityLabel("移除\(link.platform.label)連結")
                                 }
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 11)
 
-                                if i < socialLinks.count - 1 {
+                                if linkID != socialLinks.last?.id {
                                     Divider().padding(.leading, 60)
                                 }
                             }
@@ -732,10 +734,17 @@ private struct OnboardingProfilePage: View {
             }
         }
         .task {
+            // The page re-appears when swiped back to; only load/import once so edits aren't clobbered.
+            guard !hasLoadedInitialState else { return }
+            hasLoadedInitialState = true
             await loadSession()
             loadSocialLinks()
             await importRemoteProfileIfNeeded()
             await loadAvatar()
+        }
+        .onChange(of: socialLinks) { _, _ in
+            // Persist edits immediately rather than only on「繼續」.
+            saveSocialLinks()
         }
         .onChange(of: onContinueTapped) { _, triggered in
             guard triggered else { return }
@@ -747,7 +756,6 @@ private struct OnboardingProfilePage: View {
         .sheet(isPresented: $showAddLink) {
             AddSocialLinkSheet { newLink in
                 socialLinks.append(newLink)
-                saveSocialLinks()
             }
         }
         .confirmationDialog(
@@ -806,7 +814,10 @@ private struct OnboardingProfilePage: View {
         let recordName = ProfileIdentity.publicRecordName(for: session)
         guard let remote = try? await CloudKitProfileService.shared.fetchProfile(recordName: recordName) else { return }
 
-        isPublished = true
+        // Only default to "published" if the user hasn't made an explicit choice yet.
+        if UserDefaults.standard.object(forKey: "myProfile.isPublished") == nil {
+            isPublished = true
+        }
         if UserDefaults.standard.object(forKey: "myProfile.displayName") == nil || displayName.isEmpty {
             displayName = remote.displayName
         }
@@ -873,7 +884,7 @@ private struct OnboardingProfilePage: View {
             return nil
         }
 
-        let semester = semesters[0]
+        let semester = CurrentSemester.resolve(available: semesters)
         let courses: [Course]
         if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
             courses = cached

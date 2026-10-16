@@ -7,7 +7,8 @@ nonisolated struct EstuSession: Codable, Sendable {
     let eventValidation: String
     let expiresAt: Date
     /// The raw HTML from the login response (contains the authenticated course page).
-    /// Not persisted — only available immediately after login.
+    /// Persisted with the session so a relaunch within the session lifetime can reuse it;
+    /// callers still verify it is authenticated and force a re-login when it is not.
     var loginResponseHTML: String?
     
     var isExpired: Bool {
@@ -15,7 +16,7 @@ nonisolated struct EstuSession: Codable, Sendable {
     }
     
     enum CodingKeys: String, CodingKey {
-        case sessionId, viewState, viewStateGenerator, eventValidation, expiresAt
+        case sessionId, viewState, viewStateGenerator, eventValidation, expiresAt, loginResponseHTML
     }
 }
 

@@ -30,6 +30,10 @@ struct MyProfileView: View {
     @AppStorage("myProfile.shareSchedule") private var shareSchedule = false
     @AppStorage("myProfile.scheduleVisibility") private var scheduleVisibilityRaw = ScheduleVisibility.friendsOnly.rawValue
 
+    /// Draft of the "啟用公開資料" toggle. `isPublished` is only persisted after a successful publish/delete.
+    @State private var draftIsPublished = false
+    @State private var hasLoadedInitialState = false
+
     // Social links are stored as JSON in UserDefaults (AppStorage can't hold [SocialLink])
     @State private var socialLinks: [SocialLink] = []
 
@@ -51,7 +55,7 @@ struct MyProfileView: View {
 
     private var currentSnapshot: ProfileSnapshot {
         ProfileSnapshot(
-            isPublished: isPublished,
+            isPublished: draftIsPublished,
             bio: bio,
             socialLinks: socialLinks,
             scheduleVisibilityRaw: scheduleVisibilityRaw
@@ -68,12 +72,15 @@ struct MyProfileView: View {
             // MARK: Identity + Preview (top)
             Section {
                 HStack(spacing: 16) {
-                    ProfileAvatarView(
-                        name: sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName),
-                        avatarURL: profileAvatarURL,
-                        size: 52
-                    )
-                    .onTapGesture { showAvatarMessage = true }
+                    Button { showAvatarMessage = true } label: {
+                        ProfileAvatarView(
+                            name: sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName),
+                            avatarURL: profileAvatarURL,
+                            size: 52
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("頭貼")
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sisSession?.userName ?? (displayName.isEmpty ? "學生姓名" : displayName))
@@ -85,7 +92,7 @@ struct MyProfileView: View {
                 }
                 .padding(.vertical, 4)
 
-                if isPublished, let previewProfile {
+                if draftIsPublished, let previewProfile {
                     NavigationLink {
                         PublicProfilePreviewView(profile: previewProfile, avatarURL: profileAvatarURL)
                     } label: {
@@ -133,19 +140,23 @@ struct MyProfileView: View {
                 }
 
                 Toggle("啟用公開資料", isOn: Binding(
-                    get: { isPublished },
+                    get: { draftIsPublished },
                     set: { newValue in
                         if newValue {
-                            isPublished = true
-                        } else {
+                            // Draft only — persisted to isPublished after a successful save.
+                            draftIsPublished = true
+                        } else if isPublished {
                             showDisableConfirm = true
+                        } else {
+                            // Never published: just revert the draft, nothing to delete.
+                            draftIsPublished = false
                         }
                     }
                 ))
                 // Disable toggle only when there's NO iCloud account (can't write to public DB either)
                 .disabled(sisSession == nil || iCloudAvailability.isDeviceOnly)
 
-                if isPublished {
+                if draftIsPublished {
                     Text("你的資料已公開，其他人可以在課表中找到你、查看你的連結；你可以跟同學加好友，互相分享課表。關閉後將刪除雲端資料。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -159,7 +170,7 @@ struct MyProfileView: View {
             }
 
             // MARK: Profile fields (only shown when enabled)
-            if isPublished {
+            if draftIsPublished {
                 Section {
                     Picker("課表分享", selection: scheduleVisibilityBinding) {
                         ForEach(ScheduleVisibility.allCases, id: \.rawValue) { visibility in
@@ -197,13 +208,13 @@ struct MyProfileView: View {
                 } header: {
                     Text("社群連結")
                 }
+            }
 
-                if let error = publishError {
-                    Section {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+            if let error = publishError {
+                Section {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
         }
@@ -217,6 +228,10 @@ struct MyProfileView: View {
             if isLoading { ProgressView() }
         }
         .task {
+            // Run once — re-running on re-appear (e.g. back from preview) would clobber unsaved edits.
+            guard !hasLoadedInitialState else { return }
+            hasLoadedInitialState = true
+            draftIsPublished = isPublished
             await loadSession()
             loadSocialLinks()
             await importRemoteProfileIfNeeded()
@@ -234,6 +249,7 @@ struct MyProfileView: View {
                     } label: {
                         Image(systemName: "chevron.backward")
                     }
+                    .accessibilityLabel("返回")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -322,7 +338,9 @@ struct MyProfileView: View {
         let recordName = ProfileIdentity.publicRecordName(for: session)
         guard let remote = try? await CloudKitProfileService.shared.fetchProfile(recordName: recordName) else { return }
 
+        // A verified remote profile exists, so the profile IS published.
         isPublished = true
+        draftIsPublished = true
         displayName = remote.displayName
         bio = remote.bio ?? ""
         socialLinks = remote.socialLinks
@@ -376,7 +394,7 @@ struct MyProfileView: View {
 
     private func discardChanges() {
         guard let snapshot = lastSavedSnapshot else { return }
-        isPublished = snapshot.isPublished
+        draftIsPublished = snapshot.isPublished
         bio = snapshot.bio
         socialLinks = snapshot.socialLinks
         saveSocialLinks()
@@ -389,7 +407,7 @@ struct MyProfileView: View {
 
     @MainActor
     private func publishProfileNow() async {
-        guard let session = sisSession, isPublished else { return }
+        guard let session = sisSession, draftIsPublished else { return }
         guard iCloudAvailability.isPublicDBAvailable else {
             snapshotLogger.info("ℹ️ No iCloud account — skipping CloudKit profile publish")
             return
@@ -415,7 +433,6 @@ struct MyProfileView: View {
         } catch {
             snapshotLogger.error("❌ publishProfileNow: identity attestation failed — \(error.localizedDescription, privacy: .public)")
             publishError = error.localizedDescription
-            isPublished = false
             return
         }
 
@@ -432,7 +449,6 @@ struct MyProfileView: View {
                 return
             }
             publishError = "儲存失敗：\(error.localizedDescription)"
-            isPublished = false
             return
         }
 
@@ -517,7 +533,6 @@ struct MyProfileView: View {
                     return
                 }
                 publishError = "儲存失敗：\(error.localizedDescription)"
-                isPublished = false
             }
         }
     }
@@ -591,30 +606,39 @@ struct MyProfileView: View {
     private func disableProfile() async {
         guard let session = sisSession else {
             isPublished = false
+            draftIsPublished = false
             lastSavedSnapshot = currentSnapshot
             return
         }
         guard iCloudAvailability.isPublicDBAvailable else {
             isPublished = false
+            draftIsPublished = false
             lastSavedSnapshot = currentSnapshot
             return
         }
+        publishError = nil
         do {
             let recordName = try await CloudKitProfileIdentityService.shared.ensureIdentity(
                 for: session,
                 forceRefresh: true
             )
+            // deleteProfile already treats a missing record (unknownItem) as success.
             try await CloudKitProfileService.shared.deleteProfile(recordName: recordName)
         } catch {
             if await authManager.handleProfileIdentityError(error) {
                 return
             }
-            // Silently ignore delete errors (record may not exist)
+            // The cloud profile may still be public — keep sharing marked on and tell the user.
+            snapshotLogger.error("❌ disableProfile: delete failed — \(error.localizedDescription, privacy: .public)")
+            publishError = "關閉失敗，雲端資料可能仍公開：\(error.localizedDescription)"
+            draftIsPublished = true
+            return
         }
         for token in ProfileQRService.scheduleShareTokensForPublishing() {
             try? await CloudKitProfileService.shared.deleteFriendSchedule(token: token)
         }
         isPublished = false
+        draftIsPublished = false
         lastSavedSnapshot = currentSnapshot
     }
 
@@ -638,7 +662,7 @@ struct MyProfileView: View {
             return nil
         }
 
-        let semester = semesters[0]
+        let semester = CurrentSemester.resolve(available: semesters)
         let courses: [Course]
         if let cached = cache.getCourses(semester: semester), !cached.isEmpty {
             courses = cached
@@ -706,7 +730,8 @@ struct MyProfileView: View {
 
     private func buildCachedSnapshot(session: SISSession) -> FriendScheduleSnapshot? {
         let cache = AppCache.shared
-        guard let semesters = cache.getSemesters(), let semester = semesters.first,
+        guard let semesters = cache.getSemesters(), !semesters.isEmpty,
+              case let semester = CurrentSemester.resolve(available: semesters),
               let courses = cache.getCourses(semester: semester), !courses.isEmpty else { return nil }
         return FriendScheduleSnapshot(
             ownerUserId: session.userId,
@@ -815,23 +840,48 @@ private struct AddSocialLinkSheet: View {
 
 // MARK: - Interactive pop gesture control
 
-/// Lets us disable the swipe-back gesture while there are unsaved changes, so leaving
+/// Lets us disable the swipe-back gestures while there are unsaved changes, so leaving
 /// the screen always goes through the custom back button's discard confirmation.
-private struct PopGestureDisabler: UIViewControllerRepresentable {
+/// Also used by the leave-request wizard.
+struct PopGestureDisabler: UIViewControllerRepresentable {
     let isDisabled: Bool
+
+    final class Coordinator {
+        weak var navigationController: UINavigationController?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIViewController(context: Context) -> UIViewController {
         UIViewController()
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        let coordinator = context.coordinator
         DispatchQueue.main.async {
-            uiViewController.parent?.navigationController?.interactivePopGestureRecognizer?.isEnabled = !isDisabled
+            guard let nav = uiViewController.parent?.navigationController ?? coordinator.navigationController else { return }
+            coordinator.navigationController = nav
+            Self.setPopGestures(enabled: !isDisabled, on: nav)
+        }
+    }
+
+    static func dismantleUIViewController(_ uiViewController: UIViewController, coordinator: Coordinator) {
+        // Don't leave the shared navigation controller without swipe-back after this screen is gone.
+        if let nav = coordinator.navigationController {
+            setPopGestures(enabled: true, on: nav)
+        }
+    }
+
+    private static func setPopGestures(enabled: Bool, on nav: UINavigationController) {
+        nav.interactivePopGestureRecognizer?.isEnabled = enabled
+        if #available(iOS 26.0, *) {
+            // iOS 26 full-width content swipe-back.
+            nav.interactiveContentPopGestureRecognizer?.isEnabled = enabled
         }
     }
 }
 
-private extension View {
+extension View {
     func interactivePopGestureDisabled(_ isDisabled: Bool) -> some View {
         background(PopGestureDisabler(isDisabled: isDisabled))
     }

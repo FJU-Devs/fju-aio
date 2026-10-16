@@ -17,7 +17,12 @@ struct CourseScheduleView: View {
     @State private var showShareSheet = false
     @State private var visibleFriendIds: Set<String> = []
     @State private var loadError: String?
+    @State private var hasLoaded = false
+    @State private var courseLoadTask: Task<Void, Never>?
+    /// Semester whose courses are currently in `courses`.
+    @State private var loadedSemester: String?
     @AppStorage("courseSchedule.showSelfCourses") private var showSelfCourses = true
+    @ScaledMetric(relativeTo: .caption2) private var periodTimeFontSize: CGFloat = 9
 
     private let periodHeight: CGFloat = 56
     private let timeColumnWidth: CGFloat = 38
@@ -53,17 +58,43 @@ struct CourseScheduleView: View {
         friendColorPalette[index % friendColorPalette.count]
     }
 
-    /// The current weekday (1=Mon … 5=Fri), nil on weekends.
+    /// Today's column index (0=Mon … 6=Sun), nil when that column isn't shown.
     private var todayWeekdayIndex: Int? {
-        let weekday = Calendar.current.component(.weekday, from: Date())
-        // Calendar weekday: 1=Sun,2=Mon,...,7=Sat → convert to 0-indexed Mon-Fri
-        let index = weekday - 2 // 0=Mon … 4=Fri
-        return (0...4).contains(index) ? index : nil
+        let weekday = CurrentSemester.taipeiCalendar.component(.weekday, from: Date())
+        // Calendar weekday: 1=Sun,2=Mon,...,7=Sat → 0-indexed Mon…Sun
+        let index = weekday == 1 ? 6 : weekday - 2
+        return index < dayCount ? index : nil
+    }
+
+    /// Mon–Fri, extended to Sat/Sun when any shown course falls on them.
+    private var dayCount: Int {
+        var days = courses.filter(isGridCourse).map(\.dayOfWeekNumber)
+        for friend in friendsWithSchedule where visibleFriendIds.contains(friend.id) {
+            days += (friend.cachedProfile?.scheduleSnapshot?.courses ?? [])
+                .filter(isGridFriendCourse)
+                .map { publicCourseDayNumber($0.dayOfWeek) }
+        }
+        return min(7, max(5, days.max() ?? 5))
+    }
+
+    /// Courses that can be placed on the grid (known weekday + displayable period).
+    private func isGridCourse(_ course: Course) -> Bool {
+        course.hasScheduledTime && displayPeriods.contains(course.startPeriod)
+    }
+
+    private func isGridFriendCourse(_ course: PublicCourseInfo) -> Bool {
+        (1...7).contains(publicCourseDayNumber(course.dayOfWeek)) && displayPeriods.contains(course.startPeriod)
+    }
+
+    /// Courses without a usable day/period — listed under 「未排時間」 instead of being dropped.
+    private var unscheduledCourses: [Course] {
+        courses.filter { !isGridCourse($0) }
     }
 
     var body: some View {
         GeometryReader { geometry in
-            if isLoading {
+            // Full-screen spinner only for the very first load; refreshes keep the timetable visible.
+            if isLoading && courses.isEmpty {
                 ProgressView("載入中...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -81,6 +112,13 @@ struct CourseScheduleView: View {
 
                         timetableGrid(screenWidth: min(geometry.size.width, AppTheme.readableContentMaxWidth))
                             .frame(maxWidth: .infinity, alignment: .center)
+
+                        if showSelfCourses && !unscheduledCourses.isEmpty {
+                            unscheduledCoursesSection
+                                .frame(maxWidth: min(geometry.size.width, AppTheme.readableContentMaxWidth) - 12)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.bottom, 16)
+                        }
                     }
                 }
                 .refreshable {
@@ -103,6 +141,7 @@ struct CourseScheduleView: View {
                             .padding(4)
                             .offset(y: -2)
                     }
+                    .accessibilityLabel("分享課表")
                     .disabled(courses.isEmpty)
 
                     // Friend schedule overlay button
@@ -121,6 +160,8 @@ struct CourseScheduleView: View {
                                 }
                             }
                         }
+                        .accessibilityLabel("朋友課表")
+                        .accessibilityValue(visibleFriendIds.isEmpty ? "未顯示" : "顯示 \(visibleFriendIds.count) 位朋友")
                     }
 
                     // Semester picker
@@ -131,7 +172,7 @@ struct CourseScheduleView: View {
                                     if semester != selectedSemester {
                                         selectedSemester = semester
                                         restoreVisibleFriendIds()
-                                        Task { await loadCourses(forceRefresh: false) }
+                                        startCourseLoad(forceRefresh: false)
                                     }
                                 } label: {
                                     HStack {
@@ -150,6 +191,8 @@ struct CourseScheduleView: View {
                                     .font(.caption2.weight(.semibold))
                             }
                         }
+                        .accessibilityLabel("選擇學期")
+                        .accessibilityValue(semesterDisplayName(selectedSemester))
                     }
                 }
             }
@@ -188,6 +231,10 @@ struct CourseScheduleView: View {
             CampusMapView(highlightLocation: mapHighlightLocation)
         }
         .task {
+            // Only load once; returning from a pushed screen shouldn't re-run loading,
+            // widget writes and Live Activity scheduling.
+            guard !hasLoaded else { return }
+            hasLoaded = true
             await loadSemesters(forceRefresh: false)
         }
         .onChange(of: visibleFriendIds) { _, _ in
@@ -213,12 +260,14 @@ struct CourseScheduleView: View {
     }
 
     private func dayColumnWidth(screenWidth: CGFloat) -> CGFloat {
-        (screenWidth - timeColumnWidth - 12) / 5
+        (screenWidth - timeColumnWidth - 12) / CGFloat(dayCount)
     }
 
     // MARK: - Header
 
-    private let weekdays = Array(FJUPeriod.dayNames.prefix(5))
+    private var weekdays: [String] {
+        Array(FJUPeriod.dayNames.prefix(dayCount))
+    }
 
     private func headerRow(colWidth: CGFloat) -> some View {
         HStack(spacing: 0) {
@@ -237,6 +286,8 @@ struct CourseScheduleView: View {
                                 .frame(width: 28, height: 28)
                         }
                     }
+                    .accessibilityLabel("星期\(day)")
+                    .accessibilityAddTraits(index == todayWeekdayIndex ? .isSelected : [])
             }
         }
         .padding(.bottom, 4)
@@ -253,7 +304,7 @@ struct CourseScheduleView: View {
             }
         }
         .frame(
-            width: timeColumnWidth + CGFloat(5) * colWidth,
+            width: timeColumnWidth + CGFloat(dayCount) * colWidth,
             height: CGFloat(displayPeriods.count) * periodHeight
         )
     }
@@ -265,16 +316,21 @@ struct CourseScheduleView: View {
                     // Period label
                     VStack(spacing: 1) {
                         Text(FJUPeriod.periodLabel(for: period))
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .font(.system(.caption2, design: .rounded).weight(.medium))
                             .foregroundStyle(period == 5 ? Color.orange.opacity(0.8) : .secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                         Text(FJUPeriod.startTime(for: period))
-                            .font(.system(size: 7, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: min(periodTimeFontSize, 13), design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
                     }
                     .frame(width: timeColumnWidth, height: periodHeight)
+                    .accessibilityElement(children: .combine)
 
                     // Day columns
-                    ForEach(0..<5, id: \.self) { dayIndex in
+                    ForEach(0..<dayCount, id: \.self) { dayIndex in
                         Rectangle()
                             .fill(dayIndex == todayWeekdayIndex
                                   ? Color.accentColor.opacity(0.07)
@@ -294,7 +350,7 @@ struct CourseScheduleView: View {
     private func courseBlocks(colWidth: CGFloat) -> some View {
         let layouts = activeScheduleLayouts
 
-        ForEach(courses.filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5 && displayPeriods.contains($0.startPeriod) }) { course in
+        ForEach(courses.filter(isGridCourse)) { course in
             let dayIndex = course.dayOfWeekNumber - 1
             let blockLayout = ScheduleBlockLayout(
                 id: "self-\(course.id)",
@@ -310,26 +366,29 @@ struct CourseScheduleView: View {
             let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5 + metrics.xOffset
             let y = CGFloat(course.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
 
-            CourseCell(
-                course: course,
-                periodHeight: periodHeight,
-                contentAlignment: metrics.alignment,
-                contentYOffset: metrics.textYOffset,
-                backgroundOpacity: metrics.backgroundOpacity,
-                contentOpacity: metrics.contentOpacity,
-                contentFrameAlignment: metrics.contentFrameAlignment,
-                ownerBadgeText: visibleFriendIds.isEmpty ? nil : selfCourseBadgeText,
-                ownerBadgeColor: .white
-            )
-                .frame(width: colWidth - 3)
-                .offset(x: x, y: y)
-                .zIndex(metrics.zIndex + 20)
-                .onTapGesture {
-                    selectedCourseDetail = CourseDetailSelection(
-                        course: course,
-                        overlappingFriendCourses: friendOccurrences(overlapping: course)
-                    )
-                }
+            Button {
+                selectedCourseDetail = CourseDetailSelection(
+                    course: course,
+                    overlappingFriendCourses: friendOccurrences(overlapping: course)
+                )
+            } label: {
+                CourseCell(
+                    course: course,
+                    periodHeight: periodHeight,
+                    contentAlignment: metrics.alignment,
+                    contentYOffset: metrics.textYOffset,
+                    backgroundOpacity: metrics.backgroundOpacity,
+                    contentOpacity: metrics.contentOpacity,
+                    contentFrameAlignment: metrics.contentFrameAlignment,
+                    ownerBadgeText: visibleFriendIds.isEmpty ? nil : selfCourseBadgeText,
+                    ownerBadgeColor: .white
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(course.name)，\(course.scheduleDescription)，\(course.location)")
+            .frame(width: colWidth - 3)
+            .offset(x: x, y: y)
+            .zIndex(metrics.zIndex + 20)
         }
     }
 
@@ -348,11 +407,7 @@ struct CourseScheduleView: View {
             let badgeText = ownerBadgeText(friend.displayName, fallback: "?")
 
             if let snapshot = friend.cachedProfile?.scheduleSnapshot {
-                ForEach(snapshot.courses.filter {
-                    publicCourseDayNumber($0.dayOfWeek) >= 1 &&
-                    publicCourseDayNumber($0.dayOfWeek) <= 5 &&
-                    displayPeriods.contains($0.startPeriod)
-                }) { publicCourse in
+                ForEach(snapshot.courses.filter(isGridFriendCourse)) { publicCourse in
                     let dayIndex = publicCourseDayNumber(publicCourse.dayOfWeek) - 1
                     let blockLayout = ScheduleBlockLayout(
                         id: "friend-\(friend.id)-\(publicCourse.id)",
@@ -369,20 +424,7 @@ struct CourseScheduleView: View {
                     let y = CGFloat(publicCourse.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
                     let height = CGFloat(publicCourse.endPeriod - publicCourse.startPeriod + 1) * periodHeight - 2
 
-                    FriendCourseCell(
-                        course: publicCourse,
-                        friendInitials: badgeText,
-                        color: color,
-                        periodHeight: periodHeight,
-                        contentAlignment: metrics.alignment,
-                        contentYOffset: metrics.textYOffset,
-                        backgroundOpacity: metrics.backgroundOpacity,
-                        contentOpacity: metrics.contentOpacity
-                    )
-                    .frame(width: colWidth - 3, height: height)
-                    .offset(x: x, y: y)
-                    .zIndex(metrics.zIndex)
-                    .onTapGesture {
+                    Button {
                         let occurrence = FriendCourseOccurrence(
                             friendId: friend.id,
                             friendName: friend.displayName,
@@ -403,7 +445,23 @@ struct CourseScheduleView: View {
                                 courses: friendOccurrences(overlapping: occurrence)
                             )
                         }
+                    } label: {
+                        FriendCourseCell(
+                            course: publicCourse,
+                            friendInitials: badgeText,
+                            color: color,
+                            periodHeight: periodHeight,
+                            contentAlignment: metrics.alignment,
+                            contentYOffset: metrics.textYOffset,
+                            backgroundOpacity: metrics.backgroundOpacity,
+                            contentOpacity: metrics.contentOpacity
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(friend.displayName)：\(publicCourse.name)，星期\(publicCourse.dayOfWeek)")
+                    .frame(width: colWidth - 3, height: height)
+                    .offset(x: x, y: y)
+                    .zIndex(metrics.zIndex)
                 }
             }
         }
@@ -414,11 +472,7 @@ struct CourseScheduleView: View {
 
         if showSelfCourses {
             layouts += courses
-                .filter {
-                    $0.dayOfWeekNumber >= 1 &&
-                    $0.dayOfWeekNumber <= 5 &&
-                    displayPeriods.contains($0.startPeriod)
-                }
+                .filter(isGridCourse)
                 .map {
                     ScheduleBlockLayout(
                         id: "self-\($0.id)",
@@ -435,11 +489,7 @@ struct CourseScheduleView: View {
         for (friendIndex, friend) in friendsWithSchedule.enumerated() where visibleFriendIds.contains(friend.id) {
             guard let snapshot = friend.cachedProfile?.scheduleSnapshot else { continue }
             layouts += snapshot.courses
-                .filter {
-                    publicCourseDayNumber($0.dayOfWeek) >= 1 &&
-                    publicCourseDayNumber($0.dayOfWeek) <= 5 &&
-                    displayPeriods.contains($0.startPeriod)
-                }
+                .filter(isGridFriendCourse)
                 .map {
                     ScheduleBlockLayout(
                         id: "friend-\(friend.id)-\($0.id)",
@@ -584,11 +634,7 @@ struct CourseScheduleView: View {
             let color = friendColor(for: friendIndex)
             let badgeText = ownerBadgeText(friend.displayName, fallback: "?")
             return snapshot.courses
-                .filter {
-                    publicCourseDayNumber($0.dayOfWeek) >= 1 &&
-                    publicCourseDayNumber($0.dayOfWeek) <= 5 &&
-                    displayPeriods.contains($0.startPeriod)
-                }
+                .filter(isGridFriendCourse)
                 .map {
                     FriendCourseOccurrence(
                         friendId: friend.id,
@@ -614,6 +660,53 @@ struct CourseScheduleView: View {
         }
     }
 
+    // MARK: - Unscheduled Courses
+
+    private var unscheduledCoursesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("未排時間")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
+
+            VStack(spacing: 0) {
+                ForEach(Array(unscheduledCourses.enumerated()), id: \.element.id) { index, course in
+                    Button {
+                        selectedCourseDetail = CourseDetailSelection(course: course, overlappingFriendCourses: [])
+                    } label: {
+                        HStack(spacing: 12) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color(hex: course.color))
+                                .frame(width: 3)
+                                .padding(.vertical, 2)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(course.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text([course.instructor, course.location].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .overlay(alignment: .bottom) {
+                        if index < unscheduledCourses.count - 1 {
+                            Divider().padding(.leading, 29)
+                        }
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+        }
+    }
+
     // MARK: - Data Loading
 
     private func loadSemesters(forceRefresh: Bool) async {
@@ -624,11 +717,11 @@ struct CourseScheduleView: View {
                 logger.warning("⚠️ Cached semesters contains unusually many entries: \(cached.description, privacy: .public)")
             } else {
                 availableSemesters = cached
-                if selectedSemester.isEmpty, let first = cached.first {
-                    selectedSemester = first
+                if selectedSemester.isEmpty, !cached.isEmpty {
+                    selectedSemester = CurrentSemester.resolve(available: cached)
                 }
                 restoreVisibleFriendIds()
-                await loadCourses(forceRefresh: false)
+                await runTrackedCourseLoad(forceRefresh: false)
                 return
             }
         }
@@ -642,14 +735,14 @@ struct CourseScheduleView: View {
             }
             availableSemesters = semesters
             cache.setSemesters(semesters)
-            if selectedSemester.isEmpty, let first = semesters.first {
-                selectedSemester = first
+            if selectedSemester.isEmpty, !semesters.isEmpty {
+                selectedSemester = CurrentSemester.resolve(available: semesters)
             }
             restoreVisibleFriendIds()
-            await loadCourses(forceRefresh: forceRefresh)
+            await runTrackedCourseLoad(forceRefresh: forceRefresh)
         } catch {
-            if selectedSemester.isEmpty, let cached = cache.getSemesters()?.first {
-                selectedSemester = cached
+            if selectedSemester.isEmpty, let cached = cache.getSemesters(), !cached.isEmpty {
+                selectedSemester = CurrentSemester.resolve(available: cached)
             }
             restoreVisibleFriendIds()
             if selectedSemester.isEmpty {
@@ -658,7 +751,7 @@ struct CourseScheduleView: View {
                 loadError = "無法取得學期資料：\(error.localizedDescription)"
             } else {
                 let semesterLoadError = "無法更新學期資料：\(error.localizedDescription)"
-                await loadCourses(forceRefresh: false)
+                await runTrackedCourseLoad(forceRefresh: false)
                 if loadError == nil {
                     loadError = semesterLoadError
                 }
@@ -666,40 +759,63 @@ struct CourseScheduleView: View {
         }
     }
 
+    /// Starts loading the selected semester, cancelling any load for a previous selection.
+    private func startCourseLoad(forceRefresh: Bool) {
+        courseLoadTask?.cancel()
+        courseLoadTask = Task { await loadCourses(forceRefresh: forceRefresh) }
+    }
+
+    /// Same as `startCourseLoad`, but waits for it — keeps the initial/refresh load tracked
+    /// so a semester switch during it cancels it like any other load.
+    private func runTrackedCourseLoad(forceRefresh: Bool) async {
+        startCourseLoad(forceRefresh: forceRefresh)
+        await courseLoadTask?.value
+    }
+
     private func loadCourses(forceRefresh: Bool) async {
-        guard !selectedSemester.isEmpty else { return }
+        // Capture before any await — the user may switch semesters while this is in flight.
+        let semester = selectedSemester
+        guard !semester.isEmpty else { return }
         loadError = nil
 
         // Serve from cache without showing spinner
-        if !forceRefresh, let cached = cache.getCourses(semester: selectedSemester) {
+        if !forceRefresh, let cached = cache.getCourses(semester: semester) {
             courses = cached
+            loadedSemester = semester
             isLoading = false
             presentDeepLinkedCourseIfNeeded()
-            WidgetDataWriter.shared.writeCourseData(courses: cached, friends: FriendStore.shared.friends)
-            scheduleCourseNotifications(for: cached)
+            applyCurrentSemesterSideEffects(courses: cached, semester: semester)
             return
         }
 
-        isLoading = true
+        // Switching semesters: never keep showing the previous semester's courses.
+        if loadedSemester != semester {
+            courses = []
+        }
+        isLoading = courses.isEmpty
         do {
-            try await syncStatus.withSync("正在載入課表…") {
-                let fetched = try await service.fetchCourses(semester: selectedSemester)
-                courses = fetched
-                cache.setCourses(fetched, semester: selectedSemester)
-                WidgetDataWriter.shared.writeCourseData(courses: fetched, friends: FriendStore.shared.friends)
+            let fetched = try await syncStatus.withSync("正在載入課表…") {
+                try await service.fetchCourses(semester: semester)
             }
+            cache.setCourses(fetched, semester: semester)
+            guard !Task.isCancelled, semester == selectedSemester else { return }
+            courses = fetched
+            loadedSemester = semester
         } catch {
-            if courses.isEmpty, let cached = cache.getCourses(semester: selectedSemester) {
+            guard !Task.isCancelled, semester == selectedSemester, !(error is CancellationError) else { return }
+            if courses.isEmpty, let cached = cache.getCourses(semester: semester) {
                 courses = cached
-                WidgetDataWriter.shared.writeCourseData(courses: cached, friends: FriendStore.shared.friends)
+                loadedSemester = semester
             }
             loadError = "載入課表失敗：\(error.localizedDescription)"
         }
         isLoading = false
         presentDeepLinkedCourseIfNeeded()
 
-        // Schedule notifications and Live Activity in the background after UI is shown
-        scheduleCourseNotifications(for: courses)
+        // Widget + Live Activities only ever reflect the current semester.
+        if loadedSemester == semester {
+            applyCurrentSemesterSideEffects(courses: courses, semester: semester)
+        }
     }
 
     private func presentDeepLinkedCourseIfNeeded() {
@@ -715,10 +831,20 @@ struct CourseScheduleView: View {
         )
     }
 
-    private func scheduleCourseNotifications(for courses: [Course]) {
-        let snapshot = courses
+    /// Writes widget data and schedules Live Activities — only when `semester` is the current
+    /// one, and always with the resolved semester calendar window.
+    private func applyCurrentSemesterSideEffects(courses: [Course], semester: String) {
+        guard semester == CurrentSemester.code() else { return }
+        if let events = cache.getCalendarEvents(semester: semester) {
+            CurrentSemesterCourseSync.apply(courses: courses, semester: semester, calendarEvents: events)
+            return
+        }
         Task(priority: .background) {
-            await CourseNotificationManager.shared.scheduleAll(for: snapshot)
+            let events = (try? await service.fetchCalendarEvents(semester: semester)) ?? []
+            if !events.isEmpty {
+                cache.setCalendarEvents(events, semester: semester)
+            }
+            CurrentSemesterCourseSync.apply(courses: courses, semester: semester, calendarEvents: events)
         }
     }
 
@@ -771,6 +897,19 @@ private struct FriendCourseCell: View {
     let backgroundOpacity: Double
     let contentOpacity: Double
 
+    @Environment(\.colorScheme) private var colorScheme
+    @ScaledMetric(relativeTo: .caption2) private var badgeFontSize: CGFloat = 8
+    @ScaledMetric(relativeTo: .caption2) private var nameFontSize: CGFloat = 10
+    @ScaledMetric(relativeTo: .caption2) private var locationFontSize: CGFloat = 8
+    private let maxFontGrowth: CGFloat = 1.35
+
+    /// Darkened tint on light backgrounds, lightened on dark ones so text keeps contrast.
+    private func textColor(_ amount: Double) -> Color {
+        colorScheme == .dark
+            ? color.mixed(with: .white, by: amount + 0.25)
+            : color.mixed(with: .black, by: amount)
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -793,23 +932,26 @@ private struct FriendCourseCell: View {
                 HStack(spacing: 3) {
                     // Friend initial badge
                     Text(friendInitials)
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: min(badgeFontSize, 8 * maxFontGrowth), weight: .bold))
+                        .minimumScaleFactor(0.6)
                         .foregroundStyle(.white.opacity(contentOpacity))
                         .frame(width: 14, height: 14)
-                        .background(Circle().fill(color.mixed(with: .black, by: 0.1).opacity(contentOpacity)))
+                        .background(Circle().fill(color.mixed(with: .black, by: colorScheme == .dark ? 0.3 : 0.1).opacity(contentOpacity)))
 
                     Text(course.name)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(color.mixed(with: .black, by: 0.2).opacity(contentOpacity))
+                        .font(.system(size: min(nameFontSize, 10 * maxFontGrowth), weight: .semibold))
+                        .foregroundStyle(textColor(0.2).opacity(contentOpacity))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
 
                 if course.location.isEmpty == false,
                    CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2 > periodHeight * 0.9 {
                     Text(course.location)
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(color.mixed(with: .black, by: 0.25).opacity(0.9 * contentOpacity))
+                        .font(.system(size: min(locationFontSize, 8 * maxFontGrowth), weight: .medium))
+                        .foregroundStyle(textColor(0.25).opacity(0.9 * contentOpacity))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
             }
             .padding(.horizontal, 5)
@@ -957,6 +1099,13 @@ private struct FriendSchedulePickerSheet: View {
 
                 Section {
                     ForEach(Array(friends.enumerated()), id: \.element.id) { index, friend in
+                        Button {
+                            if visibleIds.contains(friend.id) {
+                                visibleIds.remove(friend.id)
+                            } else {
+                                visibleIds.insert(friend.id)
+                            }
+                        } label: {
                         HStack(spacing: 12) {
                             // Color swatch
                             RoundedRectangle(cornerRadius: 4)
@@ -979,20 +1128,18 @@ private struct FriendSchedulePickerSheet: View {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundStyle(colorForIndex(index))
                                     .font(.title3)
+                                    .accessibilityHidden(true)
                             } else {
                                 Image(systemName: "circle")
                                     .foregroundStyle(.secondary)
                                     .font(.title3)
+                                    .accessibilityHidden(true)
                             }
                         }
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            if visibleIds.contains(friend.id) {
-                                visibleIds.remove(friend.id)
-                            } else {
-                                visibleIds.insert(friend.id)
-                            }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(visibleIds.contains(friend.id) ? .isSelected : [])
                     }
                 } header: {
                     Text("選擇要顯示的朋友課表")
@@ -1262,7 +1409,7 @@ private struct NTUTBoxExportSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("我不知道你為什麼要這樣做，但你可以把以下內容貼到匯入匯入課表裡面：")
+                    Text("我不知道你為什麼要這樣做，但你可以把以下內容貼到匯入課表裡面：")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal)

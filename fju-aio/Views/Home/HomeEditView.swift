@@ -3,12 +3,12 @@ import SwiftUI
 struct HomeEditView: View {
     @Environment(HomePreferences.self) private var preferences
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
+    @State private var showResetConfirmation = false
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(ModuleRegistry.groupedByCategory(checkInEnabled: checkInEnabled), id: \.0) { category, modules in
+                ForEach(ModuleRegistry.groupedByCategory, id: \.0) { category, modules in
                     Section(category.rawValue) {
                         ForEach(modules) { module in
                             Button {
@@ -31,6 +31,13 @@ struct HomeEditView: View {
                         }
                     }
                 }
+
+                Section {
+                    Button("重設為預設功能", role: .destructive) {
+                        showResetConfirmation = true
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
             .navigationTitle("編輯首頁")
             .navigationBarTitleDisplayMode(.inline)
@@ -38,11 +45,18 @@ struct HomeEditView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("重設") {
-                        preferences.resetToDefaults()
-                    }
+            }
+            .confirmationDialog(
+                "要將首頁功能重設為預設值嗎？",
+                isPresented: $showResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("重設", role: .destructive) {
+                    withAnimation { preferences.resetToDefaults() }
                 }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("目前選擇的功能與排序將會被清除。")
             }
         }
     }

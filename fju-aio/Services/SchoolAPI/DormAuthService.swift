@@ -28,22 +28,30 @@ actor DormAuthService {
 
     private var currentSession: DormSession?
     private var refreshTask: Task<DormSession, Error>?
+    /// The persisted session is loaded lazily on first use so the first
+    /// `getValidSession()` never races an async load kicked off from `init`.
+    private var hasLoadedSession = false
+    /// Bumped on `clearSession()` so a refresh that finishes afterwards never re-stores a session.
+    private var sessionGeneration = 0
 
-    private init() {
-        Task { await loadSession() }
-    }
+    private init() {}
 
     // MARK: - Public API
 
     /// Returns a valid session, refreshing via stored credentials if needed.
     func getValidSession() async throws -> DormSession {
+        loadSessionIfNeeded()
         if let session = currentSession, !session.isExpired {
             logger.info("✅ Using cached dorm session")
             return session
         }
 
+        let generation = sessionGeneration
+
         if let refreshTask {
-            return try await refreshTask.value
+            let session = try await refreshTask.value
+            guard generation == sessionGeneration else { throw DormAuthError.noCredentials }
+            return session
         }
 
         logger.info("⚠️ Dorm session expired or missing, refreshing...")
@@ -54,20 +62,43 @@ actor DormAuthService {
         }
 
         let task = Task<DormSession, Error> {
-            try await login(username: credentials.username, password: credentials.password)
+            try await self.authenticate(username: credentials.username, password: credentials.password)
         }
         refreshTask = task
-        defer { refreshTask = nil }
+        defer {
+            if refreshTask == task { refreshTask = nil }
+        }
 
         do {
-            return try await task.value
+            let session = try await task.value
+            guard generation == sessionGeneration else {
+                logger.warning("⚠️ Discarding refreshed dorm session — cleared during refresh")
+                throw DormAuthError.noCredentials
+            }
+            currentSession = session
+            saveSession(session)
+            return session
         } catch DormAuthError.invalidCredentials {
-            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            if generation == sessionGeneration,
+               (try? credentialStore.retrieveLDAPCredentials())?.password == credentials.password {
+                await CredentialErrorMonitor.shared.markPasswordInvalid()
+            }
             throw DormAuthError.invalidCredentials
         }
     }
 
     func login(username: String, password: String) async throws -> DormSession {
+        loadSessionIfNeeded()
+        let generation = sessionGeneration
+        let session = try await authenticate(username: username, password: password)
+        if generation == sessionGeneration {
+            currentSession = session
+            saveSession(session)
+        }
+        return session
+    }
+
+    private func authenticate(username: String, password: String) async throws -> DormSession {
         logger.info("🔐 Dorm login for: \(username, privacy: .private)")
 
         let url = URL(string: "\(apiBase)/Account/LdapLogin")!
@@ -86,9 +117,17 @@ actor DormAuthService {
 
         let (data, httpResponse) = try await networkService.performRequest(request, retryPolicy: .none)
 
-        guard httpResponse.statusCode == 200 else {
-            logger.error("❌ Dorm login HTTP \(httpResponse.statusCode)")
+        switch httpResponse.statusCode {
+        case 200:
+            break
+        case 400, 401:
+            logger.error("❌ Dorm login rejected credentials (HTTP \(httpResponse.statusCode, privacy: .public))")
             throw DormAuthError.invalidCredentials
+        default:
+            // Server-side failures must not be reported as a bad password —
+            // that would trigger CredentialErrorMonitor.markPasswordInvalid().
+            logger.error("❌ Dorm login HTTP \(httpResponse.statusCode, privacy: .public)")
+            throw DormAuthError.serverError(httpResponse.statusCode)
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -109,13 +148,25 @@ actor DormAuthService {
             expiresAt: expiresAt
         )
 
-        currentSession = session
-        saveSession(session)
-        logger.info("✅ Dorm login successful, expires \(expiresAt)")
+        logger.info("✅ Dorm login successful, expires \(expiresAt, privacy: .public)")
         return session
     }
 
+    /// Drops the current session so the next `getValidSession()` re-authenticates.
+    /// Pass the token the server rejected so concurrent callers don't clear a fresh session.
+    func invalidateSession(token: String? = nil) {
+        loadSessionIfNeeded()
+        if let token, currentSession?.token != token { return }
+        currentSession = nil
+        try? keychain.delete(for: sessionKey)
+        logger.info("🗑️ Dorm session invalidated")
+    }
+
     func clearSession() {
+        hasLoadedSession = true
+        sessionGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
         currentSession = nil
         try? keychain.delete(for: sessionKey)
         UserDefaults.standard.removeObject(forKey: sessionKey)
@@ -165,6 +216,12 @@ actor DormAuthService {
         }
     }
 
+    private func loadSessionIfNeeded() {
+        guard !hasLoadedSession else { return }
+        hasLoadedSession = true
+        loadSession()
+    }
+
     private func loadSession() {
         if let data = try? keychain.retrieve(for: sessionKey),
            let session = try? JSONDecoder().decode(DormSession.self, from: data) {
@@ -195,12 +252,14 @@ enum DormAuthError: LocalizedError {
     case noCredentials
     case invalidCredentials
     case invalidResponse
+    case serverError(Int)
 
     var errorDescription: String? {
         switch self {
         case .noCredentials: return "無儲存的帳號密碼"
         case .invalidCredentials: return "帳號或密碼錯誤"
         case .invalidResponse: return "伺服器回應無效"
+        case .serverError(let statusCode): return "宿舍系統暫時無法使用（HTTP \(statusCode)）"
         }
     }
 }

@@ -8,18 +8,15 @@ struct FriendDetailView: View {
     @State private var profile: PublicProfile?
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var profileUnavailable = false
     @State private var friendStore = FriendStore.shared
     @Environment(iCloudAvailabilityService.self) private var iCloudAvailability
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
 
-    // live credential status from store
+    // live friend record from store
     private var currentFriend: FriendRecord {
         friendStore.friends.first { $0.id == friend.id } ?? friend
     }
 
-    @State private var showCredentialScanner = false
-    @State private var credentialScanError: String?
-    @State private var showDeleteCredConfirm = false
     @State private var showFriendOnlyScheduleReAddAlert = false
     @State private var selectedFriendCourse: PublicCourseInfo?
 
@@ -64,60 +61,6 @@ struct FriendDetailView: View {
                 }
             }
 
-            // MARK: Rollcall Authorisation
-            if checkInEnabled {
-                Section {
-                    if currentFriend.hasStoredCredentials {
-                        HStack(spacing: 12) {
-                            Image(systemName: "checkmark.shield.fill")
-                                .foregroundStyle(.green)
-                                .frame(width: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("已儲存點名授權")
-                                    .font(.body)
-                                Text("你可以在簽到頁面替此朋友點名")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Button(role: .destructive) {
-                            showDeleteCredConfirm = true
-                        } label: {
-                            Label("撤銷授權（刪除帳密）", systemImage: "trash")
-                        }
-                    } else {
-                        HStack(spacing: 12) {
-                            Image(systemName: "shield.slash")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("尚未授權點名")
-                                    .font(.body)
-                                Text("請對方在「我的資料」顯示點名 QR Code，再點下方按鈕掃描")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Button {
-                            showCredentialScanner = true
-                        } label: {
-                            Label("掃描對方的點名 QR Code", systemImage: "qrcode.viewfinder")
-                        }
-                        .foregroundStyle(AppTheme.accent)
-                    }
-
-                    if let err = credentialScanError {
-                        Text(err).font(.caption).foregroundStyle(.red)
-                    }
-                } header: {
-                    Text("點名授權")
-                } footer: {
-                    if !currentFriend.hasStoredCredentials {
-                        Text("對方的帳號密碼僅儲存於你的裝置 Keychain，不會上傳至任何伺服器。")
-                    }
-                }
-            }
-
             // MARK: Schedule Snapshot
             Section("課表") {
                 if isLoading && profile == nil {
@@ -136,6 +79,14 @@ struct FriendDetailView: View {
                     .listRowBackground(Color(.secondarySystemGroupedBackground))
                 } else {
                     Text("此朋友尚未發布課表，或課表尚未更新。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if profileUnavailable {
+                Section {
+                    Label("目前無法取得此朋友的公開資料，可能已停止分享或暫時無法驗證。以下為先前快取的資料。", systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -160,30 +111,6 @@ struct FriendDetailView: View {
             )
                 .presentationDetents([.medium])
         }
-        .sheet(isPresented: $showCredentialScanner) {
-            CredentialScannerSheet(friend: currentFriend) { userId, displayName, username, password in
-                showCredentialScanner = false
-                if userId == (currentFriend.cachedProfile?.userId ?? -1) ||
-                   username == currentFriend.empNo ||
-                   displayName == currentFriend.displayName {
-                    friendStore.saveCredentials(
-                        for: currentFriend.id,
-                        username: username,
-                        password: password
-                    )
-                } else {
-                    credentialScanError = "此 QR Code 不屬於 \(currentFriend.displayName)，請讓對方重新顯示。"
-                }
-            }
-        }
-        .confirmationDialog("撤銷點名授權", isPresented: $showDeleteCredConfirm, titleVisibility: .visible) {
-            Button("刪除帳號密碼", role: .destructive) {
-                friendStore.deleteCredentials(for: currentFriend.id)
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("刪除後將無法在簽到時替 \(currentFriend.displayName) 代為點名，需要重新掃描授權。")
-        }
         .alert("需要重新加好友", isPresented: $showFriendOnlyScheduleReAddAlert) {
             Button("知道了", role: .cancel) {}
         } message: {
@@ -204,16 +131,13 @@ struct FriendDetailView: View {
 
         do {
             guard var fresh = try await CloudKitProfileService.shared.fetchProfile(recordName: friend.id) else {
-                profile = nil
-                // See FriendListView.refreshFriendProfiles() — a missing profile is only a
-                // trustworthy signal on Release builds. DEBUG builds hit CloudKit's empty
-                // Development environment, where every profile looks missing.
-                #if !DEBUG
-                friendStore.removeFriend(id: friend.id)
-                loadError = "此朋友的公開資料已不存在，已從好友列表移除。"
-                #endif
+                // A nil result can mean the profile was deleted, but also that it could not be
+                // verified (e.g. no signing key in this build) or CloudKit's Development env is empty.
+                // Never auto-remove the friend — keep the cached data and show an "unavailable" note.
+                profileUnavailable = true
                 return
             }
+            profileUnavailable = false
 
             var shouldPromptReAdd = false
             if fresh.scheduleSnapshot == nil,
@@ -223,10 +147,11 @@ struct FriendDetailView: View {
                        snapshot.ownerUserId == fresh.userId || snapshot.ownerDisplayName == fresh.displayName {
                         fresh.scheduleSnapshot = snapshot
                     } else {
+                        // Fetch succeeded but returned nothing or a different owner — token is stale.
                         shouldPromptReAdd = true
                     }
                 } catch {
-                    shouldPromptReAdd = true
+                    // Network / CloudKit errors are not evidence the token is stale; don't prompt.
                 }
             }
             profile = fresh
@@ -284,61 +209,6 @@ private struct SocialLinkRow: View {
             Link(destination: url) { content }
         } else {
             content
-        }
-    }
-}
-
-// MARK: - Credential Scanner Sheet
-// Accepts both group_rollcall and combined QR codes
-
-private struct CredentialScannerSheet: View {
-    let friend: FriendRecord
-    /// Callback: (sharerUserId, sharerDisplayName, username, password)
-    let onScanned: (Int, String, String, String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var scanError: String?
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                QRScannerView { qrString in
-                    switch ProfileQRService.parse(qrString: qrString) {
-                    case .groupRollcall(let payload):
-                        onScanned(payload.sharerUserId, payload.sharerDisplayName, payload.username, payload.password)
-                    case .combined(let payload):
-                        onScanned(payload.userId, payload.displayName, payload.username, payload.password)
-                    case .profile, .mutual:
-                        scanError = "這是個人 QR Code，請讓對方開啟「包含點名授權」選項後再顯示 QR Code"
-                    case .unknown:
-                        scanError = "無法識別此 QR Code"
-                    }
-                }
-                .ignoresSafeArea()
-
-                VStack {
-                    Spacer()
-                    VStack(spacing: 6) {
-                        Text("掃描對方的點名 QR Code")
-                            .font(.subheadline).foregroundStyle(.white)
-                        if let err = scanError {
-                            Text(err).font(.caption).foregroundStyle(.orange)
-                        }
-                    }
-                    .padding()
-                    .background(.black.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.bottom, 48)
-                }
-            }
-            .navigationTitle("掃描點名授權")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbarBackground(.black.opacity(0.6), for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }.foregroundStyle(.white)
-                }
-            }
         }
     }
 }

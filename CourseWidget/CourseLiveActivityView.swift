@@ -178,8 +178,9 @@ struct CourseCompactTrailing: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(display.accentColor)
             } else {
+                // A ClosedRange traps if lower > upper, so clamp when the target has passed.
                 Text(
-                    timerInterval: Date.now ... display.timerTarget,
+                    timerInterval: min(Date.now, display.timerTarget) ... display.timerTarget,
                     pauseTime: nil,
                     countsDown: true,
                     showsHours: true
@@ -310,7 +311,7 @@ struct CourseMinimalView: View {
                 } else {
                     // Live mm:ss — system-rendered, stays accurate every second
                     Text(
-                        timerInterval: Date.now ... display.timerTarget,
+                        timerInterval: min(Date.now, display.timerTarget) ... display.timerTarget,
                         pauseTime: nil,
                         countsDown: true,
                         showsHours: false

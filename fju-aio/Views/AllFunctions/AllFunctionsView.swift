@@ -2,7 +2,6 @@ import SwiftUI
 
 struct AllFunctionsView: View {
     @Environment(\.openURL) private var openURL
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
     @AppStorage("openLinksInApp") private var openLinksInApp = true
     @State private var showBrowser = false
     @State private var browserURL: URL? = nil
@@ -21,7 +20,7 @@ struct AllFunctionsView: View {
         List {
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Normal module list
-                ForEach(ModuleRegistry.groupedByCategory(checkInEnabled: checkInEnabled), id: \.0) { category, modules in
+                ForEach(ModuleRegistry.groupedByCategory, id: \.0) { category, modules in
                     Section(category.rawValue) {
                         ForEach(modules) { module in
                             moduleRow(module)
@@ -79,8 +78,7 @@ struct AllFunctionsView: View {
             query: query,
             courses: courses,
             assignments: assignments,
-            calendarEvents: calendarEvents,
-            checkInEnabled: checkInEnabled
+            calendarEvents: calendarEvents
         )
     }
 
@@ -121,7 +119,11 @@ struct AllFunctionsView: View {
                 }
             } else {
                 Button {
-                    openURL(url)
+                    // Falls back to the web version when the app scheme (e.g. tronclass://) isn't handled.
+                    openURL(url) { accepted in
+                        guard !accepted, let fallback = ModuleRegistry.webFallbackURL(for: url) else { return }
+                        openURL(fallback)
+                    }
                 } label: {
                     HStack {
                         moduleLabel(module)

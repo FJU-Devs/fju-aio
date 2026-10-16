@@ -404,6 +404,8 @@ actor LeaveService {
         reason: String,
         phoneNumber: String = "",
         emailAccount: String = "",
+        famTypeNo: Int = 0,
+        famLevelNo: Int = 0,
         proofFileData: Data? = nil,
         proofFileName: String = "proof.pdf",
         proofFileExt: String = "pdf",
@@ -445,8 +447,8 @@ actor LeaveService {
         appendField("leaveReason", reason)
         appendField("phoneNumber", phoneNumber)
         appendField("emailAccount", emailAccount)
-        appendField("famTypeNo", "0")
-        appendField("famLevelNo", "0")
+        appendField("famTypeNo", "\(famTypeNo)")
+        appendField("famLevelNo", "\(famLevelNo)")
 
         if let fileData = proofFileData {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -478,8 +480,10 @@ actor LeaveService {
         guard decoded.success else {
             throw SISError.serverError("假單建立失敗 (statusCode=\(decoded.statusCode))")
         }
-        logger.info("✅ Leave created: leaveApplySn=\(decoded.leaveApplySn)")
-        return decoded.leaveApplySn
+        // An update of an existing draft may not echo the serial number back.
+        let resultSn = decoded.leaveApplySn > 0 ? decoded.leaveApplySn : leaveApplySn
+        logger.info("✅ Leave \(leaveApplySn > 0 ? "updated" : "created"): leaveApplySn=\(resultSn)")
+        return resultSn
     }
 
     // MARK: - Submit Leave (Step 2)

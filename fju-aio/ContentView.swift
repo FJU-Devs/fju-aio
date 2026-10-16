@@ -13,7 +13,6 @@ enum AppDestination: Hashable {
     case assignments
     case studentGuide
     case regulations
-    case checkIn
     case enrollmentCertificate
     case campusMap
     case campusMapLocation(location: String)
@@ -32,7 +31,6 @@ enum AppDestination: Hashable {
         case "assignments":             self = .assignments
         case "studentGuide":            self = .studentGuide
         case "regulations":             self = .regulations
-        case "checkIn":                 self = .checkIn
         case "enrollmentCertificate":   self = .enrollmentCertificate
         case "campusMap":               self = .campusMap
         case "friends":                 self = .friends
@@ -256,7 +254,6 @@ struct ContentView: View {
         case .assignments:      AssignmentsView()
         case .studentGuide:     StudentGuideView()
         case .regulations:      RegulationsView()
-        case .checkIn:                  CheckInView()
         case .enrollmentCertificate:    EnrollmentCertificateView()
         case .campusMap:                CampusMapView()
         case .campusMapLocation(let location):

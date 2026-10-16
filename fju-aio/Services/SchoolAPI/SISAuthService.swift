@@ -13,20 +13,126 @@ actor SISAuthService {
     
     private var currentSession: SISSession?
     private var refreshTask: Task<SISSession, Error>?
+    /// The persisted session is loaded lazily on first use so the first
+    /// `getValidSession()` never races an async load kicked off from `init`.
+    private var hasLoadedSession = false
+    /// Bumped on logout so a refresh that finishes afterwards never re-stores a session.
+    private var sessionGeneration = 0
 
-    private init() {
-        Task { await loadSession() }
-    }
+    private init() {}
     
     // MARK: - Public API
     
+    /// Authenticates against SIS and stores the resulting session.
+    /// Credentials are NOT persisted here — `AuthenticationManager` saves them only
+    /// after the whole login flow succeeds.
     func login(username: String, password: String) async throws -> SISSession {
+        loadSessionIfNeeded()
+        let generation = sessionGeneration
+        let session = try await authenticate(username: username, password: password)
+        if generation == sessionGeneration {
+            currentSession = session
+            saveSession(session)
+            logger.info("✅ SIS login complete!")
+        } else {
+            logger.warning("⚠️ Discarding SIS session from a login that finished after logout")
+        }
+        return session
+    }
+    
+    func getValidSession() async throws -> SISSession {
+        loadSessionIfNeeded()
+        logger.info("🔍 Checking for valid SIS session...")
+        
+        if let session = currentSession, !session.isExpired {
+            logger.info("✅ Using cached session")
+            return session
+        }
+        
+        let generation = sessionGeneration
+
+        if let refreshTask {
+            logger.info("⏳ Awaiting in-flight session refresh")
+            let session = try await refreshTask.value
+            guard generation == sessionGeneration else { throw SISError.tokenExpired }
+            return session
+        }
+
+        logger.info("⚠️ Session expired or missing, attempting refresh...")
+
+        guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
+            logger.error("❌ No stored credentials found")
+            throw SISError.tokenExpired
+        }
+
+        logger.info("🔄 Refreshing session with stored credentials")
+        // Background refresh never re-saves credentials (avoids racing `updatePassword`).
+        let task = Task<SISSession, Error> {
+            try await self.authenticate(username: credentials.username, password: credentials.password)
+        }
+        refreshTask = task
+        defer {
+            if refreshTask == task { refreshTask = nil }
+        }
+
+        do {
+            let session = try await task.value
+            guard generation == sessionGeneration else {
+                logger.warning("⚠️ Discarding refreshed SIS session — logged out during refresh")
+                throw SISError.tokenExpired
+            }
+            currentSession = session
+            saveSession(session)
+            return session
+        } catch SISError.invalidCredentials {
+            // Only flag the stored password if it is still the one we just tried.
+            if generation == sessionGeneration,
+               (try? credentialStore.retrieveLDAPCredentials())?.password == credentials.password {
+                await CredentialErrorMonitor.shared.markPasswordInvalid()
+            }
+            throw SISError.invalidCredentials
+        }
+    }
+
+    /// Drops the current session so the next `getValidSession()` re-authenticates.
+    /// Pass the token the server rejected so concurrent callers holding the same
+    /// stale token don't clear a freshly refreshed session.
+    func invalidateSession(token: String? = nil) {
+        loadSessionIfNeeded()
+        if let token, currentSession?.token != token { return }
+        logger.info("🗑️ Invalidating SIS session")
+        currentSession = nil
+        try? keychain.delete(for: sessionKey)
+    }
+    
+    func logout() async throws {
+        logger.info("👋 Logging out from SIS...")
+        hasLoadedSession = true
+        sessionGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        currentSession = nil
+        try? keychain.delete(for: sessionKey)
+        UserDefaults.standard.removeObject(forKey: sessionKey)
+        try credentialStore.deleteLDAPCredentials()
+        logger.info("✅ SIS logout complete")
+    }
+    
+    func isLoggedIn() -> Bool {
+        loadSessionIfNeeded()
+        if let session = currentSession, !session.isExpired {
+            logger.info("✅ User is logged in (valid session)")
+            return true
+        }
+        let hasCredentials = credentialStore.hasLDAPCredentials()
+        logger.info("🔍 Has stored credentials: \(hasCredentials, privacy: .public)")
+        return hasCredentials
+    }
+
+    private func authenticate(username: String, password: String) async throws -> SISSession {
         logger.info("🔐 Starting SIS login for user: \(username, privacy: .private)")
         
         do {
-            try credentialStore.saveLDAPCredentials(username: username, password: password)
-            logger.info("✅ Credentials saved to keychain")
-            
             logger.info("📝 Step 1: LDAP Login...")
             let loginResponse = try await performLDAPLogin(username: username, password: password)
             
@@ -43,77 +149,17 @@ actor SISAuthService {
             let expiresIn = loginResponse.result?.expires_in ?? 1200
             let expiresAt = Date().addingTimeInterval(TimeInterval(expiresIn))
             
-            let session = SISSession(
+            return SISSession(
                 token: token,
                 userId: userId,
                 userName: userName,
                 empNo: username,
                 expiresAt: expiresAt
             )
-            
-            currentSession = session
-            saveSession(session)
-            logger.info("✅ SIS login complete!")
-            
-            return session
         } catch {
             logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
-    }
-    
-    func getValidSession() async throws -> SISSession {
-        logger.info("🔍 Checking for valid SIS session...")
-        
-        if let session = currentSession, !session.isExpired {
-            logger.info("✅ Using cached session")
-            return session
-        }
-        
-        if let refreshTask {
-            logger.info("⏳ Awaiting in-flight session refresh")
-            return try await refreshTask.value
-        }
-
-        logger.info("⚠️ Session expired or missing, attempting refresh...")
-
-        guard let credentials = try? credentialStore.retrieveLDAPCredentials() else {
-            logger.error("❌ No stored credentials found")
-            throw SISError.tokenExpired
-        }
-
-        logger.info("🔄 Refreshing session with stored credentials")
-        let task = Task<SISSession, Error> {
-            try await login(username: credentials.username, password: credentials.password)
-        }
-        refreshTask = task
-        defer { refreshTask = nil }
-
-        do {
-            return try await task.value
-        } catch SISError.invalidCredentials {
-            await CredentialErrorMonitor.shared.markPasswordInvalid()
-            throw SISError.invalidCredentials
-        }
-    }
-    
-    func logout() async throws {
-        logger.info("👋 Logging out from SIS...")
-        currentSession = nil
-        try credentialStore.deleteLDAPCredentials()
-        try? keychain.delete(for: sessionKey)
-        UserDefaults.standard.removeObject(forKey: sessionKey)
-        logger.info("✅ SIS logout complete")
-    }
-    
-    func isLoggedIn() -> Bool {
-        if let session = currentSession, !session.isExpired {
-            logger.info("✅ User is logged in (valid session)")
-            return true
-        }
-        let hasCredentials = credentialStore.hasLDAPCredentials()
-        logger.info("🔍 Has stored credentials: \(hasCredentials, privacy: .public)")
-        return hasCredentials
     }
     
     // MARK: - Private Methods
@@ -191,6 +237,12 @@ actor SISAuthService {
         }
     }
     
+    private func loadSessionIfNeeded() {
+        guard !hasLoadedSession else { return }
+        hasLoadedSession = true
+        loadSession()
+    }
+
     private func loadSession() {
         if let data = try? keychain.retrieve(for: sessionKey),
            let session = try? JSONDecoder().decode(SISSession.self, from: data) {

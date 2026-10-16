@@ -81,8 +81,11 @@ private struct PublicProfileHeaderSection: View {
             HStack {
                 Spacer()
                 VStack(spacing: 10) {
-                    ProfileAvatarView(name: profile.displayName, avatarURL: avatarURL, size: 82)
-                        .onTapGesture { showAvatarMessage = true }
+                    Button { showAvatarMessage = true } label: {
+                        ProfileAvatarView(name: profile.displayName, avatarURL: avatarURL, size: 82)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("頭貼")
 
                     Text(profile.displayName)
                         .font(.title3.weight(.semibold))
@@ -340,16 +343,18 @@ struct PublicScheduleTimetable: View {
             let y = CGFloat(course.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
             let height = CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
 
-            PublicScheduleCourseBlock(
-                course: course,
-                color: accentColor,
-                periodHeight: periodHeight
-            )
+            Button {
+                selectedCourse = course
+            } label: {
+                PublicScheduleCourseBlock(
+                    course: course,
+                    color: accentColor,
+                    periodHeight: periodHeight
+                )
+            }
+            .buttonStyle(.plain)
             .frame(width: colWidth - 3, height: height)
             .offset(x: x, y: y)
-            .onTapGesture {
-                selectedCourse = course
-            }
         }
     }
 

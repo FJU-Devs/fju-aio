@@ -67,7 +67,7 @@ final class HTMLParser: Sendable {
             let isMainRow = !firstCell.isEmpty && firstCell.allSatisfy(\.isNumber)
             
             if !isMainRow {
-                logger.info("⏭️ Row \(index, privacy: .public): skipping (first cell='\(firstCell.prefix(20), privacy: .public)', not a number)")
+                logger.debug("⏭️ Row \(index, privacy: .public): skipping (first cell='\(firstCell.prefix(20), privacy: .private)', not a number)")
                 continue
             }
             
@@ -75,7 +75,7 @@ final class HTMLParser: Sendable {
             
             if let course = parseCourseRow(cells: cells, rowHTML: rowHTML, semester: semester) {
                 let slotDescs = course.schedules.map { "\($0.dayOfWeek) \($0.periods) \($0.classroom)" }.joined(separator: " | ")
-                logger.info("✅ Row \(index, privacy: .public): \(course.name, privacy: .public) [\(slotDescs, privacy: .public)]")
+                logger.debug("✅ Row \(index, privacy: .public): \(course.name, privacy: .private) [\(slotDescs, privacy: .private)]")
                 courses.append(course)
             } else {
                 logger.warning("⚠️ Row \(index, privacy: .public): parseCourseRow returned nil")
@@ -109,7 +109,7 @@ final class HTMLParser: Sendable {
         let instructor = cleanCell(cells[12])
         let notes = cells.count > 26 ? cleanCell(cells[26]) : nil
         
-        logger.info("  📝 courseCode=\(courseCode, privacy: .public) dept=\(department, privacy: .public) credits=\(creditsStr, privacy: .public) type=\(typeStr, privacy: .public) instructor=\(instructor, privacy: .public)")
+        logger.debug("  📝 courseCode=\(courseCode, privacy: .private) dept=\(department, privacy: .private) credits=\(creditsStr, privacy: .private) type=\(typeStr, privacy: .private) instructor=\(instructor, privacy: .private)")
         
         guard !courseCode.isEmpty else {
             logger.warning("  ❌ courseCode is empty, skipping row")
@@ -120,7 +120,7 @@ final class HTMLParser: Sendable {
         let spanName = extractCourseName(from: rowHTML)
         let fallbackName = cleanCell(cells[7])
         let courseName = spanName ?? fallbackName
-        logger.info("  📝 name=\(courseName, privacy: .public)")
+        logger.debug("  📝 name=\(courseName, privacy: .private)")
         
         let credits = Int(creditsStr.replacingOccurrences(of: ".00", with: "").replacingOccurrences(of: ".0", with: "")) ?? 0
         let courseType = EstuCourse.CourseType(rawValue: typeStr) ?? .unknown
@@ -138,7 +138,7 @@ final class HTMLParser: Sendable {
             
             // A slot is valid if it has a meaningful day or period (not empty/nbsp)
             if !day.isEmpty || !periods.isEmpty {
-                logger.info("  📅 Slot \(slotIndex, privacy: .public): day=\(day, privacy: .public) weeks=\(weeks, privacy: .public) periods=\(periods, privacy: .public) classroom=\(classroom, privacy: .public)")
+                logger.debug("  📅 Slot \(slotIndex, privacy: .public): day=\(day, privacy: .private) weeks=\(weeks, privacy: .private) periods=\(periods, privacy: .private) classroom=\(classroom, privacy: .private)")
                 schedules.append(EstuScheduleSlot(
                     dayOfWeek: day,
                     weeks: weeks,

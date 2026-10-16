@@ -23,9 +23,6 @@ protocol FJUServiceProtocol: Sendable {
     func fetchAssignments() async throws -> [Assignment]
     func toggleAssignmentCompletion(id: String) async throws -> Assignment
     
-    // MARK: - Check-in
-    func performCheckIn(courseId: String, location: String?) async throws -> CheckInResult
-    
     // MARK: - User Profile
     func fetchUserProfile() async throws -> StudentProfile
     
@@ -38,22 +35,3 @@ protocol FJUServiceProtocol: Sendable {
     // MARK: - Announcements
     func fetchAnnouncements(type: String?, page: Int, pageSize: Int) async throws -> [Announcement]
 }
-
-// MARK: - Check-in Models
-
-struct CheckInResult: Identifiable, Sendable {
-    let id: String
-    let courseId: String
-    let courseName: String
-    let timestamp: Date
-    let location: String?
-    let status: CheckInStatus
-    let message: String
-    
-    enum CheckInStatus: String, Sendable {
-        case success = "成功"
-        case late = "遲到"
-        case failed = "失敗"
-    }
-}
-

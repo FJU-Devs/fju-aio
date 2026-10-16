@@ -20,6 +20,8 @@ struct CourseDetailSheet: View {
     @State private var myAttendanceRollcalls: [AttendanceRollcall] = []
     @State private var attendanceLoading = false
     @State private var attendanceError: String?
+    @State private var hasLoadedEnrollments = false
+    @State private var hasLoadedAttendance = false
 
     // Friend data for badge display
     private var friendStore: FriendStore { FriendStore.shared }
@@ -214,8 +216,13 @@ struct CourseDetailSheet: View {
             .navigationTitle(course.name)
             .navigationBarTitleDisplayMode(.inline)
             .task {
-                await loadEnrollments()
-                await loadMyAttendance()
+                // Load in parallel; skip whatever already loaded so returning from a
+                // pushed member page doesn't refetch.
+                let needsEnrollments = !hasLoadedEnrollments
+                let needsAttendance = !hasLoadedAttendance
+                async let enrollmentsTask: Void = needsEnrollments ? loadEnrollments() : ()
+                async let attendanceTask: Void = needsAttendance ? loadMyAttendance() : ()
+                _ = await (enrollmentsTask, attendanceTask)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -244,8 +251,11 @@ struct CourseDetailSheet: View {
             enrollments = list
             avatars = avatarMap
             enrollmentsLoading = false
+            hasLoadedEnrollments = true
             loadCachedPublicProfiles(for: list)
             await refreshPublicProfiles(for: list)
+        } catch where Self.isCancellation(error) {
+            // The task was cancelled (e.g. a navigation push) — not a real failure; retried on reappear.
         } catch {
             enrollmentsError = "無法載入修課名單：\(error.localizedDescription)"
         }
@@ -258,10 +268,19 @@ struct CourseDetailSheet: View {
         attendanceError = nil
         do {
             myAttendanceRollcalls = try await TronClassAPIService.shared.getMyAttendanceRollcalls(courseCode: course.code)
+            hasLoadedAttendance = true
+        } catch where Self.isCancellation(error) {
+            // Cancelled by navigation — retried on reappear.
         } catch {
             attendanceError = "無法載入出缺席：\(error.localizedDescription)"
         }
         attendanceLoading = false
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
     }
 
     @MainActor

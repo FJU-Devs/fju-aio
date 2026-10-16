@@ -6,6 +6,12 @@ struct LoginView: View {
     @State private var password = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case username
+        case password
+    }
 
     var body: some View {
         NavigationStack {
@@ -40,6 +46,8 @@ struct LoginView: View {
                                     .autocorrectionDisabled()
                                     .textInputAutocapitalization(.never)
                                     .submitLabel(.next)
+                                    .focused($focusedField, equals: .username)
+                                    .onSubmit { focusedField = .password }
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 14)
@@ -54,6 +62,7 @@ struct LoginView: View {
                                 SecureField("密碼", text: $password)
                                     .textContentType(.password)
                                     .submitLabel(.go)
+                                    .focused($focusedField, equals: .password)
                                     .onSubmit {
                                         guard !username.isEmpty && !password.isEmpty else { return }
                                         Task { await performLogin() }
@@ -65,7 +74,8 @@ struct LoginView: View {
                         .background(Color(.secondarySystemGroupedBackground))
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
 
-                        if let errorMessage = errorMessage ?? authManager.lastSignOutReason {
+                        // Sign-out reasons are shown in the alert below; only login errors appear inline.
+                        if let errorMessage {
                             HStack(spacing: 6) {
                                 Image(systemName: "exclamationmark.circle.fill")
                                     .foregroundStyle(.red)

@@ -33,8 +33,24 @@ actor TronClassAPIService {
         let cachedAt: Date
     }
 
-    /// Cached course list from /api/my-courses (one entry for the whole session)
-    private var myCoursesCache: [TronClassCourseSummary]? = nil
+    private struct MyCoursesCacheEntry {
+        let courses: [TronClassCourseSummary]
+        let cachedAt: Date
+    }
+
+    private struct OutlineCacheEntry {
+        let outline: CourseOutlineDetails?
+        let cachedAt: Date
+    }
+
+    /// Cached course list from /api/my-courses
+    private var myCoursesCache: MyCoursesCacheEntry? = nil
+
+    /// Per-TronClass-course outline cache (nil outline = course has no outline)
+    private var outlineCache: [Int: OutlineCacheEntry] = [:]
+
+    /// Bumped by `clearInMemoryCaches()` so fetches that finish after logout don't re-populate caches.
+    private var cacheGeneration = 0
 
     /// Per-courseCode enrollment + avatar cache
     private var enrollmentCache: [String: EnrollmentCacheEntry] = [:]
@@ -49,11 +65,17 @@ actor TronClassAPIService {
     private let enrollmentCacheTTL: TimeInterval = 600
     private let avatarCacheTTL: TimeInterval = 60 * 60
     private let attendanceCacheTTL: TimeInterval = 300  // 5 minutes
+    private let myCoursesCacheTTL: TimeInterval = 30 * 60
+    private let outlineCacheTTL: TimeInterval = 6 * 60 * 60
+    /// Max concurrent per-course outline fetches (each one is up to 3 requests).
+    private let outlineFetchConcurrency = 4
 
     private init() {}
 
     func clearInMemoryCaches() {
+        cacheGeneration += 1
         myCoursesCache = nil
+        outlineCache.removeAll()
         enrollmentCache.removeAll()
         avatarCacheByCourseId.removeAll()
         currentUserAvatarCache.removeAll()
@@ -65,24 +87,24 @@ actor TronClassAPIService {
 
     func getNotifications(limit: Int = 20) async throws -> [TronClassNotification] {
         logger.info("🔔 Fetching notifications...")
-        let session = try await authService.getValidSession()
-
-        var components = URLComponents(string: "\(baseURL)/ntf/users/\(session.userId)/notifications")!
-        components.queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
-        guard let url = components.url else { throw TronClassAPIError.invalidResponse }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7", forHTTPHeaderField: "Accept-Language")
-        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
-        request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Referer")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
 
         do {
-            let (data, httpResponse) = try await networkService.performRequest(request)
+            let (data, httpResponse) = try await performAuthorizedRead { session in
+                var components = URLComponents(string: "\(self.baseURL)/ntf/users/\(session.userId)/notifications")!
+                components.queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
+                guard let url = components.url else { throw TronClassAPIError.invalidResponse }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
+                request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+                request.setValue("en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7", forHTTPHeaderField: "Accept-Language")
+                request.setValue("keep-alive", forHTTPHeaderField: "Connection")
+                request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Referer")
+                request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
+                return request
+            }
             try handleHTTPError(httpResponse, data: data)
             let response = try JSONDecoder().decode(TronClassNotificationsResponse.self, from: data)
             let bulletins = response.notifications.compactMap { $0.asBulletin }
@@ -100,25 +122,25 @@ actor TronClassAPIService {
     
     func getTodos() async throws -> [TodoItem] {
         logger.info("📋 Fetching todos...")
-        let session = try await authService.getValidSession()
-        
-        let url = URL(string: "\(baseURL)/api/todos")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("cross-site", forHTTPHeaderField: "Sec-Fetch-Site")
-        request.setValue("gzip, deflate, br", forHTTPHeaderField: "Accept-Encoding")
-        request.setValue("zh-Hant", forHTTPHeaderField: "Accept-Language")
-        request.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("capacitor://localhost", forHTTPHeaderField: "Origin")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
-        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
-        request.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
         
         do {
-            let (data, httpResponse) = try await networkService.performRequest(request)
+            let (data, httpResponse) = try await performAuthorizedRead { session in
+                let url = URL(string: "\(self.baseURL)/api/todos")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
+                request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+                request.setValue("cross-site", forHTTPHeaderField: "Sec-Fetch-Site")
+                request.setValue("gzip, deflate, br", forHTTPHeaderField: "Accept-Encoding")
+                request.setValue("zh-Hant", forHTTPHeaderField: "Accept-Language")
+                request.setValue("cors", forHTTPHeaderField: "Sec-Fetch-Mode")
+                request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+                request.setValue("capacitor://localhost", forHTTPHeaderField: "Origin")
+                request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
+                request.setValue("keep-alive", forHTTPHeaderField: "Connection")
+                request.setValue("empty", forHTTPHeaderField: "Sec-Fetch-Dest")
+                return request
+            }
             try handleHTTPError(httpResponse, data: data)
             
             let response = try JSONDecoder().decode(TodosResponse.self, from: data)
@@ -138,26 +160,67 @@ actor TronClassAPIService {
         logger.info("📚 Fetching TronClass courses for outline enrichment...")
         let tronCourses = try await getMyCourses()
         var outlines: [String: CourseOutlineDetails] = [:]
+        var failedCount = 0
 
-        try await withThrowingTaskGroup(of: (TronClassCourseSummary, CourseOutlineDetails?).self) { group in
-            for course in tronCourses {
-                group.addTask { [self] in
-                    let outline = try await getCourseOutlineDetails(courseId: course.id)
-                    return (course, outline)
-                }
+        // Per-course failures are tolerated (the course is just left without an
+        // outline) and concurrency is bounded so N courses don't fire 3×N requests at once.
+        await withTaskGroup(of: OutlineFetchResult.self) { group in
+            var nextIndex = 0
+            while nextIndex < min(outlineFetchConcurrency, tronCourses.count) {
+                let course = tronCourses[nextIndex]
+                group.addTask { await self.outlineFetchResult(for: course) }
+                nextIndex += 1
             }
 
-            for try await (course, outline) in group {
-                if let outline, outline.hasContent {
-                    for key in Self.outlineLookupKeys(for: course) {
+            while let result = await group.next() {
+                if !result.succeeded { failedCount += 1 }
+                if let outline = result.outline, outline.hasContent {
+                    for key in Self.outlineLookupKeys(for: result.course) {
                         outlines[key] = outline
                     }
+                }
+                if nextIndex < tronCourses.count {
+                    let course = tronCourses[nextIndex]
+                    group.addTask { await self.outlineFetchResult(for: course) }
+                    nextIndex += 1
                 }
             }
         }
 
+        if failedCount > 0 {
+            logger.warning("⚠️ \(failedCount, privacy: .public) of \(tronCourses.count, privacy: .public) course outlines failed to load")
+        }
         logger.info("✅ Fetched \(outlines.count, privacy: .public) course outlines")
         return outlines
+    }
+
+    private struct OutlineFetchResult: Sendable {
+        let course: TronClassCourseSummary
+        let outline: CourseOutlineDetails?
+        let succeeded: Bool
+    }
+
+    private func outlineFetchResult(for course: TronClassCourseSummary) async -> OutlineFetchResult {
+        do {
+            let outline = try await cachedCourseOutlineDetails(courseId: course.id)
+            return OutlineFetchResult(course: course, outline: outline, succeeded: true)
+        } catch {
+            logger.debug("Outline fetch failed for course \(course.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return OutlineFetchResult(course: course, outline: nil, succeeded: false)
+        }
+    }
+
+    private func cachedCourseOutlineDetails(courseId: Int) async throws -> CourseOutlineDetails? {
+        if let entry = outlineCache[courseId],
+           Date().timeIntervalSince(entry.cachedAt) < outlineCacheTTL {
+            return entry.outline
+        }
+        let generation = cacheGeneration
+        let outline = try await getCourseOutlineDetails(courseId: courseId)
+        if generation == cacheGeneration {
+            outlineCache[courseId] = OutlineCacheEntry(outline: outline, cachedAt: Date())
+        }
+        return outline
     }
 
     // MARK: - Enrollments
@@ -220,7 +283,7 @@ actor TronClassAPIService {
             logger.info("📋 Attendance cache hit for \(key)")
             return entry.rollcalls
         }
-        let rollcalls = try await RollcallService.shared.fetchAttendanceRollcalls(courseId: courseId, userId: userId)
+        let rollcalls = try await AttendanceRollcallService.shared.fetchAttendanceRollcalls(courseId: courseId, userId: userId)
         attendanceRollcallCache[key] = AttendanceRollcallCacheEntry(rollcalls: rollcalls, cachedAt: Date())
         return rollcalls
     }
@@ -291,22 +354,22 @@ actor TronClassAPIService {
     }
 
     private func fetchEnrollments(courseId: Int) async throws -> [Enrollment] {
-        let session = try await authService.getValidSession()
-
-        let url = URL(string: "\(baseURL)/api/course/\(courseId)/enrollments")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
-        request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
-        request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Origin")
-        request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/enrollments", forHTTPHeaderField: "Referer")
-        request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONEncoder().encode(EnrollmentEnrollmentsRequest())
-
-        let (data, httpResponse) = try await networkService.performRequest(request, retryPolicy: .idempotent())
+        // POST, but a read-only listing query — safe to replay after a session refresh.
+        let (data, httpResponse) = try await performAuthorizedRead(retryPolicy: .idempotent()) { session in
+            let url = URL(string: "\(self.baseURL)/api/course/\(courseId)/enrollments")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
+            request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
+            request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Origin")
+            request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/enrollments", forHTTPHeaderField: "Referer")
+            request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
+            request.httpBody = try JSONEncoder().encode(EnrollmentEnrollmentsRequest())
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         return try JSONDecoder().decode(EnrollmentsResponse.self, from: data).enrollments
@@ -328,19 +391,18 @@ actor TronClassAPIService {
     }
 
     private func fetchAvatars(courseId: Int) async throws -> [String: String] {
-        let session = try await authService.getValidSession()
-
-        let url = URL(string: "\(baseURL)/api/courses/\(courseId)/users-small-avatars")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
-        request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/enrollments", forHTTPHeaderField: "Referer")
-        request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
-
-        let (data, httpResponse) = try await networkService.performRequest(request, retryPolicy: .idempotent())
+        let (data, httpResponse) = try await performAuthorizedRead(retryPolicy: .idempotent()) { session in
+            let url = URL(string: "\(self.baseURL)/api/courses/\(courseId)/users-small-avatars")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
+            request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/enrollments", forHTTPHeaderField: "Referer")
+            request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         let avatars = try JSONDecoder().decode(AvatarsResponse.self, from: data).avatars
@@ -359,48 +421,54 @@ actor TronClassAPIService {
         return components.url?.absoluteString ?? rawValue
     }
 
+    /// Ongoing TronClass courses for the current user. Cached for `myCoursesCacheTTL`.
+    /// Note: the my-courses request only filters by `status: ongoing`; the response
+    /// carries no semester / academic-year field, so it always reflects the current term.
     func getMyCourses() async throws -> [TronClassCourseSummary] {
-        if let cached = myCoursesCache {
-            return cached
+        if let cached = myCoursesCache,
+           Date().timeIntervalSince(cached.cachedAt) < myCoursesCacheTTL {
+            return cached.courses
         }
 
-        let session = try await authService.getValidSession()
-
-        let url = URL(string: "\(baseURL)/api/my-courses")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
-        request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Origin")
-        request.setValue("https://elearn2.fju.edu.tw/user/courses", forHTTPHeaderField: "Referer")
-        request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONEncoder().encode(TronClassMyCoursesRequest())
-
-        let (data, httpResponse) = try await networkService.performRequest(request, retryPolicy: .idempotent())
+        let generation = cacheGeneration
+        // POST, but a read-only listing query — safe to replay after a session refresh.
+        let (data, httpResponse) = try await performAuthorizedRead(retryPolicy: .idempotent()) { session in
+            let url = URL(string: "\(self.baseURL)/api/my-courses")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
+            request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
+            request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+            request.setValue("https://elearn2.fju.edu.tw", forHTTPHeaderField: "Origin")
+            request.setValue("https://elearn2.fju.edu.tw/user/courses", forHTTPHeaderField: "Referer")
+            request.setValue("application/json;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) TronClass/common", forHTTPHeaderField: "User-Agent")
+            request.httpBody = try JSONEncoder().encode(TronClassMyCoursesRequest())
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         let courses = try JSONDecoder().decode(TronClassMyCoursesResponse.self, from: data).courses
-        myCoursesCache = courses
+        if generation == cacheGeneration {
+            myCoursesCache = MyCoursesCacheEntry(courses: courses, cachedAt: Date())
+        }
         return courses
     }
 
     private func getCourseOutlineDetails(courseId: Int) async throws -> CourseOutlineDetails? {
-        let session = try await authService.getValidSession()
-
-        let url = URL(string: "\(baseURL)/api/courses/\(courseId)/outline")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
-        request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
-        request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/outline", forHTTPHeaderField: "Referer")
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-
-        let (data, httpResponse) = try await networkService.performRequest(request, retryPolicy: .idempotent())
+        let (data, httpResponse) = try await performAuthorizedRead(retryPolicy: .idempotent()) { session in
+            let url = URL(string: "\(self.baseURL)/api/courses/\(courseId)/outline")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue(session.sessionId, forHTTPHeaderField: "x-session-id")
+            request.setValue("session=\(session.sessionId); org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=zh_TW", forHTTPHeaderField: "Cookie")
+            request.setValue("https://elearn2.fju.edu.tw/course/\(courseId)/outline", forHTTPHeaderField: "Referer")
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW,zh-Hant;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         let response = try JSONDecoder().decode(TronClassCourseOutlineResponse.self, from: data)
@@ -527,6 +595,26 @@ actor TronClassAPIService {
         return trimmed
     }
     
+    // MARK: - Authorized Requests
+
+    /// Performs a read-only TronClass request built from the current session. If the
+    /// server rejects the session (401/403) it is invalidated and the request is replayed
+    /// exactly once with a freshly refreshed session. Concurrent callers share one refresh
+    /// (the auth actor coalesces it). Never use this for mutations.
+    private func performAuthorizedRead(
+        retryPolicy: NetworkRetryPolicy = .automatic,
+        _ makeRequest: (TronClassSession) throws -> URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
+        let session = try await authService.getValidSession()
+        let result = try await networkService.performRequest(try makeRequest(session), retryPolicy: retryPolicy)
+        guard result.1.statusCode == 401 || result.1.statusCode == 403 else { return result }
+
+        logger.warning("🔁 TronClass session rejected (\(result.1.statusCode, privacy: .public)), refreshing and retrying once")
+        await authService.invalidateSession(sessionId: session.sessionId)
+        let freshSession = try await authService.getValidSession()
+        return try await networkService.performRequest(try makeRequest(freshSession), retryPolicy: retryPolicy)
+    }
+
     // MARK: - Error Handling
     
     private func handleHTTPError(_ response: HTTPURLResponse, data: Data) throws {
@@ -534,7 +622,7 @@ actor TronClassAPIService {
         case 200...299:
             return
         case 401, 403:
-            logger.error("❌ Unauthorized (401)")
+            logger.error("❌ Unauthorized (\(response.statusCode, privacy: .public))")
             throw TronClassAPIError.unauthorized
         case 429:
             throw TronClassAPIError.serverError("請求過於頻繁，請稍後再試")

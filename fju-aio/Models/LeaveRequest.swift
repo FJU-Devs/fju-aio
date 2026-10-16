@@ -346,8 +346,8 @@ nonisolated struct LeaveSelCouDate: Codable, Sendable, Identifiable {
 
 nonisolated struct LeaveWizardDraft: Sendable {
     var leaveKind: Int = 1
-    var hy: Int = 114
-    var ht: Int = 2
+    var hy: Int = CurrentSemester.estimated().year
+    var ht: Int = CurrentSemester.estimated().term
     var refLeaveSn: Int = 2
     var beginDate: String = ""
     var endDate: String = ""
@@ -363,6 +363,50 @@ nonisolated struct LeaveWizardDraft: Sendable {
     var proofFileName: String = ""
     var leaveApplySn: Int = 0
     var applyNo: String = ""
+    /// Fields last sent to the server for `leaveApplySn`; nil until the draft is created.
+    var lastSubmittedFields: ServerFields?
+
+    /// Every field that `POST /StuLeave` sends. Compared against `lastSubmittedFields`
+    /// to decide whether the server draft needs updating.
+    struct ServerFields: Equatable, Sendable {
+        let leaveKind: Int
+        let hy: Int
+        let ht: Int
+        let refLeaveSn: Int
+        let beginDate: String
+        let endDate: String
+        let beginSectNo: Int
+        let endSectNo: Int
+        let leaveReason: String
+        let phoneNumber: String
+        let emailAccount: String
+        let famTypeNo: Int?
+        let famLevelNo: Int?
+        let proofFileData: Data?
+        let proofFileExt: String
+        let proofFileName: String
+    }
+
+    var serverFields: ServerFields {
+        ServerFields(
+            leaveKind: leaveKind,
+            hy: hy,
+            ht: ht,
+            refLeaveSn: refLeaveSn,
+            beginDate: beginDate,
+            endDate: endDate,
+            beginSectNo: beginSectNo,
+            endSectNo: endSectNo,
+            leaveReason: leaveReason,
+            phoneNumber: phoneNumber,
+            emailAccount: emailAccount,
+            famTypeNo: famTypeNo,
+            famLevelNo: famLevelNo,
+            proofFileData: proofFileData,
+            proofFileExt: proofFileExt,
+            proofFileName: proofFileName
+        )
+    }
 }
 
 nonisolated struct SelCouPostEntry: Codable, Sendable {

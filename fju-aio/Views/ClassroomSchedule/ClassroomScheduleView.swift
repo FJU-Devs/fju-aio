@@ -1,6 +1,14 @@
 import SwiftUI
 
 struct ClassroomScheduleView: View {
+    /// Other screens (e.g. search results) write a room code here before navigating to
+    /// `.classroomSchedule`; the view consumes and clears it on appear.
+    static let pendingQueryKey = "classroomSchedule.pendingQuery"
+
+    @AppStorage(ClassroomScheduleView.pendingQueryKey) private var pendingQuery = ""
+    @ScaledMetric(relativeTo: .headline) private var periodColumnWidth: CGFloat = 48
+    @ScaledMetric(relativeTo: .subheadline) private var weekdayChipMinWidth: CGFloat = 44
+    @ScaledMetric(relativeTo: .subheadline) private var weekdayChipMinHeight: CGFloat = 36
     @State private var index: ClassroomScheduleIndex?
     @State private var query = ""
     @State private var exactRoom = ""
@@ -20,7 +28,14 @@ struct ClassroomScheduleView: View {
             VStack(alignment: .leading, spacing: 16) {
                 searchSection
 
-                if loadState != .loading {
+                if loadState == .loading && index == nil {
+                    loadingState
+                } else {
+                    if !errorMessage.isEmpty, index != nil {
+                        Label("無法更新教室課表，目前顯示的是先前的資料", systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
                     if let index, !exactRoom.isEmpty {
                         nowResultSection(index: index, room: exactRoom)
                         weekdayPicker
@@ -31,7 +46,7 @@ struct ClassroomScheduleView: View {
                             emptyState
                         }
                     }
-                    if loadState == .ready, let metadata = index?.metadata {
+                    if let metadata = index?.metadata {
                         metadataFooter(metadata)
                     }
                 }
@@ -54,10 +69,14 @@ struct ClassroomScheduleView: View {
         }
         .task {
             updateCurrentTimeSelection()
+            consumePendingQuery()
             await load(forceRefresh: false)
         }
         .onChange(of: query) { _, newValue in
             updateQuery(newValue)
+        }
+        .onChange(of: pendingQuery) {
+            consumePendingQuery()
         }
     }
 
@@ -83,6 +102,7 @@ struct ClassroomScheduleView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("清除搜尋")
             }
         }
         .appCard()
@@ -170,7 +190,8 @@ struct ClassroomScheduleView: View {
                         Text(ClassroomScheduleConstants.shortWeekday(weekday))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(weekday == selectedWeekday ? .white : .primary)
-                            .frame(width: 44, height: 36)
+                            .padding(.horizontal, 8)
+                            .frame(minWidth: weekdayChipMinWidth, minHeight: weekdayChipMinHeight)
                         .background(
                             weekday == selectedWeekday
                                 ? AppTheme.accent
@@ -179,6 +200,8 @@ struct ClassroomScheduleView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(weekday)
+                    .accessibilityAddTraits(weekday == selectedWeekday ? .isSelected : [])
                 }
             }
         }
@@ -217,7 +240,7 @@ struct ClassroomScheduleView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 48)
+            .frame(width: periodColumnWidth)
 
             if courses.isEmpty {
                 Text("空堂")
@@ -311,6 +334,19 @@ struct ClassroomScheduleView: View {
         .appCard()
     }
 
+    // MARK: - Loading State
+
+    private var loadingState: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("正在載入教室課表…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .appCard(padding: 24)
+    }
+
     // MARK: - Empty / Error State
 
     private var emptyState: some View {
@@ -348,7 +384,10 @@ struct ClassroomScheduleView: View {
 
     private func load(forceRefresh: Bool) async {
         updateCurrentTimeSelection()
-        loadState = .loading
+        // Keep showing the existing index while refreshing; only show the spinner on first load.
+        if index == nil {
+            loadState = .loading
+        }
         errorMessage = ""
 
         do {
@@ -360,9 +399,17 @@ struct ClassroomScheduleView: View {
             loadState = .ready
             updateQuery(query)
         } catch {
-            loadState = .error
+            loadState = index == nil ? .error : .ready
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func consumePendingQuery() {
+        let pending = pendingQuery
+        guard !pending.isEmpty else { return }
+        pendingQuery = ""
+        query = pending
+        isSearchFocused = false
     }
 
     private func updateQuery(_ rawQuery: String) {

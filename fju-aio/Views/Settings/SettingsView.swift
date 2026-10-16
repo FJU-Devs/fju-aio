@@ -19,12 +19,13 @@ struct SettingsView: View {
     @State private var syncSettingsError: String?
     @State private var reenablePrompt: AutoSyncReenablePrompt?
     @State private var liveActivityPermissionAlert = false
+    @State private var logoutError: String?
     private let notificationManager = CourseNotificationManager.shared
     private let syncStatus = SyncStatusManager.shared
     private let cache = AppCache.shared
     @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @AppStorage("openLinksInApp") private var openLinksInApp = true
-    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
+    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = false
     @AppStorage(AppStartupSettings.syncDuringSplashKey) private var syncDuringSplash = true
     @AppStorage(EventKitSyncService.autoSyncCalendarKey) private var autoSyncCalendar = false
     @AppStorage(EventKitSyncService.autoSyncTodoKey) private var autoSyncTodo = false
@@ -237,20 +238,19 @@ struct SettingsView: View {
             }
 
             Section("關於") {
-                HStack {
-                    Text("版本")
-                    Spacer()
-                    Text(versionString)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    versionTapCount += 1
-                    if versionTapCount >= 5 {
-                        showDebugScreen = true
-                        versionTapCount = 0
+                #if DEBUG
+                versionRow
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        versionTapCount += 1
+                        if versionTapCount >= 5 {
+                            showDebugScreen = true
+                            versionTapCount = 0
+                        }
                     }
-                }
+                #else
+                versionRow
+                #endif
 
                 Link(destination: URL(string: "https://github.com/FJU-Devs/fju-aio")!) {
                     HStack {
@@ -278,9 +278,11 @@ struct SettingsView: View {
         }
         .adaptiveListContentMargins()
         .navigationTitle("設定")
+        #if DEBUG
         .navigationDestination(isPresented: $showDebugScreen) {
             DebugView()
         }
+        #endif
         .alert("你真的要登出嗎？", isPresented: $showLogoutAlert) {
             Button("先不要", role: .cancel) {}
             Button("好，我確定", role: .destructive) {
@@ -356,6 +358,26 @@ struct SettingsView: View {
         } message: {
             Text("請在系統設定中允許 Live Activities。課程提醒已先關閉。")
         }
+        .alert(
+            "登出失敗",
+            isPresented: Binding(
+                get: { logoutError != nil },
+                set: { if !$0 { logoutError = nil } }
+            )
+        ) {
+            Button("確定", role: .cancel) { logoutError = nil }
+        } message: {
+            Text(logoutError ?? "")
+        }
+    }
+
+    private var versionRow: some View {
+        HStack {
+            Text("版本")
+            Spacer()
+            Text(versionString)
+                .foregroundStyle(.secondary)
+        }
     }
     
     private var versionString: String {
@@ -388,14 +410,11 @@ struct SettingsView: View {
 
         Task {
             do {
-                let semester: String
-                if let cachedSemester = cache.getSemesters()?.first {
-                    semester = cachedSemester
-                } else {
-                    let semesters = try await FJUService.shared.fetchAvailableSemesters()
+                if cache.getSemesters() == nil,
+                   let semesters = try? await FJUService.shared.fetchAvailableSemesters() {
                     cache.setSemesters(semesters)
-                    semester = semesters.first ?? "113-2"
                 }
+                let semester = CurrentSemester.code()
 
                 let events: [CalendarEvent]
                 if let cachedEvents = cache.getCalendarEvents(semester: semester) {
@@ -497,6 +516,7 @@ struct SettingsView: View {
             try await authManager.logout()
         } catch {
             logger.info("登出失敗: \(error)")
+            logoutError = error.localizedDescription
         }
     }
 }

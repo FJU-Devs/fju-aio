@@ -26,9 +26,8 @@ final class FJUService: FJUServiceProtocol, @unchecked Sendable {
         self.mockService = MockFJUService()
         self.realService = RealFJUService()
         
-        // Check if demo credentials are stored
-        if let credentials = try? CredentialStore.shared.retrieveLDAPCredentials(),
-           credentials.username == "demo" && credentials.password == "demo" {
+        // Restore demo mode across launches (demo logins don't store LDAP credentials)
+        if CredentialStore.shared.isDemoSession {
             self.mode = .mock
             logger.info("🔧 FJUService initialized in MOCK mode (demo credentials detected)")
         } else {
@@ -116,13 +115,6 @@ final class FJUService: FJUServiceProtocol, @unchecked Sendable {
     func toggleAssignmentCompletion(id: String) async throws -> Assignment {
         let assignment = try await currentService.toggleAssignmentCompletion(id: id)
         return isMockMode ? appendMockTag(to: assignment) : assignment
-    }
-    
-    // MARK: - Check-in
-    
-    func performCheckIn(courseId: String, location: String?) async throws -> CheckInResult {
-        let result = try await currentService.performCheckIn(courseId: courseId, location: location)
-        return isMockMode ? appendMockTag(to: result) : result
     }
     
     // MARK: - User Profile
@@ -237,18 +229,6 @@ final class FJUService: FJUServiceProtocol, @unchecked Sendable {
             dueDate: assignment.dueDate,
             description: assignment.description.map { "\($0) [mock]" },
             source: assignment.source
-        )
-    }
-    
-    private func appendMockTag(to result: CheckInResult) -> CheckInResult {
-        CheckInResult(
-            id: result.id,
-            courseId: result.courseId,
-            courseName: "\(result.courseName) [mock]",
-            timestamp: result.timestamp,
-            location: result.location.map { "\($0) [mock]" },
-            status: result.status,
-            message: "\(result.message) [mock]"
         )
     }
     

@@ -429,7 +429,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用於透過藍牙與附近的朋友交換資料";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "用於將學期行事曆事件加入您的行事曆";
-				INFOPLIST_KEY_NSCameraUsageDescription = "用於掃描 QR Code 以進行課程點名";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用於掃描好友的 QR Code 以新增好友";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用於在區域網路中尋找附近的朋友";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用於在校園地圖上顯示您的所在位置";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用於將作業 Todo 加入您的提醒事項";
@@ -495,7 +495,7 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用於透過藍牙與附近的朋友交換資料";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "用於將學期行事曆事件加入您的行事曆";
-				INFOPLIST_KEY_NSCameraUsageDescription = "用於掃描 QR Code 以進行課程點名";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用於掃描好友的 QR Code 以新增好友";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用於在區域網路中尋找附近的朋友";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用於在校園地圖上顯示您的所在位置";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用於將作業 Todo 加入您的提醒事項";
@@ -551,7 +551,7 @@
 				INFOPLIST_FILE = CourseWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CourseWidget;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -584,7 +584,7 @@
 				INFOPLIST_FILE = CourseWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CourseWidget;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

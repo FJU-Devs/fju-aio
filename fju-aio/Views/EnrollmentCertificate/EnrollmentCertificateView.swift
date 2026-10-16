@@ -139,6 +139,9 @@ struct EnrollmentCertificateView: View {
             }
         }
         .task { await loadStuInfo() }
+        .onChange(of: selectedRecord) { _, record in
+            clampSelectedVersion(to: record)
+        }
         .onAppear { refreshCache() }
         .sheet(isPresented: $showPreview) {
             if let data = previewData {
@@ -158,13 +161,21 @@ struct EnrollmentCertificateView: View {
             stuInfo = info
             selectedRecord = info.hisStuStatusInfo.first(where: { $0.isCurrent && ($0.isSubmissionC || $0.isSubmissionE) })
                 ?? info.hisStuStatusInfo.first(where: { $0.isSubmissionC || $0.isSubmissionE })
-            if let record = selectedRecord, !record.isSubmissionC, record.isSubmissionE {
-                selectedVersion = 2
-            }
+            clampSelectedVersion(to: selectedRecord)
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoadingInfo = false
+    }
+
+    /// Keeps `selectedVersion` on a language the selected semester actually supports.
+    private func clampSelectedVersion(to record: StuStatusRecord?) {
+        guard let record else { return }
+        if selectedVersion == 1, !record.isSubmissionC, record.isSubmissionE {
+            selectedVersion = 2
+        } else if selectedVersion == 2, !record.isSubmissionE, record.isSubmissionC {
+            selectedVersion = 1
+        }
     }
 
     private func downloadCertificate(record: StuStatusRecord) async {

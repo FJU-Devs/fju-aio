@@ -21,6 +21,26 @@ final class EventKitSyncService {
         let added: Int
         let skipped: Int
         let targetName: String
+        /// Existing items (matched by source identifier) whose details changed and were updated.
+        var updated: Int = 0
+    }
+
+    /// Stable per-item identifier stored in `EKCalendarItem.url`, so re-syncs update the
+    /// existing event/reminder instead of adding duplicates. Host "sync" is ignored by deep-link handling.
+    private func sourceURL(kind: String, id: String, namespace: String? = nil) -> URL? {
+        var pathAllowed = CharacterSet.urlPathAllowed
+        pathAllowed.remove(charactersIn: "/")
+        let parts = [namespace, id].compactMap { $0?.addingPercentEncoding(withAllowedCharacters: pathAllowed) }
+        guard parts.count == (namespace == nil ? 1 : 2) else { return nil }
+        return URL(string: "fju-aio://sync/\(kind)/" + parts.joined(separator: "/"))
+    }
+
+    private func sourceURL(for event: CalendarEvent) -> URL? {
+        sourceURL(kind: "calendar-event", id: event.id)
+    }
+
+    private func sourceURL(for assignment: Assignment) -> URL? {
+        sourceURL(kind: "assignment", id: assignment.id, namespace: assignment.source.rawValue)
     }
 
     var isAutoCalendarSyncEnabled: Bool {
@@ -82,24 +102,45 @@ final class EventKitSyncService {
         guard granted else { throw SyncError.calendarAccessDenied }
 
         let targetCalendar = try fjuLocalCalendar()
+        let existingEvents = fetchEvents(covering: events, in: targetCalendar)
+        var existingByURL: [URL: EKEvent] = [:]
+        for ekEvent in existingEvents {
+            if let url = ekEvent.url { existingByURL[url] = ekEvent }
+        }
+
         var added = 0
         var skipped = 0
+        var updated = 0
+        var hasChanges = false
 
         for event in events {
-            if calendarEventExists(event, in: targetCalendar) {
-                skipped += 1
+            let identifier = sourceURL(for: event)
+            let existing = identifier.flatMap { existingByURL[$0] }
+                ?? existingEvents.first { $0.url == nil && isLegacyDuplicate($0, of: event) }
+
+            if let existing {
+                if apply(event, to: existing, calendar: targetCalendar, sourceURL: identifier) {
+                    try eventStore.save(existing, span: .thisEvent, commit: false)
+                    updated += 1
+                    hasChanges = true
+                } else {
+                    skipped += 1
+                }
             } else {
-                let ekEvent = makeEKEvent(from: event, calendar: targetCalendar)
+                let ekEvent = EKEvent(eventStore: eventStore)
+                _ = apply(event, to: ekEvent, calendar: targetCalendar, sourceURL: identifier)
                 try eventStore.save(ekEvent, span: .thisEvent, commit: false)
+                if let identifier { existingByURL[identifier] = ekEvent }
                 added += 1
+                hasChanges = true
             }
         }
 
-        if added > 0 {
+        if hasChanges {
             try eventStore.commit()
         }
 
-        return SyncSummary(added: added, skipped: skipped, targetName: targetCalendar.title)
+        return SyncSummary(added: added, skipped: skipped, targetName: targetCalendar.title, updated: updated)
     }
 
     @discardableResult
@@ -117,25 +158,45 @@ final class EventKitSyncService {
         guard granted else { throw SyncError.reminderAccessDenied }
 
         let targetCalendar = try fjuTodoCalendar()
-        let existing = await reminders(in: [targetCalendar])
+        let existingReminders = await reminders(in: [targetCalendar])
+        var existingByURL: [URL: EKReminder] = [:]
+        for reminder in existingReminders {
+            if let url = reminder.url { existingByURL[url] = reminder }
+        }
+
         var added = 0
         var skipped = 0
+        var updated = 0
+        var hasChanges = false
 
         for assignment in assignments {
-            if existing.contains(where: { isDuplicate($0, of: assignment) }) {
-                skipped += 1
+            let identifier = sourceURL(for: assignment)
+            let existing = identifier.flatMap { existingByURL[$0] }
+                ?? existingReminders.first { $0.url == nil && isDuplicate($0, of: assignment) }
+
+            if let existing {
+                if apply(assignment, to: existing, calendar: targetCalendar, sourceURL: identifier) {
+                    try eventStore.save(existing, commit: false)
+                    updated += 1
+                    hasChanges = true
+                } else {
+                    skipped += 1
+                }
             } else {
-                let reminder = makeReminder(from: assignment, calendar: targetCalendar)
+                let reminder = EKReminder(eventStore: eventStore)
+                _ = apply(assignment, to: reminder, calendar: targetCalendar, sourceURL: identifier)
                 try eventStore.save(reminder, commit: false)
+                if let identifier { existingByURL[identifier] = reminder }
                 added += 1
+                hasChanges = true
             }
         }
 
-        if added > 0 {
+        if hasChanges {
             try eventStore.commit()
         }
 
-        return SyncSummary(added: added, skipped: skipped, targetName: targetCalendar.title)
+        return SyncSummary(added: added, skipped: skipped, targetName: targetCalendar.title, updated: updated)
     }
 
     // MARK: - Calendar
@@ -159,24 +220,43 @@ final class EventKitSyncService {
         return calendar
     }
 
-    private func calendarEventExists(_ event: CalendarEvent, in calendar: EKCalendar) -> Bool {
-        let end = event.endDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
-        let predicate = eventStore.predicateForEvents(withStart: event.startDate, end: end, calendars: [calendar])
-        return eventStore.events(matching: predicate).contains(where: { $0.title == event.title })
+    private func defaultEndDate(for event: CalendarEvent) -> Date {
+        event.endDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
     }
 
-    private func makeEKEvent(from event: CalendarEvent, calendar: EKCalendar) -> EKEvent {
-        let ekEvent = EKEvent(eventStore: eventStore)
-        ekEvent.title = event.title
-        ekEvent.startDate = event.startDate
-        ekEvent.endDate = event.endDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
-        ekEvent.notes = event.description
-        ekEvent.calendar = calendar
+    /// Fetches the calendar's events in one query spanning all `events`
+    /// (EventKit limits a predicate to 4 years, so the range is clamped).
+    private func fetchEvents(covering events: [CalendarEvent], in calendar: EKCalendar) -> [EKEvent] {
+        guard let minStart = events.map(\.startDate).min(),
+              let maxEnd = events.map(defaultEndDate).max() else { return [] }
+        let start = minStart.addingTimeInterval(-24 * 60 * 60)
+        let latestAllowed = start.addingTimeInterval(4 * 365 * 24 * 60 * 60)
+        let end = min(maxEnd.addingTimeInterval(24 * 60 * 60), latestAllowed)
+        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: [calendar])
+        return eventStore.events(matching: predicate)
+    }
+
+    /// Events synced before identifiers were stored: match by title + start date.
+    private func isLegacyDuplicate(_ ekEvent: EKEvent, of event: CalendarEvent) -> Bool {
+        ekEvent.title == event.title
+            && abs(ekEvent.startDate.timeIntervalSince(event.startDate)) < 60
+    }
+
+    /// Copies `event` onto `ekEvent`; returns true when anything changed.
+    private func apply(_ event: CalendarEvent, to ekEvent: EKEvent, calendar: EKCalendar, sourceURL: URL?) -> Bool {
+        let endDate = defaultEndDate(for: event)
         let components = Calendar.current.dateComponents([.hour, .minute], from: event.startDate)
-        if components.hour == 0 && components.minute == 0 {
-            ekEvent.isAllDay = true
-        }
-        return ekEvent
+        let isAllDay = components.hour == 0 && components.minute == 0
+
+        var changed = false
+        if ekEvent.title != event.title { ekEvent.title = event.title; changed = true }
+        if ekEvent.startDate != event.startDate { ekEvent.startDate = event.startDate; changed = true }
+        if ekEvent.endDate != endDate && !(isAllDay && ekEvent.isAllDay) { ekEvent.endDate = endDate; changed = true }
+        if ekEvent.notes != event.description { ekEvent.notes = event.description; changed = true }
+        if ekEvent.calendar != calendar { ekEvent.calendar = calendar; changed = true }
+        if ekEvent.isAllDay != isAllDay { ekEvent.isAllDay = isAllDay; changed = true }
+        if let sourceURL, ekEvent.url != sourceURL { ekEvent.url = sourceURL; changed = true }
+        return changed
     }
 
     // MARK: - Todo
@@ -205,13 +285,34 @@ final class EventKitSyncService {
         }
     }
 
-    private func makeReminder(from assignment: Assignment, calendar: EKCalendar) -> EKReminder {
-        let reminder = EKReminder(eventStore: eventStore)
-        reminder.title = assignment.title
-        reminder.notes = notes(for: assignment)
-        reminder.calendar = calendar
-        reminder.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: assignment.dueDate)
-        return reminder
+    /// Copies `assignment` onto `reminder`; returns true when anything changed.
+    private func apply(_ assignment: Assignment, to reminder: EKReminder, calendar: EKCalendar, sourceURL: URL?) -> Bool {
+        let notes = notes(for: assignment)
+        let calendarForDue = Calendar.current
+        var changed = false
+        if reminder.title != assignment.title { reminder.title = assignment.title; changed = true }
+        if reminder.notes != notes { reminder.notes = notes; changed = true }
+        if reminder.calendar != calendar { reminder.calendar = calendar; changed = true }
+        if dueDate(of: reminder).map({ !sameMinute($0, assignment.dueDate) }) ?? true {
+            var components = calendarForDue.dateComponents([.year, .month, .day, .hour, .minute], from: assignment.dueDate)
+            // Without a calendar, DateComponents.date is nil and duplicates can't be detected later.
+            components.calendar = calendarForDue
+            components.timeZone = calendarForDue.timeZone
+            reminder.dueDateComponents = components
+            changed = true
+        }
+        if let sourceURL, reminder.url != sourceURL { reminder.url = sourceURL; changed = true }
+        return changed
+    }
+
+    private func dueDate(of reminder: EKReminder) -> Date? {
+        guard var components = reminder.dueDateComponents else { return nil }
+        if components.calendar == nil { components.calendar = Calendar.current }
+        return components.calendar?.date(from: components)
+    }
+
+    private func sameMinute(_ lhs: Date, _ rhs: Date) -> Bool {
+        abs(lhs.timeIntervalSince(rhs)) < 60
     }
 
     private func reminders(in calendars: [EKCalendar]) async -> [EKReminder] {
@@ -223,15 +324,13 @@ final class EventKitSyncService {
         }
     }
 
+    /// Reminders synced before identifiers were stored: match by title + due minute.
     private func isDuplicate(_ reminder: EKReminder, of assignment: Assignment) -> Bool {
         guard reminder.title == assignment.title,
-              let dueDate = reminder.dueDateComponents?.date else {
+              let dueDate = dueDate(of: reminder) else {
             return false
         }
-        let calendar = Calendar.current
-        let reminderComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
-        let assignmentComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: assignment.dueDate)
-        return reminderComponents == assignmentComponents
+        return sameMinute(dueDate, assignment.dueDate)
     }
 
     private func notes(for assignment: Assignment) -> String {

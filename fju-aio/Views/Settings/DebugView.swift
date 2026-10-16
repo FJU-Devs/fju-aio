@@ -41,6 +41,34 @@ private struct CollapsibleSection<Content: View>: View {
     }
 }
 
+// MARK: - Masked Secret
+
+/// Shows a sensitive value (token / session ID) masked until the user taps to reveal it.
+private struct MaskedSecretText: View {
+    let value: String
+    var font: Font = .system(.caption, design: .monospaced)
+    @State private var isRevealed = false
+
+    var body: some View {
+        Group {
+            if isRevealed {
+                Text(value)
+                    .font(font)
+                    .textSelection(.enabled)
+            } else {
+                Text(String(repeating: "•", count: min(max(value.count, 8), 24)))
+                    .font(font)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { isRevealed.toggle() }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(isRevealed ? value : "已隱藏")
+        .accessibilityHint(isRevealed ? "點兩下以隱藏" : "點兩下以顯示")
+    }
+}
+
 // MARK: - Info Row
 
 struct InfoRow: View {
@@ -76,7 +104,6 @@ struct DebugView: View {
     @State private var assignments: [Assignment] = []
     @State private var availableSemesters: [String] = []
     @State private var isLoading = false
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
     @State private var tronClassSession: TronClassSession?
     @State private var sisSession: SISSession?
     @State private var estuSession: EstuSession?
@@ -84,6 +111,7 @@ struct DebugView: View {
     @State private var sessionLoadError: String?
     @State private var notificationLog: [String] = []
     @State private var showDeleteFJUCalendarConfirm = false
+    @State private var showResetOnboardingConfirm = false
     @State private var deleteCalendarResult: String?
     private let debugEventStore = EKEventStore()
 
@@ -116,12 +144,10 @@ struct DebugView: View {
             CollapsibleSection("TronClass Session") {
                 if let session = tronClassSession {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Session ID")
+                        Text("Session ID（點擊顯示）")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(session.sessionId)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
+                        MaskedSecretText(value: session.sessionId)
                     }
                     InfoRow(label: "用戶 ID", value: "\(session.userId)")
                     VStack(alignment: .leading, spacing: 4) {
@@ -154,13 +180,11 @@ struct DebugView: View {
             CollapsibleSection("SIS（校務系統）Session") {
                 if let session = sisSession {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("JWT Token（完整）")
+                        Text("JWT Token（點擊顯示）")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         ScrollView(.horizontal, showsIndicators: true) {
-                            Text(session.token)
-                                .font(.system(.caption2, design: .monospaced))
-                                .textSelection(.enabled)
+                            MaskedSecretText(value: session.token, font: .system(.caption2, design: .monospaced))
                                 .padding(.vertical, 4)
                         }
                         .frame(height: 80)
@@ -190,13 +214,11 @@ struct DebugView: View {
                     }
                     if let payload = decodeJWTPayload(session.token) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("JWT Payload（解碼）")
+                            Text("JWT Payload（解碼，點擊顯示）")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             ScrollView(.horizontal, showsIndicators: true) {
-                                Text(payload)
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .textSelection(.enabled)
+                                MaskedSecretText(value: payload, font: .system(.caption2, design: .monospaced))
                                     .padding(.vertical, 4)
                             }
                             .frame(height: 120)
@@ -215,12 +237,10 @@ struct DebugView: View {
             CollapsibleSection("ESTU（選課系統）Session") {
                 if let session = estuSession {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("ASP.NET Session ID")
+                        Text("ASP.NET Session ID（點擊顯示）")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(session.sessionId)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
+                        MaskedSecretText(value: session.sessionId)
                     }
                     VStack(alignment: .leading, spacing: 8) {
                         Text("ViewState（前 100 字元）")
@@ -494,19 +514,6 @@ struct DebugView: View {
                 }
             }
 
-            // MARK: 隱藏功能
-            CollapsibleSection("隱藏功能", startExpanded: true) {
-                Toggle("啟用課程簽到功能", isOn: $checkInEnabled)
-                if checkInEnabled {
-                    Text("課程簽到功能已啟用，可在「全部功能」中找到")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                NavigationLink("測試簽到 UI") {
-                    CheckInTestView()
-                }
-            }
-
             // MARK: 行事曆（除錯）
             CollapsibleSection("行事曆（除錯）") {
                 if let result = deleteCalendarResult {
@@ -525,7 +532,7 @@ struct DebugView: View {
                     showOnboarding = true
                 }
                 Button("重置 Onboarding 狀態", role: .destructive) {
-                    hasCompletedOnboarding = false
+                    showResetOnboardingConfirm = true
                 }
             }
 
@@ -562,6 +569,16 @@ struct DebugView: View {
         ) {
             Button("刪除相符事件", role: .destructive) {
                 deleteFJUCalendarEvents()
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "重置 Onboarding 狀態後，下次啟動會重新顯示 Onboarding",
+            isPresented: $showResetOnboardingConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("重置", role: .destructive) {
+                hasCompletedOnboarding = false
             }
             Button("取消", role: .cancel) {}
         }
@@ -649,13 +666,15 @@ struct DebugView: View {
 
     private func loadAllData() async {
         isLoading = true
-        async let coursesTask = service.fetchCourses(semester: "113-2")
-        async let gradesTask = service.fetchGrades(semester: "113-2")
-        async let gpaTask = service.fetchGPASummary(semester: "113-2")
+        let semester = CurrentSemester.code()
+        let parsed = CurrentSemester.parse(semester) ?? CurrentSemester.estimated()
+        async let coursesTask = service.fetchCourses(semester: semester)
+        async let gradesTask = service.fetchGrades(semester: semester)
+        async let gpaTask = service.fetchGPASummary(semester: semester)
         async let quickLinksTask = service.fetchQuickLinks()
-        async let leaveRequestsTask = LeaveService.shared.fetchLeaveRecords(academicYear: 114, semester: 2)
-        async let attendanceTask = service.fetchAttendanceRecords(semester: "113-2")
-        async let calendarTask = service.fetchCalendarEvents(semester: "113-2")
+        async let leaveRequestsTask = LeaveService.shared.fetchLeaveRecords(academicYear: parsed.year, semester: parsed.term)
+        async let attendanceTask = service.fetchAttendanceRecords(semester: semester)
+        async let calendarTask = service.fetchCalendarEvents(semester: semester)
         async let assignmentsTask = service.fetchAssignments()
         async let semestersTask = service.fetchAvailableSemesters()
         do {
@@ -771,161 +790,6 @@ struct DebugView: View {
         )
     }
 }
-
-// MARK: - Check-in Test View (Debug only)
-
-struct CheckInTestView: View {
-    @State private var selectedType: RollcallType = .number
-    @State private var result: RollcallCheckInResult? = nil
-    @State private var friendResults: [String: FriendCheckInStatus] = [:]
-    @State private var showManualEntry = false
-    @State private var showQRScanner = false
-    @State private var simulateAlreadyCheckedIn = false
-    @State private var pendingManualFriends: [FriendRecord] = []
-    @State private var pendingQRFriends: [FriendRecord] = []
-
-    @State private var credFriends: [FriendRecord] = []
-
-    enum RollcallType: String, CaseIterable {
-        case number = "數字碼"
-        case radar  = "雷達"
-        case qr     = "QR Code"
-    }
-
-    private var mockRollcall: Rollcall {
-        Rollcall(
-            rollcall_id: 999999,
-            course_id: 999,
-            course_title: "(TEST) 輔大 AIO 測試課程",
-            rollcall_status: "in_progress",
-            source: selectedType == .number ? "number" : selectedType == .radar ? "radar" : "qr",
-            is_number: selectedType == .number,
-            is_radar: selectedType == .radar,
-            is_qr: selectedType == .qr,
-            is_expired: false,
-            status: simulateAlreadyCheckedIn ? "on_call" : "absent",
-            rollcall_time: "2026-04-27T06:00:00Z",
-            title: "Debug 點名測試（\(selectedType.rawValue)）",
-            created_by_name: "Debug Teacher",
-            student_rollcall_id: 0
-        )
-    }
-
-    var body: some View {
-        List {
-            Section {
-                Label("簽到不會送出真實請求，但認證朋友帳號會使用真實 API", systemImage: "flask.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            Section("點名類型") {
-                Picker("點名類型", selection: $selectedType) {
-                    ForEach(RollcallType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: selectedType) {
-                    result = nil
-                    friendResults = [:]
-                }
-            }
-
-            Section("狀態") {
-                Toggle("模擬自己已簽到", isOn: $simulateAlreadyCheckedIn)
-                    .onChange(of: simulateAlreadyCheckedIn) {
-                        result = nil
-                        friendResults = [:]
-                    }
-            }
-
-            Section("模擬點名") {
-                RollcallRowView(
-                    rollcall: mockRollcall,
-                    result: result,
-                    friendResults: friendResults,
-                    proxyFriends: credFriends,
-                    onManualEntry: { friends in
-                        pendingManualFriends = friends
-                        showManualEntry = true
-                    },
-                    onRadarCheckIn: {
-                        simulateCheckin(includingFriends: [])
-                    },
-                    onQRCheckIn: {
-                        pendingQRFriends = []
-                        showQRScanner = true
-                    },
-                    onProxyRadarCheckIn: { friends in
-                        simulateCheckin(includingFriends: friends)
-                    },
-                    onProxyQRCheckin: { sessions in
-                        pendingQRFriends = sessions.map(\.0)
-                        showQRScanner = true
-                    }
-                )
-                .padding(.vertical, 4)
-                .id("\(selectedType.rawValue)-\(simulateAlreadyCheckedIn)")
-
-                if result != nil || !friendResults.isEmpty {
-                    Button("重置測試") {
-                        result = nil
-                        friendResults = [:]
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("說明") {
-                Text("• 數字碼：輸入 1234 成功，其他失敗").font(.caption).foregroundStyle(.secondary)
-                Text("• 雷達：模擬成功（不送請求）").font(.caption).foregroundStyle(.secondary)
-                Text("• QR Code：掃描任何 QR 碼皆成功（不送請求）").font(.caption).foregroundStyle(.secondary)
-                Text("• 群組：認證呼叫真實 API，點名不送請求").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .navigationTitle("簽到 UI 測試")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { loadCredFriends() }
-        .sheet(isPresented: $showManualEntry) {
-            ManualCheckInSheet(rollcall: mockRollcall) { code in
-                showManualEntry = false
-                result = (code == "1234") ? .success(code) : .failure("數字碼錯誤（提示：正確是 1234）")
-                simulateGroupCheckin(for: pendingManualFriends)
-                pendingManualFriends = []
-            }
-        }
-        .sheet(isPresented: $showQRScanner) {
-            QRScannerSheet(rollcall: mockRollcall) { _ in
-                showQRScanner = false
-                result = .success(nil)
-                simulateGroupCheckin(for: pendingQRFriends)
-                pendingQRFriends = []
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func loadCredFriends() {
-        credFriends = FriendStore.shared.credentialedFriends
-    }
-
-    private func simulateCheckin(includingFriends friends: [FriendRecord]) {
-        result = .success(nil)
-        simulateGroupCheckin(for: friends)
-    }
-
-    /// Mark selected friends as "simulated success" without sending any API request
-    private func simulateGroupCheckin(for friends: [FriendRecord]) {
-        for friend in friends {
-            friendResults[friend.empNo] = .success
-        }
-    }
-}
-
-// MARK: - No-redirect URL session delegate
 
 private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
     nonisolated func urlSession(

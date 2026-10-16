@@ -13,49 +13,35 @@ actor TronClassAuthService {
     
     private var currentSession: TronClassSession?
     private var refreshTask: Task<TronClassSession, Error>?
+    /// The persisted session is loaded lazily on first use so the first
+    /// `getValidSession()` never races an async load kicked off from `init`.
+    private var hasLoadedSession = false
+    /// Bumped on logout so a refresh that finishes afterwards never re-stores a session.
+    private var sessionGeneration = 0
 
-    private init() {
-        Task { await loadSession() }
-    }
+    private init() {}
     
     // MARK: - Public API
     
+    /// Authenticates against CAS and stores the resulting session.
+    /// Credentials are NOT persisted here — `AuthenticationManager` saves them only
+    /// after the whole login flow succeeds.
     func login(username: String, password: String) async throws -> TronClassSession {
-        logger.info("🔐 Starting login for user: \(username, privacy: .private)")
-        
-        do {
-            // Save credentials
-            try credentialStore.saveLDAPCredentials(username: username, password: password)
-            logger.info("✅ Credentials saved to keychain")
-            
-            // Step 1: Get TGT
-            logger.info("📝 Step 1: Fetching TGT...")
-            let tgt = try await fetchTGT(username: username, password: password)
-            logger.info("✅ TGT received: \(tgt.prefix(20), privacy: .private)...")
-            
-            // Step 2: Get Service Ticket
-            logger.info("📝 Step 2: Fetching Service Ticket...")
-            let serviceTicket = try await fetchServiceTicket(tgt: tgt)
-            logger.info("✅ Service Ticket received: \(serviceTicket.prefix(20), privacy: .private)...")
-            
-            // Step 3: Exchange for Session
-            logger.info("📝 Step 3: Exchanging for Session...")
-            let session = try await exchangeForSession(serviceTicket: serviceTicket)
-            logger.info("✅ Session created - User ID: \(session.userId, privacy: .public), Expires: \(session.expiresAt, privacy: .public)")
-            
-            // Store session
+        loadSessionIfNeeded()
+        let generation = sessionGeneration
+        let session = try await authenticate(username: username, password: password)
+        if generation == sessionGeneration {
             currentSession = session
             saveSession(session)
             logger.info("✅ Login complete!")
-            
-            return session
-        } catch {
-            logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
-            throw error
+        } else {
+            logger.warning("⚠️ Discarding session from a login that finished after logout")
         }
+        return session
     }
     
     func getValidSession() async throws -> TronClassSession {
+        loadSessionIfNeeded()
         logger.info("🔍 Checking for valid session...")
         
         // Check if we have a valid session
@@ -64,12 +50,16 @@ actor TronClassAuthService {
             return session
         }
         
+        let generation = sessionGeneration
+
         // Piggyback on an in-flight refresh instead of firing a second concurrent
         // login with the same credentials — the CAS server can reject a duplicate
         // concurrent ticket request, which would otherwise look like a bad password.
         if let refreshTask {
             logger.info("⏳ Awaiting in-flight session refresh")
-            return try await refreshTask.value
+            let session = try await refreshTask.value
+            guard generation == sessionGeneration else { throw AuthenticationError.sessionExpired }
+            return session
         }
 
         logger.info("⚠️ Session expired or missing, attempting refresh...")
@@ -81,30 +71,61 @@ actor TronClassAuthService {
         }
 
         logger.info("🔄 Refreshing session with stored credentials")
+        // Background refresh never re-saves credentials (avoids racing `updatePassword`).
         let task = Task<TronClassSession, Error> {
-            try await login(username: credentials.username, password: credentials.password)
+            try await self.authenticate(username: credentials.username, password: credentials.password)
         }
         refreshTask = task
-        defer { refreshTask = nil }
+        defer {
+            if refreshTask == task { refreshTask = nil }
+        }
 
         do {
-            return try await task.value
+            let session = try await task.value
+            guard generation == sessionGeneration else {
+                logger.warning("⚠️ Discarding refreshed session — logged out during refresh")
+                throw AuthenticationError.sessionExpired
+            }
+            currentSession = session
+            saveSession(session)
+            return session
         } catch AuthenticationError.invalidCredentials {
-            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            // Only flag the stored password if it is still the one we just tried
+            // (the user may have updated it while this refresh was in flight).
+            if generation == sessionGeneration,
+               (try? credentialStore.retrieveLDAPCredentials())?.password == credentials.password {
+                await CredentialErrorMonitor.shared.markPasswordInvalid()
+            }
             throw AuthenticationError.invalidCredentials
         }
+    }
+
+    /// Drops the current session so the next `getValidSession()` re-authenticates.
+    /// Pass the `sessionId` that the server rejected so concurrent callers holding the
+    /// same stale session don't clear a freshly refreshed one.
+    func invalidateSession(sessionId: String? = nil) {
+        loadSessionIfNeeded()
+        if let sessionId, currentSession?.sessionId != sessionId { return }
+        logger.info("🗑️ Invalidating TronClass session")
+        currentSession = nil
+        try? keychain.delete(for: sessionKey)
     }
     
     func logout() async throws {
         logger.info("👋 Logging out...")
+        hasLoadedSession = true
+        sessionGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
         currentSession = nil
-        try credentialStore.deleteLDAPCredentials()
         try? keychain.delete(for: sessionKey)
         UserDefaults.standard.removeObject(forKey: sessionKey)
+        try credentialStore.deleteLDAPCredentials()
         logger.info("✅ Logout complete")
     }
     
     func isLoggedIn() -> Bool {
+        loadSessionIfNeeded()
         if let session = currentSession, !session.isExpired {
             logger.info("✅ User is logged in (valid session)")
             return true
@@ -112,6 +133,31 @@ actor TronClassAuthService {
         let hasCredentials = credentialStore.hasLDAPCredentials()
         logger.info("🔍 Has stored credentials: \(hasCredentials, privacy: .public)")
         return hasCredentials
+    }
+
+    private func authenticate(username: String, password: String) async throws -> TronClassSession {
+        logger.info("🔐 Starting login for user: \(username, privacy: .private)")
+        
+        do {
+            // Step 1: Get TGT
+            logger.info("📝 Step 1: Fetching TGT...")
+            let tgt = try await fetchTGT(username: username, password: password)
+            logger.info("✅ TGT received")
+            
+            // Step 2: Get Service Ticket
+            logger.info("📝 Step 2: Fetching Service Ticket...")
+            let serviceTicket = try await fetchServiceTicket(tgt: tgt)
+            logger.info("✅ Service Ticket received")
+            
+            // Step 3: Exchange for Session
+            logger.info("📝 Step 3: Exchanging for Session...")
+            let session = try await exchangeForSession(serviceTicket: serviceTicket)
+            logger.info("✅ Session created - User ID: \(session.userId, privacy: .public), Expires: \(session.expiresAt, privacy: .public)")
+            return session
+        } catch {
+            logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
     }
     
     // MARK: - CAS Authentication Flow
@@ -288,6 +334,12 @@ actor TronClassAuthService {
         }
     }
     
+    private func loadSessionIfNeeded() {
+        guard !hasLoadedSession else { return }
+        hasLoadedSession = true
+        loadSession()
+    }
+
     private func loadSession() {
         if let data = try? keychain.retrieve(for: sessionKey),
            let session = try? JSONDecoder().decode(TronClassSession.self, from: data) {

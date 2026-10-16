@@ -164,7 +164,6 @@ SemesterCalendarView        public academic calendar ICS
 LeaveRequestView            leave request flow
 EnrollmentCertificateView   certificate application/download
 ClassroomScheduleView       public classroom schedule lookup
-CheckInView                 hidden feature-gated rollcall/check-in module
 ```
 
 Most screens use the same pattern:
@@ -217,7 +216,7 @@ flowchart LR
     Real --> SIS[SISService / SISAuthService]
     Real --> ESTU[EstuAuthService / EstuCourseService]
     Real --> Tron[TronClassAuthService / TronClassAPIService]
-    Real --> Rollcall[RollcallService / GroupRollcallService]
+    Real --> Attendance[AttendanceRollcallService]
     Real --> Leave[LeaveService]
     Real --> Classroom[ClassroomScheduleService]
     Real --> Network[NetworkService]
@@ -349,7 +348,7 @@ fju-aio/
 |  `- feature folders              grades, attendance, calendar, etc.
 |- Services/
 |  |- FJUService*.swift            service protocol/router/env
-|  |- SchoolAPI/                   SIS, ESTU, TronClass, rollcall, dorm, leave
+|  |- SchoolAPI/                   SIS, ESTU, TronClass, attendance, dorm, leave
 |  |- AppleAPI/                    CloudKit, EventKit, iCloud, nearby friends
 |  |- PublicAPI/                   notification/classroom public services
 |  `- Utils/                       network, cache, request coalescing
@@ -411,7 +410,7 @@ Add a searchable data type:
 
 - `fju-aio/Views/FJUApp.swift` is the real `@main` entry point. `fju-aio/fju_aioApp.swift` is a separate mock-injected app shell and should not be treated as the production launch path.
 - Widget model files are duplicated between targets; mismatches will decode to nil in widgets.
-- `ModuleRegistry` controls visible modules, but the hidden check-in feature is gated by `checkInFeatureEnabled`.
+- `ModuleRegistry` controls visible modules.
 - Most academic screens are cache-first. When changing data freshness behavior, check both splash preload and the feature view's own load path.
 - Live Activity scheduling depends on both local ActivityKit state and the remote notification server.
 - Project signing can be fragile; README asks contributors not to commit Xcode project signing churn.

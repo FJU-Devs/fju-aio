@@ -12,7 +12,10 @@ final class HomePreferences {
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
            let ids = try? JSONDecoder().decode([String].self, from: data) {
-            self.selectedModuleIDs = ids
+            // Drop IDs of modules that no longer exist (e.g. the removed "checkIn").
+            let validIDs = ids.filter { ModuleRegistry.module(for: $0) != nil }
+            self.selectedModuleIDs = validIDs
+            if validIDs.count != ids.count { save() }
         } else {
             self.selectedModuleIDs = ModuleRegistry.defaultHomeModuleIDs
         }

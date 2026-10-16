@@ -190,7 +190,11 @@ struct SearchResultsView: View {
                 }
             } else {
                 Button {
-                    openURL(url)
+                    // Falls back to the web version when the app scheme (e.g. tronclass://) isn't handled.
+                    openURL(url) { accepted in
+                        guard !accepted, let fallback = ModuleRegistry.webFallbackURL(for: url) else { return }
+                        openURL(fallback)
+                    }
                 } label: {
                     webLinkLabel(module: module)
                 }
@@ -260,6 +264,7 @@ struct SearchResultsView: View {
 
 private struct ClassroomSearchRow: View {
     let roomCode: String
+    @AppStorage(ClassroomScheduleView.pendingQueryKey) private var pendingClassroomQuery = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -282,6 +287,11 @@ private struct ClassroomSearchRow: View {
                         .foregroundStyle(AppTheme.accent)
                 }
                 .buttonStyle(.plain)
+                // AppDestination.classroomSchedule has no parameter; hand the room over via shared storage.
+                .simultaneousGesture(TapGesture().onEnded {
+                    pendingClassroomQuery = roomCode
+                })
+                .accessibilityLabel("查看 \(roomCode) 教室課表")
 
                 NavigationLink(value: AppDestination.campusMapLocation(location: roomCode)) {
                     Label("地圖", systemImage: "map.fill")
@@ -292,6 +302,7 @@ private struct ClassroomSearchRow: View {
                         .foregroundStyle(.green)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("在地圖上查看 \(roomCode)")
             }
             .padding(.leading, 44)
         }
@@ -327,6 +338,7 @@ private struct EmergencyContactSearchRow: View {
                         .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                         .foregroundStyle(.green)
                 }
+                .accessibilityLabel("撥打 \(contact.name)")
             }
         }
     }
@@ -368,6 +380,7 @@ private struct DepartmentContactSearchRow: View {
                             .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .foregroundStyle(.green)
                     }
+                    .accessibilityLabel("撥打 \(dept.name)")
                 }
                 if let url = mailURL {
                     Link(destination: url) {
@@ -377,6 +390,7 @@ private struct DepartmentContactSearchRow: View {
                             .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .foregroundStyle(.blue)
                     }
+                    .accessibilityLabel("寄信給 \(dept.name)")
                 }
             }
         }

@@ -4,7 +4,7 @@ import UIKit
 
 // MARK: - QRScannerView
 // Reusable AVFoundation-backed QR code scanner view.
-// Used in CheckInView, FriendListView, and GroupRollcallView.
+// Used by FriendListView for scanning friend QR codes.
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onScan: (String) -> Void

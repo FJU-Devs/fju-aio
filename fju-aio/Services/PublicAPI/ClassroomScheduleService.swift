@@ -21,18 +21,54 @@ actor ClassroomScheduleService {
         }
 
         let dataURL = cacheFileURL()
-        let data: Data
+        let fileManager = FileManager.default
+        let diskCacheExists = fileManager.fileExists(atPath: dataURL.path)
 
-        if !forceRefresh, FileManager.default.fileExists(atPath: dataURL.path) {
-            logger.info("Loading classroom schedule JSON from disk cache")
-            data = try Data(contentsOf: dataURL, options: [.mappedIfSafe])
-        } else {
-            logger.info("Downloading classroom schedule JSON")
-            data = try await downloadJSON()
-            try data.write(to: dataURL, options: [.atomic])
+        if !forceRefresh, diskCacheExists, !isDiskCacheExpired(at: dataURL),
+           let payload = decodeDiskCache(at: dataURL) {
+            logger.info("Loaded classroom schedule JSON from disk cache")
+            return storeIndex(from: payload)
         }
 
-        let payload = try JSONDecoder().decode(ClassroomSchedulePayload.self, from: data)
+        do {
+            logger.info("Downloading classroom schedule JSON")
+            let data = try await downloadJSON()
+            let payload = try JSONDecoder().decode(ClassroomSchedulePayload.self, from: data)
+            // Only persist data that decoded, so a bad download can't poison the cache.
+            try? data.write(to: dataURL, options: [.atomic])
+            return storeIndex(from: payload)
+        } catch {
+            // Offline / server error: an expired-but-valid disk copy is better than nothing.
+            if fileManager.fileExists(atPath: dataURL.path), let payload = decodeDiskCache(at: dataURL) {
+                logger.warning("Download failed, using expired classroom schedule cache: \(error.localizedDescription, privacy: .public)")
+                return storeIndex(from: payload)
+            }
+            throw error
+        }
+    }
+
+    /// Disk cache older than this is refreshed from the network.
+    private static let diskCacheTTL: TimeInterval = 7 * 24 * 60 * 60
+
+    private func isDiskCacheExpired(at url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attributes[.modificationDate] as? Date else { return true }
+        return Date().timeIntervalSince(modified) > Self.diskCacheTTL
+    }
+
+    /// Decodes the disk cache; a corrupted file is deleted so it doesn't fail every launch.
+    private func decodeDiskCache(at url: URL) -> ClassroomSchedulePayload? {
+        do {
+            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+            return try JSONDecoder().decode(ClassroomSchedulePayload.self, from: data)
+        } catch {
+            logger.error("Classroom schedule disk cache unreadable, deleting: \(error.localizedDescription, privacy: .public)")
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
+    private func storeIndex(from payload: ClassroomSchedulePayload) -> ClassroomScheduleIndex {
         let index = buildIndex(from: payload)
         cachedIndex = index
         logger.info("Built classroom schedule index: rooms=\(index.rooms.count, privacy: .public), courses=\(payload.courses.count, privacy: .public)")

@@ -72,8 +72,35 @@ final class KeychainManager: Sendable {
             throw KeychainError.invalidData
         }
         
-        try? update(data, for: key)
+        migrateAccessibilityIfNeeded(for: key)
         return data
+    }
+
+    /// Items saved by older builds may use a weaker accessibility class. Rewrite the
+    /// attribute only when it differs, instead of issuing a Keychain write on every read.
+    private nonisolated func migrateAccessibilityIfNeeded(for key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any] else { return }
+
+        let current = attributes[kSecAttrAccessible as String] as? String
+        guard current != (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String) else { return }
+
+        let matchQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key
+        ]
+        let update: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        _ = SecItemUpdate(matchQuery as CFDictionary, update as CFDictionary)
     }
     
     nonisolated func retrieveString(for key: String) throws -> String {
@@ -116,6 +143,30 @@ final class KeychainManager: Sendable {
         
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
+        }
+    }
+    
+    /// Deletes every generic-password item whose account key starts with `prefix`.
+    nonisolated func deleteItems(withKeyPrefix prefix: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecItemNotFound { return }
+        guard status == errSecSuccess else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+
+        let items = result as? [[String: Any]] ?? []
+        for item in items {
+            guard let key = item[kSecAttrAccount as String] as? String,
+                  key.hasPrefix(prefix) else { continue }
+            try delete(for: key)
         }
     }
     

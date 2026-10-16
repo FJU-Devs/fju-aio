@@ -53,6 +53,27 @@ nonisolated struct Course: Identifiable, Hashable, Sendable, Codable {
         }
     }
     
+    /// Whether the course has a usable weekday + period (some courses are unscheduled).
+    var hasScheduledTime: Bool {
+        dayOfWeekNumber >= 1
+            && startPeriod >= 1
+            && startPeriod <= FJUPeriod.periodTimes.count
+            && endPeriod >= startPeriod
+    }
+
+    /// "HH:mm" time the course starts / ends.
+    var startTimeString: String { FJUPeriod.startTime(for: startPeriod) }
+    var endTimeString: String { FJUPeriod.endTime(for: endPeriod) }
+
+    /// Real start / end instants of the course on the day of `referenceDate`.
+    func startDate(on referenceDate: Date, calendar: Calendar = CurrentSemester.taipeiCalendar) -> Date? {
+        FJUPeriod.date(for: startTimeString, on: referenceDate, calendar: calendar)
+    }
+
+    func endDate(on referenceDate: Date, calendar: Calendar = CurrentSemester.taipeiCalendar) -> Date? {
+        FJUPeriod.date(for: endTimeString, on: referenceDate, calendar: calendar)
+    }
+
     // Full initializer
     init(
         id: String,
@@ -199,6 +220,27 @@ nonisolated enum FJUPeriod {
     static func startTime(for period: Int) -> String {
         guard period >= 1, period <= periodTimes.count else { return "" }
         return periodTimes[period - 1].start
+    }
+
+    /// End time ("HH:mm") of a period — each period is 50 minutes.
+    static func endTime(for period: Int) -> String {
+        guard period >= 1, period <= periodTimes.count else { return "" }
+        return periodTimes[period - 1].end
+    }
+
+    /// Combines a "HH:mm" time with the day of `referenceDate` (Asia/Taipei by default).
+    static func date(
+        for time: String,
+        on referenceDate: Date,
+        calendar: Calendar = CurrentSemester.taipeiCalendar
+    ) -> Date? {
+        let parts = time.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        var comps = calendar.dateComponents([.year, .month, .day], from: referenceDate)
+        comps.hour = parts[0]
+        comps.minute = parts[1]
+        comps.second = 0
+        return calendar.date(from: comps)
     }
 
     static let dayNames = ["一", "二", "三", "四", "五", "六", "日"]

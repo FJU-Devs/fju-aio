@@ -122,6 +122,7 @@ private struct DepartmentRow: View {
                             .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .foregroundStyle(.green)
                     }
+                    .accessibilityLabel("撥打 \(contact.name)")
                 }
                 if let url = mailURL {
                     Link(destination: url) {
@@ -131,6 +132,7 @@ private struct DepartmentRow: View {
                             .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .foregroundStyle(.blue)
                     }
+                    .accessibilityLabel("寄信給 \(contact.name)")
                 }
             }
         }

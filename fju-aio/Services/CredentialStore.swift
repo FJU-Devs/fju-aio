@@ -39,26 +39,37 @@ final class CredentialStore: Sendable {
         }
     }
 
-    // MARK: - Friend Credentials (keyed by empNo)
+    // MARK: - Demo Session
 
-    private nonisolated func friendKey(_ empNo: String) -> String { "com.fju.friend.creds.\(empNo)" }
+    private nonisolated static let demoSessionKey = "com.fju.demoSession"
 
-    nonisolated func saveFriendCredentials(empNo: String, username: String, password: String) throws {
-        let creds = LDAPCredentials(username: username, password: password)
-        let data = try JSONEncoder().encode(creds)
-        try keychain.save(data, for: friendKey(empNo))
+    /// Whether the user is signed in with the demo account. Demo logins never store
+    /// LDAP credentials, so this flag is what lets demo mode survive a relaunch.
+    nonisolated var isDemoSession: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.demoSessionKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.demoSessionKey) }
     }
 
-    nonisolated func retrieveFriendCredentials(empNo: String) throws -> LDAPCredentials {
-        let data = try keychain.retrieve(for: friendKey(empNo))
-        return try JSONDecoder().decode(LDAPCredentials.self, from: data)
+    // MARK: - Legacy Friend Credentials Cleanup
+
+    /// Keychain account prefix used by the removed course check-in feature to store friends' LDAP credentials.
+    private nonisolated static let legacyFriendCredentialsPrefix = "com.fju.friend.creds."
+    private nonisolated static let legacyFriendCredentialsPurgedKey = "legacyFriendCredentialsPurged"
+
+    /// Deletes every friend credential the removed check-in feature may have stored in the Keychain.
+    nonisolated func purgeLegacyFriendCredentials() {
+        try? keychain.deleteItems(withKeyPrefix: Self.legacyFriendCredentialsPrefix)
     }
 
-    nonisolated func deleteFriendCredentials(empNo: String) throws {
-        try keychain.delete(for: friendKey(empNo))
-    }
-
-    nonisolated func hasFriendCredentials(empNo: String) -> Bool {
-        (try? retrieveFriendCredentials(empNo: empNo)) != nil
+    /// Runs `purgeLegacyFriendCredentials()` once per install; later launches are no-ops.
+    nonisolated func purgeLegacyFriendCredentialsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.legacyFriendCredentialsPurgedKey) else { return }
+        do {
+            try keychain.deleteItems(withKeyPrefix: Self.legacyFriendCredentialsPrefix)
+            defaults.set(true, forKey: Self.legacyFriendCredentialsPurgedKey)
+        } catch {
+            // Leave the flag unset so the purge is retried on the next launch.
+        }
     }
 }

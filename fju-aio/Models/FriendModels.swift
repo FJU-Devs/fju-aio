@@ -240,12 +240,6 @@ nonisolated struct FriendRecord: Codable, Identifiable, Hashable, Sendable {
     var cachedProfile: PublicProfile?
     var scheduleShareToken: String?
     let addedAt: Date
-    /// True when LDAP credentials for this friend are stored in Keychain.
-    /// Not persisted in JSON — recomputed from Keychain on load.
-    var hasStoredCredentials: Bool = false
-
-    /// True when this record was created manually (not via QR / CloudKit).
-    var isManuallyAdded: Bool { id.hasPrefix("manual-") }
 
     static func == (lhs: FriendRecord, rhs: FriendRecord) -> Bool {
         lhs.id == rhs.id
@@ -254,36 +248,6 @@ nonisolated struct FriendRecord: Codable, Identifiable, Hashable, Sendable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
-}
-
-// MARK: - Group Rollcall Credential Payload
-// Embedded in a QR code — user explicitly opts in to share LDAP credentials
-
-nonisolated struct GroupRollcallQRPayload: Codable, Sendable {
-    let version: Int
-    let type: String                // "group_rollcall"
-    let username: String
-    let password: String
-    let sharerDisplayName: String
-    let sharerUserId: Int
-    let issuedAt: Date
-}
-
-// MARK: - Combined QR Payload
-// Carries both profile info and LDAP credentials in a single QR code.
-// Scanning this adds the person as a friend AND stores rollcall credentials.
-
-nonisolated struct CombinedQRPayload: Codable, Sendable {
-    let version: Int
-    let type: String                // "combined"
-    let cloudKitRecordName: String
-    let empNo: String
-    let displayName: String
-    let userId: Int
-    let username: String
-    let password: String
-    let scheduleShareToken: String?
-    let issuedAt: Date
 }
 
 // MARK: - Profile QR Payload
@@ -317,8 +281,6 @@ nonisolated struct MutualQRPayload: Codable, Sendable {
 
 nonisolated enum ScannedQRType {
     case profile(ProfileQRPayload)
-    case groupRollcall(GroupRollcallQRPayload)
-    case combined(CombinedQRPayload)
     case mutual(MutualQRPayload)
     case unknown(String)
 }

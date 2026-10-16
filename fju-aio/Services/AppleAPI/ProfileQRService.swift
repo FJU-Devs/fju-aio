@@ -4,7 +4,7 @@ import CoreImage.CIFilterBuiltins
 import UIKit
 
 // MARK: - ProfileQRService
-// Generates and parses QR codes for profile sharing and group rollcall credential sharing.
+// Generates and parses QR codes for public profile sharing (friend add).
 // All data stays on-device and peer-to-peer — nothing transits a server.
 
 nonisolated enum ProfileQRService {
@@ -106,25 +106,6 @@ nonisolated enum ProfileQRService {
         )
     }
 
-    // MARK: - Generate Group Rollcall QR Payload
-
-    static func makeGroupRollcallPayload(
-        username: String,
-        password: String,
-        displayName: String,
-        userId: Int
-    ) -> GroupRollcallQRPayload {
-        GroupRollcallQRPayload(
-            version: 1,
-            type: "group_rollcall",
-            username: username,
-            password: password,
-            sharerDisplayName: displayName,
-            sharerUserId: userId,
-            issuedAt: Date()
-        )
-    }
-
     // MARK: - Generate Mutual Add QR Payload
 
     static func makeMutualPayload(
@@ -140,29 +121,6 @@ nonisolated enum ProfileQRService {
             displayName: displayName,
             userId: userId,
             scheduleShareToken: scheduleShareToken()
-        )
-    }
-
-    // MARK: - Generate Combined QR Payload (profile + credentials)
-
-    static func makeCombinedPayload(
-        userId: Int,
-        empNo: String,
-        displayName: String,
-        username: String,
-        password: String
-    ) -> CombinedQRPayload {
-        CombinedQRPayload(
-            version: 1,
-            type: "combined",
-            cloudKitRecordName: ProfileIdentity.publicRecordName(userId: userId),
-            empNo: empNo,
-            displayName: displayName,
-            userId: userId,
-            username: username,
-            password: password,
-            scheduleShareToken: scheduleShareToken(),
-            issuedAt: Date()
         )
     }
 
@@ -198,14 +156,6 @@ nonisolated enum ProfileQRService {
             case "profile":
                 if let payload = try? JSONDecoder().decode(ProfileQRPayload.self, from: data) {
                     return .profile(payload)
-                }
-            case "group_rollcall":
-                if let payload = try? JSONDecoder().decode(GroupRollcallQRPayload.self, from: data) {
-                    return .groupRollcall(payload)
-                }
-            case "combined":
-                if let payload = try? JSONDecoder().decode(CombinedQRPayload.self, from: data) {
-                    return .combined(payload)
                 }
             case "mutual":
                 if let payload = try? JSONDecoder().decode(MutualQRPayload.self, from: data) {

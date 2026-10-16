@@ -36,9 +36,8 @@ struct GradesView: View {
                         Text(semester).tag(semester)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
             }
-            .listRowBackground(Color.clear)
             .disabled(semesters.isEmpty)
 
             Section("成績列表") {
@@ -54,12 +53,24 @@ struct GradesView: View {
 
             if !grades.isEmpty {
                 Section {
-                    let totalCredits = grades.reduce(0) { $0 + $1.credits }
+                    // Only courses with a passing score (>= 60) earn credits;
+                    // failed and not-yet-graded courses are excluded.
+                    let earnedCredits = grades
+                        .filter { ($0.score ?? 0) >= 60 }
+                        .reduce(0) { $0 + $1.credits }
+                    let attemptedCredits = grades.reduce(0) { $0 + $1.credits }
                     HStack {
-                        Text("總學分數")
+                        Text("已取得學分")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(totalCredits)")
+                        Text("\(earnedCredits)")
+                            .font(.headline)
+                    }
+                    HStack {
+                        Text("修習學分")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(attemptedCredits)")
                             .font(.headline)
                     }
                 }
@@ -78,92 +89,102 @@ struct GradesView: View {
             }
         }
         .overlay {
-            if isLoading {
+            if isLoading && grades.isEmpty {
                 ProgressView("載入中...")
             }
         }
-        .task {
-            await loadData(forceRefresh: false)
+        // Re-runs (and cancels the previous load) whenever the selected semester changes.
+        .task(id: selectedSemester) {
+            if selectedSemester.isEmpty {
+                await loadSemesters(forceRefresh: false)
+            } else {
+                await loadGrades(for: selectedSemester)
+            }
         }
         .refreshable {
-            await loadData(forceRefresh: true)
-        }
-        .onChange(of: selectedSemester) {
-            Task { await loadData(forceRefresh: false) }
+            await loadSemesters(forceRefresh: true)
+            if !selectedSemester.isEmpty {
+                await loadGrades(for: selectedSemester)
+            }
         }
     }
 
-    private func loadData(forceRefresh: Bool) async {
-        loadError = nil
-        // Show cached data immediately if available
-        let showedCachedData = loadCachedDataIfAvailable()
-        if !forceRefresh, showedCachedData {
+    /// Resolves the semester list (cache first). Setting `selectedSemester` triggers the grades load.
+    private func loadSemesters(forceRefresh: Bool) async {
+        if !forceRefresh, let cached = cache.getSemesters(), !cached.isEmpty {
+            applySemesters(cached)
             return
         }
 
-        isLoading = !showedCachedData
+        if semesters.isEmpty { isLoading = true }
+        do {
+            let fetched = try await syncStatus.withSync("正在載入成績…") {
+                try await service.fetchAvailableSemesters()
+            }
+            cache.setSemesters(fetched)
+            applySemesters(fetched)
+            if fetched.isEmpty {
+                grades = []
+                gpaSummary = nil
+                isLoading = false
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            if semesters.isEmpty {
+                loadError = "載入成績失敗：\(error.localizedDescription)"
+                isLoading = false
+            } else {
+                loadError = "無法更新學期列表，目前顯示的是先前的資料：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func applySemesters(_ list: [String]) {
+        semesters = list
+        if !list.contains(selectedSemester) {
+            selectedSemester = list.first ?? ""
+        }
+    }
+
+    /// Shows cached grades immediately (if any), then refreshes from the network in the background.
+    private func loadGrades(for semester: String) async {
+        let cachedGrades = cache.getGrades(semester: semester)
+        if let cachedGrades {
+            grades = cachedGrades
+            gpaSummary = cache.getGPASummary(semester: semester)
+            isLoading = false
+        } else {
+            grades = []
+            gpaSummary = nil
+            isLoading = true
+        }
+        let hasCache = cachedGrades != nil
+
         do {
             try await syncStatus.withSync("正在載入成績…") {
-                let newSemesters = try await service.fetchAvailableSemesters()
-                let semesterToLoad: String
-                if newSemesters.contains(selectedSemester) {
-                    semesterToLoad = selectedSemester
-                } else if let firstSemester = newSemesters.first {
-                    semesterToLoad = firstSemester
-                } else {
-                    semesterToLoad = ""
-                }
-
-                guard !semesterToLoad.isEmpty else {
-                    if !showedCachedData {
-                        semesters = []
-                        grades = []
-                        gpaSummary = nil
-                    }
-                    cache.setSemesters([])
-                    return
-                }
-
-                async let fetchedGrades = service.fetchGrades(semester: semesterToLoad)
-                async let fetchedSummary = service.fetchGPASummary(semester: semesterToLoad)
+                async let fetchedGrades = service.fetchGrades(semester: semester)
+                async let fetchedSummary = service.fetchGPASummary(semester: semester)
 
                 let newGrades = try await fetchedGrades
                 let newSummary = try await fetchedSummary
 
-                semesters = newSemesters
-                selectedSemester = semesterToLoad
+                cache.setGrades(newGrades, semester: semester)
+                cache.setGPASummary(newSummary, semester: semester)
+
+                // Discard stale results if the user switched semesters meanwhile.
+                guard !Task.isCancelled, semester == selectedSemester else { return }
                 grades = newGrades
                 gpaSummary = newSummary
-
-                cache.setSemesters(newSemesters)
-                cache.setGrades(newGrades, semester: semesterToLoad)
-                cache.setGPASummary(newSummary, semester: semesterToLoad)
+                loadError = nil
             }
+        } catch {
+            guard !Task.isCancelled, semester == selectedSemester else { return }
+            loadError = hasCache
+                ? "無法更新成績，目前顯示的是先前的資料：\(error.localizedDescription)"
+                : "載入成績失敗：\(error.localizedDescription)"
         }
-        catch {
-            loadError = "載入成績失敗：\(error.localizedDescription)"
-        }
-        isLoading = false
-    }
-
-    private func loadCachedDataIfAvailable() -> Bool {
-        var didLoad = false
-
-        if semesters.isEmpty, let cached = cache.getSemesters() {
-            semesters = cached
-            if !cached.contains(selectedSemester), let first = cached.first {
-                selectedSemester = first
-            }
-            didLoad = true
-        }
-
-        if !selectedSemester.isEmpty, let cachedGrades = cache.getGrades(semester: selectedSemester) {
-            grades = cachedGrades
-            gpaSummary = cache.getGPASummary(semester: selectedSemester)
+        if semester == selectedSemester {
             isLoading = false
-            didLoad = true
         }
-
-        return didLoad
     }
 }

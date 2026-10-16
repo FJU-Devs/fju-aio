@@ -25,6 +25,7 @@ enum AppCacheCleanupService {
 
     private static func clearServiceCaches() async {
         await TronClassAPIService.shared.clearInMemoryCaches()
+        await SISService.shared.clearInMemoryCaches()
         await ClassroomScheduleService.shared.clearInMemoryCache()
     }
 
@@ -62,6 +63,7 @@ enum AppCacheCleanupService {
 
     private static func clearKeychain() {
         ProfileQRService.clearStoredTokens()
+        CredentialStore.shared.purgeLegacyFriendCredentials()
         do {
             try KeychainManager.shared.clearAll()
         } catch {

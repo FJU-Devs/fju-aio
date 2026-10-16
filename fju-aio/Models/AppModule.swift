@@ -28,16 +28,17 @@ struct AppModule: Identifiable, Hashable {
     let color: Color
     let category: ModuleCategory
     let type: ModuleType
-    let isHidden: Bool
+    /// Extra search terms (synonyms, sub-features) matched by global search.
+    let keywords: [String]
 
-    init(id: String, name: String, icon: String, color: Color, category: ModuleCategory, type: ModuleType, isHidden: Bool = false) {
+    init(id: String, name: String, icon: String, color: Color, category: ModuleCategory, type: ModuleType, keywords: [String] = []) {
         self.id = id
         self.name = name
         self.icon = icon
         self.color = color
         self.category = category
         self.type = type
-        self.isHidden = isHidden
+        self.keywords = keywords
     }
 
     func hash(into hasher: inout Hasher) {

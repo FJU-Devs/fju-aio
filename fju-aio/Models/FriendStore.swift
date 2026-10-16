@@ -4,8 +4,6 @@ import WidgetKit
 
 // MARK: - FriendStore
 // Friend list persisted in UserDefaults (public profile data only).
-// LDAP credentials are stored separately in Keychain via CredentialStore,
-// keyed by empNo. hasStoredCredentials is recomputed from Keychain on load.
 
 @Observable
 @MainActor
@@ -20,6 +18,7 @@ final class FriendStore {
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "FriendStore")
     private let friendsKey = "com.nelsongx.apps.fju-aio.friends"
+    private static let legacyManualFriendIDPrefix = "manual-"
 
     private init() { load() }
 
@@ -34,10 +33,11 @@ final class FriendStore {
             }
             save()
             syncFriendsToCloud()
+            refreshWidgetFriendOverlays()
             logger.info("Friend \(payload.empNo) already in list")
             return false
         }
-        var record = FriendRecord(
+        let record = FriendRecord(
             id: payload.cloudKitRecordName,
             empNo: payload.empNo,
             displayName: payload.displayName,
@@ -45,23 +45,12 @@ final class FriendStore {
             scheduleShareToken: payload.scheduleShareToken,
             addedAt: Date()
         )
-        record.hasStoredCredentials = CredentialStore.shared.hasFriendCredentials(empNo: payload.empNo)
         friends.append(record)
         save()
         syncFriendsToCloud()
+        refreshWidgetFriendOverlays()
         logger.info("Added friend: \(payload.displayName) (\(payload.empNo))")
         return true
-    }
-
-    /// Adds or updates a manually-created local friend (no CloudKit record required).
-    func addManualFriend(_ record: FriendRecord) {
-        if let idx = friends.firstIndex(where: { $0.id == record.id }) {
-            friends[idx].displayName = record.displayName
-            friends[idx].hasStoredCredentials = record.hasStoredCredentials
-        } else {
-            friends.append(record)
-        }
-        save()
     }
 
     func isFriend(recordName: String) -> Bool {
@@ -77,7 +66,7 @@ final class FriendStore {
         save()
         syncFriendsToCloud()
         // Refresh widget with updated friend schedule data
-        WidgetCenter.shared.reloadTimelines(ofKind: "CourseScheduleWidget")
+        refreshWidgetFriendOverlays()
     }
 
     func updateScheduleShareToken(_ token: String?, for id: String) {
@@ -89,55 +78,34 @@ final class FriendStore {
     }
 
     func removeFriend(id: String) {
-        if let record = friends.first(where: { $0.id == id }) {
-            try? CredentialStore.shared.deleteFriendCredentials(empNo: record.empNo)
-        }
         friends.removeAll { $0.id == id }
         save()
         syncFriendsToCloud()
-        WidgetCenter.shared.reloadTimelines(ofKind: "CourseScheduleWidget")
+        refreshWidgetFriendOverlays()
         logger.info("Removed friend \(id)")
     }
 
-    // MARK: - Credential Management
+    // MARK: - Widget
 
-    func saveCredentials(for friendId: String, username: String, password: String) {
-        guard let idx = friends.firstIndex(where: { $0.id == friendId }) else { return }
-        do {
-            try CredentialStore.shared.saveFriendCredentials(
-                empNo: friends[idx].empNo,
-                username: username,
-                password: password
-            )
-            friends[idx].hasStoredCredentials = true
-            logger.info("Saved credentials for \(self.friends[idx].displayName)")
-        } catch {
-            logger.error("Failed to save credentials: \(error)")
+    /// The widget payload's friend overlays are only rewritten by `WidgetDataWriter.writeCourseData`,
+    /// so re-write it with the cached courses for the current semester whenever the friend list changes.
+    /// Falls back to a plain timeline reload when no courses are cached (to avoid wiping the widget's courses).
+    private func refreshWidgetFriendOverlays() {
+        if let courses = AppCache.shared.getCourses(semester: CurrentSemester.code()) {
+            WidgetDataWriter.shared.writeCourseData(courses: courses, friends: friends)
+        } else {
+            WidgetCenter.shared.reloadTimelines(ofKind: "CourseScheduleWidget")
         }
-    }
-
-    func deleteCredentials(for friendId: String) {
-        guard let idx = friends.firstIndex(where: { $0.id == friendId }) else { return }
-        try? CredentialStore.shared.deleteFriendCredentials(empNo: friends[idx].empNo)
-        friends[idx].hasStoredCredentials = false
-        logger.info("Deleted credentials for \(self.friends[idx].displayName)")
-    }
-
-    /// All friends who have stored credentials — used by CheckInView
-    var credentialedFriends: [FriendRecord] {
-        friends.filter { $0.hasStoredCredentials }
     }
 
     // MARK: - Persistence
 
     private func load() {
         if let data = UserDefaults.standard.data(forKey: friendsKey),
-           var decoded = try? JSONDecoder().decode([FriendRecord].self, from: data) {
-            // Recompute hasStoredCredentials from Keychain (not persisted in JSON)
-            for i in decoded.indices {
-                decoded[i].hasStoredCredentials = CredentialStore.shared.hasFriendCredentials(empNo: decoded[i].empNo)
-            }
-            friends = decoded
+           let decoded = try? JSONDecoder().decode([FriendRecord].self, from: data) {
+            // Drop legacy manually-added entries ("manual-" IDs); they only existed for the removed check-in feature.
+            friends = decoded.filter { !$0.id.hasPrefix(Self.legacyManualFriendIDPrefix) }
+            if friends.count != decoded.count { save() }
         }
         logger.info("Loaded \(self.friends.count) friends")
     }
@@ -149,9 +117,6 @@ final class FriendStore {
     }
 
     func clearAll() {
-        for friend in friends {
-            try? CredentialStore.shared.deleteFriendCredentials(empNo: friend.empNo)
-        }
         friends = []
         cloudSyncOwnerUserId = nil
         cloudSyncTask?.cancel()
@@ -159,20 +124,18 @@ final class FriendStore {
         lastCloudSyncDataByUserId.removeAll()
         pendingCloudSyncDataByUserId.removeAll()
         UserDefaults.standard.removeObject(forKey: friendsKey)
-        logger.info("Cleared all friends and credentials")
+        logger.info("Cleared all friends")
     }
 
     func importCloudFriends(_ cloudFriends: [FriendRecord]) {
         guard !cloudFriends.isEmpty else { return }
         var mergedByID = Dictionary(uniqueKeysWithValues: friends.map { ($0.id, $0) })
 
-        for var cloudFriend in cloudFriends {
-            cloudFriend.hasStoredCredentials = CredentialStore.shared.hasFriendCredentials(empNo: cloudFriend.empNo)
+        for cloudFriend in cloudFriends {
             if let existing = mergedByID[cloudFriend.id] {
                 var merged = existing
                 if cloudFriend.addedAt < existing.addedAt {
                     merged = cloudFriend
-                    merged.hasStoredCredentials = existing.hasStoredCredentials || cloudFriend.hasStoredCredentials
                 } else if let cloudProfile = cloudFriend.cachedProfile,
                           existing.cachedProfile == nil || cloudProfile.lastUpdated > existing.cachedProfile!.lastUpdated {
                     merged.cachedProfile = cloudProfile
@@ -189,7 +152,7 @@ final class FriendStore {
 
         friends = mergedByID.values.sorted { $0.addedAt < $1.addedAt }
         save()
-        WidgetCenter.shared.reloadTimelines(ofKind: "CourseScheduleWidget")
+        refreshWidgetFriendOverlays()
         logger.info("Imported \(cloudFriends.count) friends from iCloud")
     }
 
@@ -226,12 +189,6 @@ final class FriendStore {
     }
 
     private func encodedCloudSnapshot(_ snapshot: [FriendRecord]) -> Data? {
-        // Exclude manually-added local friends — they have no CloudKit record.
-        let sanitized = snapshot.filter { !$0.isManuallyAdded }.map { friend in
-            var copy = friend
-            copy.hasStoredCredentials = false
-            return copy
-        }
-        return try? JSONEncoder().encode(sanitized)
+        try? JSONEncoder().encode(snapshot)
     }
 }

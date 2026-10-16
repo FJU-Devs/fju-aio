@@ -26,7 +26,7 @@ final class CourseNotificationManager {
         _minutesBefore = saved == 0 ? 15 : saved
         observePushToStartTokens()
         observeActivityUpdates()
-        Task {
+        enqueueRemoteOperation { [self] in
             await registerCurrentPushToStartTokenIfAvailable(force: false, retryIfUnavailable: true)
         }
     }
@@ -42,13 +42,11 @@ final class CourseNotificationManager {
             _isEnabled = newValue
             UserDefaults.standard.set(newValue, forKey: Keys.enabled)
             if !newValue {
-                Task {
-                    await endAllLiveActivities()
-                    await cancelRemoteSchedules(deactivateToken: true)
-                }
-            } else {
-                resyncIfNeeded()
+                Task { await endAllLiveActivities() }
             }
+            // The server token is deactivated when disabling — re-enabling registers it again
+            // before re-sending the semester schedules. Runs serialized after earlier remote ops.
+            reconcileRemoteState(reregisterPushToStartToken: newValue)
         }
     }
 
@@ -100,10 +98,8 @@ final class CourseNotificationManager {
         guard _isEnabled else { return }
         _isEnabled = false
         UserDefaults.standard.set(false, forKey: Keys.enabled)
-        Task {
-            await endAllLiveActivities()
-            await cancelRemoteSchedules(deactivateToken: true)
-        }
+        Task { await endAllLiveActivities() }
+        reconcileRemoteState()
     }
 
     // MARK: - Backing stored properties (tracked by @Observable)
@@ -122,43 +118,115 @@ final class CourseNotificationManager {
         static let notifyEnd     = "courseNotifyEnd"
         static let minutesBefore = "courseNotificationMinutesBefore"
         static let lastRegisteredPushToStartToken = "courseNotificationLastRegisteredPushToStartToken"
+        static let semesterWindows = "courseNotificationSemesterWindows"
+        static let lastUserId = "courseNotificationLastUserId"
     }
+
+    /// All date math uses Asia/Taipei so class times stay correct when the device is in another time zone.
+    private static let calendar = CurrentSemester.taipeiCalendar
 
     // MARK: - Called after course load
 
     /// Re-syncs server schedules using the last known course snapshot when settings change.
+    /// The semester window persisted by the last `scheduleAll` call is reused.
     private func resyncIfNeeded() {
-        guard isEnabled, !lastCourseSnapshot.isEmpty else { return }
-        let courses = lastCourseSnapshot
-        Task {
+        guard isEnabled else { return }
+        reconcileRemoteState()
+    }
+
+    /// Serializes all server schedule mutations (register / sync / cancel) so a delayed
+    /// cancel can never land after a newer sync. Operations queued here must not
+    /// enqueue-and-await another operation (that would deadlock).
+    private var remoteOperationTail: Task<Void, Never>?
+
+    @discardableResult
+    private func enqueueRemoteOperation<T: Sendable>(
+        _ operation: @escaping @MainActor () async -> T
+    ) -> Task<T, Never> {
+        let previous = remoteOperationTail
+        let task = Task { @MainActor in
+            await previous?.value
+            return await operation()
+        }
+        remoteOperationTail = Task { @MainActor in _ = await task.value }
+        return task
+    }
+
+    /// Brings the server in line with the *latest* preferences and course snapshot
+    /// at the time the queued operation runs (not when it was enqueued).
+    private func reconcileRemoteState(reregisterPushToStartToken: Bool = false) {
+        enqueueRemoteOperation { [self] in
+            guard isEnabled else {
+                await cancelRemoteSchedules(deactivateToken: true)
+                return
+            }
+            if reregisterPushToStartToken {
+                await registerCurrentPushToStartTokenIfAvailable(force: true, retryIfUnavailable: true)
+            }
+            guard isEnabled, !lastCourseSnapshot.isEmpty || lastSemester != nil else { return }
             await scheduleRemoteCourseActivities(
-                for: courses,
+                for: lastCourseSnapshot,
+                semester: lastSemester,
                 semesterStartDate: nil,
                 semesterEndDate: nil
             )
         }
     }
 
+    /// Convenience overload taking the resolved semester window.
+    /// Returns true when the server is in sync with this snapshot (or nothing needs syncing).
+    @discardableResult
+    func scheduleAll(for courses: [Course], window: SemesterNotificationWindow) async -> Bool {
+        await scheduleAll(
+            for: courses,
+            semester: window.semester,
+            semesterStartDate: window.startDate,
+            semesterEndDate: window.endDate
+        )
+    }
+
     /// Starts a Live Activity if a class is active or about to start today.
+    /// The snapshot is retained even while disabled so re-enabling can resync it.
+    @discardableResult
     func scheduleAll(
         for courses: [Course],
+        semester explicitSemester: String? = nil,
         semesterStartDate overrideSemesterStartDate: Date? = nil,
         semesterEndDate overrideSemesterEndDate: Date? = nil
-    ) async {
-        guard isEnabled, notifyStart || notifyBefore else { return }
+    ) async -> Bool {
+        let semester = explicitSemester ?? semesterIdentifier(from: courses)
+        if overrideSemesterStartDate != nil || overrideSemesterEndDate != nil {
+            storeSemesterWindow(semester: semester, start: overrideSemesterStartDate, end: overrideSemesterEndDate)
+        }
+        lastCourseSnapshot = courses
+        lastSemester = semester
+        guard isEnabled else { return true }
+
+        guard notifyStart || notifyBefore else {
+            // Both reminder types are off — make sure the server isn't still holding old schedules.
+            return await enqueueRemoteOperation { [self] in
+                await cancelRemoteSchedulesIfNeeded(semester: semester)
+            }.value
+        }
         guard canUseLiveActivities else {
             disableForLiveActivityPermissionIssue()
             logger.info("[CourseNotification] Live Activities 未啟用，已關閉課程提醒")
-            return
+            return true
         }
-        lastCourseSnapshot = courses
-        await registerCurrentPushToStartTokenIfAvailable(force: true, retryIfUnavailable: true)
-        await scheduleRemoteCourseActivities(
-            for: courses,
-            semesterStartDate: overrideSemesterStartDate,
-            semesterEndDate: overrideSemesterEndDate
-        )
+        let synced = await enqueueRemoteOperation { [self] () -> Bool in
+            // Re-check at execution time: preferences may have changed while queued.
+            guard isEnabled else { return true }
+            await registerCurrentPushToStartTokenIfAvailable(force: true, retryIfUnavailable: true)
+            guard isEnabled else { return true }
+            return await scheduleRemoteCourseActivities(
+                for: courses,
+                semester: semester,
+                semesterStartDate: overrideSemesterStartDate,
+                semesterEndDate: overrideSemesterEndDate
+            )
+        }.value
         await startLiveActivityIfNeeded(for: courses)
+        return synced
     }
 
     // MARK: - Live Activity
@@ -174,7 +242,7 @@ final class CourseNotificationManager {
         }
 
         let now = Date()
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         guard let startDate = courseDate(for: course, on: now, calendar: calendar, useEndTime: false),
               let endDate   = courseDate(for: course, on: now, calendar: calendar, useEndTime: true) else {
             logger.info("[CourseNotification] 無法計算課程時間")
@@ -233,7 +301,7 @@ final class CourseNotificationManager {
         guard let activity = runningActivity(for: course) else { return }
 
         let now = Date()
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         guard let startDate = courseDate(for: course, on: now, calendar: calendar, useEndTime: false),
               let endDate   = courseDate(for: course, on: now, calendar: calendar, useEndTime: true) else { return }
 
@@ -265,6 +333,7 @@ final class CourseNotificationManager {
         let content = ActivityContent(state: finalState, staleDate: Date().addingTimeInterval(60))
         await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(60)))
         activeActivityIDs.removeValue(forKey: course.id)
+        cancelActivityTasks(for: activityId)
         logger.info("[CourseNotification] ✅ Live Activity 結束: \(course.name)")
 
         // Notify server to stop sending pushes for this activity
@@ -283,12 +352,16 @@ final class CourseNotificationManager {
             }
         }
         activeActivityIDs.removeAll()
+        cancelAllActivityTasks()
         logger.info("[CourseNotification] ✅ 全部 Live Activities 結束")
     }
 
     func cancelForLogout() async {
         await endAllLiveActivities()
-        await cancelRemoteSchedules(deactivateToken: true)
+        // Use the cached user id only — refreshing the session here could trigger a full re-login.
+        await enqueueRemoteOperation { [self] in
+            await cancelRemoteSchedules(deactivateToken: true, allowSessionRefresh: false)
+        }.value
     }
 
     @MainActor
@@ -299,9 +372,15 @@ final class CourseNotificationManager {
         _notifyEnd = true
         _minutesBefore = 15
         activeActivityIDs.removeAll()
+        cancelAllActivityTasks()
         lastCourseSnapshot = []
+        lastSemester = nil
         lastRemoteScheduleSyncSignature = nil
         inFlightRemoteScheduleSyncSignature = nil
+        UserDefaults.standard.removeObject(forKey: Keys.lastRegisteredPushToStartToken)
+        UserDefaults.standard.removeObject(forKey: Keys.semesterWindows)
+        UserDefaults.standard.removeObject(forKey: Keys.lastUserId)
+        CurrentSemesterCourseSync.reset()
     }
 
     // MARK: - Test helpers (DebugView)
@@ -448,8 +527,51 @@ final class CourseNotificationManager {
 
     private var activeActivityIDs: [String: String] = [:]
     private var lastCourseSnapshot: [Course] = []
+    private var lastSemester: String?
     private var lastRemoteScheduleSyncSignature: String?
     private var inFlightRemoteScheduleSyncSignature: String?
+    /// One local phase-update task and one token-refresh observer per activity id.
+    private var phaseUpdateTasks: [String: Task<Void, Never>] = [:]
+    private var tokenObserverTasks: [String: Task<Void, Never>] = [:]
+
+    private func cancelActivityTasks(for activityId: String) {
+        phaseUpdateTasks.removeValue(forKey: activityId)?.cancel()
+        tokenObserverTasks.removeValue(forKey: activityId)?.cancel()
+    }
+
+    private func cancelAllActivityTasks() {
+        phaseUpdateTasks.values.forEach { $0.cancel() }
+        tokenObserverTasks.values.forEach { $0.cancel() }
+        phaseUpdateTasks.removeAll()
+        tokenObserverTasks.removeAll()
+    }
+
+    // MARK: - Persisted semester windows
+
+    nonisolated private struct StoredSemesterWindow: Codable {
+        let start: Date?
+        let end: Date?
+    }
+
+    private func storeSemesterWindow(semester: String, start: Date?, end: Date?) {
+        var windows = storedSemesterWindows()
+        windows[semester] = StoredSemesterWindow(start: start, end: end)
+        if let data = try? JSONEncoder().encode(windows) {
+            UserDefaults.standard.set(data, forKey: Keys.semesterWindows)
+        }
+    }
+
+    private func storedSemesterWindow(for semester: String) -> StoredSemesterWindow? {
+        storedSemesterWindows()[semester]
+    }
+
+    private func storedSemesterWindows() -> [String: StoredSemesterWindow] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.semesterWindows),
+              let windows = try? JSONDecoder().decode([String: StoredSemesterWindow].self, from: data) else {
+            return [:]
+        }
+        return windows
+    }
 
     private func runningActivity(for course: Course) -> Activity<CourseActivityAttributes>? {
         Activity<CourseActivityAttributes>.activities.first {
@@ -460,7 +582,7 @@ final class CourseNotificationManager {
     @MainActor
     private func startLiveActivityIfNeeded(for courses: [Course]) async {
         let now = Date()
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         let todayWeekday = calendar.component(.weekday, from: now)
 
         for course in courses {
@@ -477,29 +599,46 @@ final class CourseNotificationManager {
         }
     }
 
+    /// Returns true when the server holds (or already held) the schedules for this snapshot.
+    @discardableResult
     private func scheduleRemoteCourseActivities(
         for courses: [Course],
+        semester explicitSemester: String? = nil,
         semesterStartDate overrideSemesterStartDate: Date?,
         semesterEndDate overrideSemesterEndDate: Date?
-    ) async {
+    ) async -> Bool {
         let now = Date()
-        let identity = await notificationIdentity()
-        let semester = semesterIdentifier(from: courses)
-        let semesterStartDate = overrideSemesterStartDate ?? now
-        let semesterEndDate = overrideSemesterEndDate ?? estimatedSemesterEndDate(for: semester, from: now)
+        guard let identity = await notificationIdentity() else {
+            logger.info("[CourseNotification] 無法取得使用者身分，跳過伺服器排程")
+            return false
+        }
+        let semester = explicitSemester ?? semesterIdentifier(from: courses)
+        let storedWindow = storedSemesterWindow(for: semester)
+        // Actual class-start date (when known) anchors single/double week parity.
+        let classStartDate = overrideSemesterStartDate ?? storedWindow?.start
+        let semesterStartDate = classStartDate ?? now
+        let semesterEndDate = overrideSemesterEndDate
+            ?? storedWindow?.end
+            ?? estimatedSemesterEndDate(for: semester, from: now)
         guard semesterEndDate > now else {
             logger.info("[CourseNotification] 學期已結束，跳過伺服器排程 semester=\(semester), until=\(semesterEndDate)")
-            await cancelRemoteSchedules(semester: semester, deactivateToken: false)
-            return
+            return await cancelRemoteSchedulesIfNeeded(semester: semester)
         }
         logger.info("[CourseNotification] 同步課程排程 semester=\(semester), courses=\(courses.count), from=\(semesterStartDate), until=\(semesterEndDate)")
         let schedules = Array(courses.flatMap {
-            remoteSchedules(for: $0, from: now, semesterStartDate: semesterStartDate, until: semesterEndDate, identity: identity)
+            remoteSchedules(
+                for: $0,
+                from: now,
+                semesterStartDate: semesterStartDate,
+                parityAnchor: classStartDate,
+                until: semesterEndDate,
+                identity: identity
+            )
         }.prefix(1000))
 
         guard !schedules.isEmpty else {
-            logger.info("[CourseNotification] 沒有需要伺服器排程的課程 Live Activity")
-            return
+            logger.info("[CourseNotification] 沒有需要伺服器排程的課程 Live Activity，取消伺服器上的舊排程")
+            return await cancelRemoteSchedulesIfNeeded(semester: semester)
         }
 
         let syncSignature = remoteScheduleSyncSignature(
@@ -512,7 +651,7 @@ final class CourseNotificationManager {
         guard syncSignature != lastRemoteScheduleSyncSignature,
               syncSignature != inFlightRemoteScheduleSyncSignature else {
             logger.info("[CourseNotification] Live Activity 伺服器排程未變更，跳過重複同步")
-            return
+            return true
         }
         inFlightRemoteScheduleSyncSignature = syncSignature
 
@@ -527,11 +666,13 @@ final class CourseNotificationManager {
         let success = await postJSON(to: "\(serverBaseURL)/push-to-start/sync-semester", body: payload)
         await MainActor.run { SyncStatusManager.shared.end() }
         inFlightRemoteScheduleSyncSignature = nil
-        if success {
+        if success, isEnabled {
             lastRemoteScheduleSyncSignature = syncSignature
             logger.info("[CourseNotification] ✅ 已向伺服器同步整學期 Live Activities: \(semester) \(schedules.count)")
+            return true
         } else {
             logger.info("[CourseNotification] ⚠️ 課程 Live Activity 伺服器排程失敗")
+            return false
         }
     }
 
@@ -575,6 +716,7 @@ final class CourseNotificationManager {
         for course: Course,
         from now: Date,
         semesterStartDate: Date,
+        parityAnchor: Date?,
         until semesterEndDate: Date,
         identity: NotificationIdentity
     ) -> [RemoteCourseActivitySchedule] {
@@ -582,7 +724,13 @@ final class CourseNotificationManager {
         let showDuring = notifyStart
         guard showBefore || showDuring else { return [] }
 
-        return courseOccurrences(for: course, from: now, semesterStartDate: semesterStartDate, until: semesterEndDate).compactMap { occurrence in
+        return courseOccurrences(
+            for: course,
+            from: now,
+            semesterStartDate: semesterStartDate,
+            parityAnchor: parityAnchor,
+            until: semesterEndDate
+        ).compactMap { occurrence in
             let pushDate = showBefore
                 ? occurrence.startDate.addingTimeInterval(-Double(minutesBefore) * 60)
                 : occurrence.startDate
@@ -613,7 +761,7 @@ final class CourseNotificationManager {
     }
 
     private func nextOccurrence(for course: Course, from now: Date) -> (startDate: Date, endDate: Date)? {
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         let startOfToday = calendar.startOfDay(for: now)
 
         for dayOffset in 0...7 {
@@ -639,9 +787,10 @@ final class CourseNotificationManager {
         for course: Course,
         from now: Date,
         semesterStartDate: Date,
+        parityAnchor: Date?,
         until semesterEndDate: Date
     ) -> [(startDate: Date, endDate: Date)] {
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         var occurrences: [(startDate: Date, endDate: Date)] = []
         var date = calendar.startOfDay(for: max(now, semesterStartDate))
         let finalDate = calendar.startOfDay(for: semesterEndDate)
@@ -649,7 +798,7 @@ final class CourseNotificationManager {
         while date < finalDate {
             let weekday = calendar.component(.weekday, from: date)
             if course.dayOfWeekNumber == weekdayToCourseDay(weekday),
-               shouldInclude(course: course, on: date, calendar: calendar),
+               shouldInclude(course: course, on: date, parityAnchor: parityAnchor, calendar: calendar),
                let startDate = courseDate(for: course, on: date, calendar: calendar, useEndTime: false),
                let endDate = courseDate(for: course, on: date, calendar: calendar, useEndTime: true),
                endDate > startDate,
@@ -664,15 +813,15 @@ final class CourseNotificationManager {
         return occurrences
     }
 
-    private func shouldInclude(course: Course, on date: Date, calendar: Calendar) -> Bool {
-        switch course.weeks {
-        case "單":
-            return calendar.component(.weekOfYear, from: date).isMultiple(of: 2) == false
-        case "雙":
-            return calendar.component(.weekOfYear, from: date).isMultiple(of: 2)
-        default:
-            return true
-        }
+    /// Single/double-week courses count weeks from the semester's first class week
+    /// (week 1 = 單). Falls back to week-of-year only when the class start date is unknown.
+    private func shouldInclude(course: Course, on date: Date, parityAnchor: Date?, calendar: Calendar) -> Bool {
+        guard course.weeks == "單" || course.weeks == "雙" else { return true }
+        let weekIndex = parityAnchor.map {
+            CurrentSemester.weekIndex(of: date, semesterStart: $0, calendar: calendar)
+        } ?? calendar.component(.weekOfYear, from: date)
+        let isOddWeek = !weekIndex.isMultiple(of: 2)
+        return course.weeks == "單" ? isOddWeek : !isOddWeek
     }
 
     private func semesterIdentifier(from courses: [Course]) -> String {
@@ -680,7 +829,7 @@ final class CourseNotificationManager {
     }
 
     private func estimatedSemesterEndDate(for semester: String, from now: Date) -> Date {
-        let calendar = Calendar.current
+        let calendar = Self.calendar
         let parts = semester.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 2 else {
             return calendar.date(byAdding: .day, value: 120, to: now) ?? now.addingTimeInterval(120 * 24 * 60 * 60)
@@ -803,7 +952,9 @@ final class CourseNotificationManager {
         if #available(iOS 17.2, *) {
             Task {
                 for await tokenData in Activity<CourseActivityAttributes>.pushToStartTokenUpdates {
-                    await registerPushToStartToken(tokenData, force: false)
+                    await enqueueRemoteOperation { [self] in
+                        await registerPushToStartToken(tokenData, force: false)
+                    }.value
                 }
             }
         }
@@ -827,7 +978,9 @@ final class CourseNotificationManager {
             for attempt in 1...5 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt * 2) * 1_000_000_000)
                 if let tokenData = Activity<CourseActivityAttributes>.pushToStartToken {
-                    await self.registerPushToStartToken(tokenData, force: force)
+                    await self.enqueueRemoteOperation { [self] in
+                        await registerPushToStartToken(tokenData, force: force)
+                    }.value
                     return
                 }
             }
@@ -836,8 +989,13 @@ final class CourseNotificationManager {
     }
 
     private func registerPushToStartToken(_ tokenData: Data, force: Bool) async {
+        // Don't re-activate a token the server deactivated while reminders are off.
+        guard isEnabled else { return }
         let tokenHex = hexString(from: tokenData)
-        let identity = await notificationIdentity()
+        guard let identity = await notificationIdentity() else {
+            logger.info("[CourseNotification] 無法取得使用者身分，跳過 push-to-start token 註冊")
+            return
+        }
         let registrationKey = "\(identity.userId):\(identity.deviceId):\(tokenHex)"
         if !force, UserDefaults.standard.string(forKey: Keys.lastRegisteredPushToStartToken) == registrationKey {
             return
@@ -852,9 +1010,10 @@ final class CourseNotificationManager {
         if await postJSON(to: "\(serverBaseURL)/push-to-start/register", body: payload) {
             UserDefaults.standard.set(registrationKey, forKey: Keys.lastRegisteredPushToStartToken)
             logger.info("[CourseNotification] ✅ 已向伺服器註冊 push-to-start token")
-            if !lastCourseSnapshot.isEmpty {
+            if isEnabled, !lastCourseSnapshot.isEmpty {
                 await scheduleRemoteCourseActivities(
                     for: lastCourseSnapshot,
+                    semester: lastSemester,
                     semesterStartDate: nil,
                     semesterEndDate: nil
                 )
@@ -879,75 +1038,32 @@ final class CourseNotificationManager {
         }
     }
 
+    /// Drives the local phase transitions for one activity. Re-scheduling the same
+    /// activity cancels the previous task, and the updates run sequentially in one task.
     private func scheduleLocalPhaseUpdates(
         for activity: Activity<CourseActivityAttributes>,
         state: CourseActivityAttributes.ContentState
     ) {
-        let endTransitionDate = notifyStart ? state.classEndDate : state.classStartDate
-        let dismissalDate = notifyEnd && notifyStart
-            ? state.classEndDate.addingTimeInterval(liveActivityDismissalDelay)
+        let activityId = activity.id
+        let startDate = state.classStartDate
+        let endDate = state.classEndDate
+        let showDuring = notifyStart
+        let endTransitionDate = showDuring ? endDate : startDate
+        let dismissalDate = notifyEnd && showDuring
+            ? endDate.addingTimeInterval(liveActivityDismissalDelay)
             : endTransitionDate
 
-        if notifyStart {
-            scheduleLocalUpdate(
-                for: activity,
-                phase: .during,
-                startDate: state.classStartDate,
-                endDate: state.classEndDate,
-                at: state.classStartDate
-            )
-        }
-        scheduleLocalUpdate(
-            for: activity,
-            phase: .ended,
-            startDate: state.classStartDate,
-            endDate: state.classEndDate,
-            at: endTransitionDate
-        )
-        scheduleLocalEnd(
-            for: activity,
-            startDate: state.classStartDate,
-            endDate: state.classEndDate,
-            at: dismissalDate
-        )
-    }
-
-    private func scheduleLocalUpdate(
-        for activity: Activity<CourseActivityAttributes>,
-        phase: CoursePhase,
-        startDate: Date,
-        endDate: Date,
-        at date: Date
-    ) {
-        let delay = date.timeIntervalSinceNow
-
-        Task {
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        phaseUpdateTasks[activityId]?.cancel()
+        phaseUpdateTasks[activityId] = Task {
+            if showDuring, endTransitionDate > Date() {
+                guard await Self.sleep(until: startDate) else { return }
+                await updateLocalPhase(activity, phase: .during, startDate: startDate, endDate: endDate)
             }
 
-            let updatedState = CourseActivityAttributes.ContentState(
-                phase: phase,
-                classStartDate: startDate,
-                classEndDate: endDate
-            )
-            let content = ActivityContent(state: updatedState, staleDate: staleDate(for: updatedState))
-            await activity.update(content)
-            logger.info("[CourseNotification] ✅ 本機切換遠端啟動 Live Activity: \(activity.id) phase=\(phase.rawValue)")
-        }
-    }
+            guard await Self.sleep(until: endTransitionDate) else { return }
+            await updateLocalPhase(activity, phase: .ended, startDate: startDate, endDate: endDate)
 
-    private func scheduleLocalEnd(
-        for activity: Activity<CourseActivityAttributes>,
-        startDate: Date,
-        endDate: Date,
-        at dismissalDate: Date
-    ) {
-        let delay = dismissalDate.timeIntervalSinceNow
-        guard delay > 0 else { return }
-
-        Task {
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard await Self.sleep(until: dismissalDate) else { return }
             let finalState = CourseActivityAttributes.ContentState(
                 phase: .ended,
                 classStartDate: startDate,
@@ -955,13 +1071,43 @@ final class CourseNotificationManager {
             )
             let content = ActivityContent(state: finalState, staleDate: dismissalDate)
             await activity.end(content, dismissalPolicy: .immediate)
-            logger.info("[CourseNotification] ✅ 本機結束遠端啟動 Live Activity: \(activity.id)")
+            logger.info("[CourseNotification] ✅ 本機結束遠端啟動 Live Activity: \(activityId)")
+            cancelActivityTasks(for: activityId)
         }
+    }
+
+    private func updateLocalPhase(
+        _ activity: Activity<CourseActivityAttributes>,
+        phase: CoursePhase,
+        startDate: Date,
+        endDate: Date
+    ) async {
+        let updatedState = CourseActivityAttributes.ContentState(
+            phase: phase,
+            classStartDate: startDate,
+            classEndDate: endDate
+        )
+        let content = ActivityContent(state: updatedState, staleDate: staleDate(for: updatedState))
+        await activity.update(content)
+        logger.info("[CourseNotification] ✅ 本機切換遠端啟動 Live Activity: \(activity.id) phase=\(phase.rawValue)")
+    }
+
+    /// Sleeps until `date`; returns false when the task was cancelled.
+    nonisolated private static func sleep(until date: Date) async -> Bool {
+        let delay = date.timeIntervalSinceNow
+        if delay > 0 {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return false
+            }
+        }
+        return !Task.isCancelled
     }
 
     @discardableResult
     func requestRemoteFullCycleTest(course: Course) async -> Bool {
-        let identity = await notificationIdentity()
+        guard let identity = await notificationIdentity() else { return false }
         let payload = PushToStartFullCyclePayload(
             userId: identity.userId,
             deviceId: identity.deviceId,
@@ -986,13 +1132,16 @@ final class CourseNotificationManager {
         }
 
         let tokenHex = hexString(from: tokenData)
-        let payload = await registrationPayload(
+        guard let payload = await registrationPayload(
             activity: activity,
             courseId: courseId,
             tokenHex: tokenHex,
             startDate: startDate,
             endDate: endDate
-        )
+        ) else {
+            logger.info("[CourseNotification] 無法取得使用者身分，跳過 activity 註冊")
+            return false
+        }
 
         guard await postJSON(to: "\(serverBaseURL)/activity/register", body: payload) else {
             logger.info("[CourseNotification] ❌ 向伺服器註冊失敗 activity: \(activity.id)")
@@ -1000,7 +1149,8 @@ final class CourseNotificationManager {
         }
         logger.info("[CourseNotification] ✅ 已向伺服器註冊 activity: \(activity.id)")
 
-        Task {
+        tokenObserverTasks[activity.id]?.cancel()
+        tokenObserverTasks[activity.id] = Task {
             await observeTokenRefreshes(
                 activity,
                 courseId: courseId,
@@ -1042,14 +1192,15 @@ final class CourseNotificationManager {
         endDate: Date
     ) async {
         for await updatedToken in activity.pushTokenUpdates {
+            if Task.isCancelled { break }
             let updatedHex = hexString(from: updatedToken)
-            let update = await registrationPayload(
+            guard let update = await registrationPayload(
                 activity: activity,
                 courseId: courseId,
                 tokenHex: updatedHex,
                 startDate: startDate,
                 endDate: endDate
-            )
+            ) else { continue }
 
             if await postJSON(to: "\(serverBaseURL)/activity/register", body: update) {
                 logger.info("[CourseNotification] 🔄 Push token refreshed for \(activity.id)")
@@ -1065,8 +1216,8 @@ final class CourseNotificationManager {
         tokenHex: String,
         startDate: Date,
         endDate: Date
-    ) async -> ActivityRegistrationPayload {
-        let identity = await notificationIdentity()
+    ) async -> ActivityRegistrationPayload? {
+        guard let identity = await notificationIdentity() else { return nil }
         return ActivityRegistrationPayload(
             userId: identity.userId,
             deviceId: identity.deviceId,
@@ -1079,15 +1230,25 @@ final class CourseNotificationManager {
         )
     }
 
-    private func notificationIdentity() async -> NotificationIdentity {
-        let userId: String
-        if let sisSession = try? await SISAuthService.shared.getValidSession() {
-            userId = String(sisSession.userId)
-        } else if let tronClassSession = try? await TronClassAuthService.shared.getValidSession() {
-            userId = String(tronClassSession.userId)
-        } else {
-            userId = "anonymous"
+    /// Resolves the user id the server keys schedules by. Returns nil when no user is known —
+    /// never registers schedules under a shared "anonymous" id.
+    /// With `allowSessionRefresh: false` (logout) only the cached id is used, so no re-login is triggered.
+    private func notificationIdentity(allowSessionRefresh: Bool = true) async -> NotificationIdentity? {
+        var userId: String?
+        if allowSessionRefresh {
+            if let sisSession = try? await SISAuthService.shared.getValidSession() {
+                userId = String(sisSession.userId)
+            } else if let tronClassSession = try? await TronClassAuthService.shared.getValidSession() {
+                userId = String(tronClassSession.userId)
+            }
+            if let userId {
+                UserDefaults.standard.set(userId, forKey: Keys.lastUserId)
+            }
         }
+        if userId == nil {
+            userId = UserDefaults.standard.string(forKey: Keys.lastUserId)
+        }
+        guard let userId, !userId.isEmpty else { return nil }
 
         return NotificationIdentity(
             userId: userId,
@@ -1111,8 +1272,24 @@ final class CourseNotificationManager {
         return generated
     }
 
-    private func cancelRemoteSchedules(semester: String? = nil, deactivateToken: Bool) async {
-        let identity = await notificationIdentity()
+    /// Cancels server schedules and forgets the local sync state so the next sync
+    /// (and push-to-start registration, when the token was deactivated) is sent again.
+    @discardableResult
+    private func cancelRemoteSchedules(
+        semester: String? = nil,
+        deactivateToken: Bool,
+        allowSessionRefresh: Bool = true
+    ) async -> Bool {
+        lastRemoteScheduleSyncSignature = nil
+        inFlightRemoteScheduleSyncSignature = nil
+        if deactivateToken {
+            UserDefaults.standard.removeObject(forKey: Keys.lastRegisteredPushToStartToken)
+        }
+
+        guard let identity = await notificationIdentity(allowSessionRefresh: allowSessionRefresh) else {
+            logger.info("[CourseNotification] 無法取得使用者身分，跳過取消伺服器排程")
+            return false
+        }
         let payload = CancelRemoteSchedulesPayload(
             userId: identity.userId,
             deviceId: identity.deviceId,
@@ -1125,9 +1302,24 @@ final class CourseNotificationManager {
             } else {
                 logger.info("[CourseNotification] ✅ 已取消伺服器未來 Live Activity 排程")
             }
+            return true
         } else {
             logger.info("[CourseNotification] ⚠️ 取消伺服器 Live Activity 排程失敗")
+            return false
         }
+    }
+
+    /// Cancels the semester's server schedules once; repeated calls with nothing to schedule are skipped.
+    @discardableResult
+    private func cancelRemoteSchedulesIfNeeded(semester: String) async -> Bool {
+        let cancelledSignature = "cancelled#\(semester)"
+        guard lastRemoteScheduleSyncSignature != cancelledSignature else { return true }
+        let targetSemester: String? = semester == "unknown" ? nil : semester
+        if await cancelRemoteSchedules(semester: targetSemester, deactivateToken: false) {
+            lastRemoteScheduleSyncSignature = cancelledSignature
+            return true
+        }
+        return false
     }
 
     private func unixSeconds(_ date: Date) -> Int {

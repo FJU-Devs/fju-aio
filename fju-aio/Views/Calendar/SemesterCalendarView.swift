@@ -14,7 +14,8 @@ struct SemesterCalendarView: View {
     @State private var bulkAddResult: BulkAddResult?
     @State private var calendarAccessDenied = false
 
-    private let semester = "113-2"
+    /// Same key FJUApp / HomeView use when caching calendar events.
+    private var semester: String { CurrentSemester.code() }
     private let cache = AppCache.shared
 
     private var filteredEvents: [CalendarEvent] {
@@ -221,6 +222,7 @@ struct SemesterCalendarView: View {
                 .background(isSelected ? Color.accentColor : Color(.systemGray5), in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

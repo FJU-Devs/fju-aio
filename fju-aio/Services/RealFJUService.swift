@@ -57,11 +57,13 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
                 throw SISError.badRequest("Invalid semester format")
             }
 
+            // Both calls share one (short-lived cached) download of the full grade inquiry.
             let scoreResponse = try await self.sisService.queryScores(academicYear: academicYear, semester: semesterNum)
+            let cumulativeGPA = try await self.sisService.cumulativeGPA(throughAcademicYear: academicYear, semester: semesterNum)
 
             return GPASummary(
                 semesterGPA: scoreResponse.semesterGPA,
-                cumulativeGPA: scoreResponse.semesterGPA,
+                cumulativeGPA: cumulativeGPA,
                 totalCreditsEarned: scoreResponse.earnedCredits,
                 totalCreditsAttempted: scoreResponse.totalCredits,
                 semester: semester
@@ -103,6 +105,10 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
     
     // MARK: - Attendance
 
+    /// Attendance across the user's ongoing TronClass courses.
+    /// Note: `semester` is not used for filtering — TronClass `my-courses` is queried with
+    /// `status: ongoing` and its course summaries expose no semester / academic-year field,
+    /// so the result always reflects the current term.
     func fetchAttendanceRecords(semester: String) async throws -> [AttendanceRecord] {
         logger.info("📊 Fetching attendance records via TronClass rollcall API")
 
@@ -115,30 +121,49 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
 
         guard !courses.isEmpty else { return [] }
 
-        let rollcallService = RollcallService.shared
+        let attendanceService = AttendanceRollcallService.shared
         var records: [AttendanceRecord] = []
+        var failures: [Error] = []
 
-        await withTaskGroup(of: [AttendanceRecord].self) { group in
+        await withTaskGroup(of: Result<[AttendanceRecord], Error>.self) { group in
             for course in courses {
                 group.addTask {
-                    guard let rollcalls = try? await rollcallService.fetchAttendanceRollcalls(
-                        courseId: course.id, userId: userId
-                    ) else { return [] }
-                    return rollcalls.compactMap { r -> AttendanceRecord? in
-                        guard let date = r.rollcallDate else { return nil }
-                        return AttendanceRecord(
-                            id: "\(r.student_rollcall_id)",
-                            courseName: course.name,
-                            date: date,
-                            period: 0,
-                            status: r.attendanceStatus,
-                            rollcallTitle: r.title,
-                            source: r.source
+                    do {
+                        let rollcalls = try await attendanceService.fetchAttendanceRollcalls(
+                            courseId: course.id, userId: userId
                         )
+                        return .success(rollcalls.compactMap { r -> AttendanceRecord? in
+                            guard let date = r.rollcallDate else { return nil }
+                            return AttendanceRecord(
+                                id: "\(r.student_rollcall_id)",
+                                courseName: course.name,
+                                date: date,
+                                period: 0,
+                                status: r.attendanceStatus,
+                                rollcallTitle: r.title,
+                                source: r.source
+                            )
+                        })
+                    } catch {
+                        return .failure(error)
                     }
                 }
             }
-            for await batch in group { records.append(contentsOf: batch) }
+            for await result in group {
+                switch result {
+                case .success(let batch): records.append(contentsOf: batch)
+                case .failure(let error): failures.append(error)
+                }
+            }
+        }
+
+        if !failures.isEmpty {
+            // Every course failed — surface the error instead of an empty (and cacheable) list.
+            if failures.count == courses.count, let firstError = failures.first {
+                logger.error("❌ Attendance fetch failed for all \(courses.count) courses: \(firstError.localizedDescription, privacy: .public)")
+                throw firstError
+            }
+            logger.warning("⚠️ Attendance fetch failed for \(failures.count) of \(courses.count) courses; returning partial data")
         }
 
         logger.info("✅ Fetched \(records.count) attendance records total")
@@ -179,7 +204,10 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
     
     private func parseICSContent(_ content: String) -> [CalendarEvent] {
         var events: [CalendarEvent] = []
-        let lines = content.components(separatedBy: .newlines)
+        // ICS uses CRLF line endings; normalise so CRLF doesn't produce phantom empty lines.
+        let lines = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: .newlines)
         
         var currentEvent: [String: String] = [:]
         var isInEvent = false
@@ -187,11 +215,22 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
         var currentValue = ""
         
         for line in lines {
+            // RFC 5545 §3.1: a line starting with a space or tab continues the previous
+            // content line. Detect this on the raw line (before trimming) and drop
+            // exactly the one leading whitespace character.
+            if isInEvent, !currentKey.isEmpty, let first = line.first, first == " " || first == "\t" {
+                currentValue += line.dropFirst()
+                continue
+            }
+
             let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            if trimmedLine.isEmpty { continue }
             
             if trimmedLine == "BEGIN:VEVENT" {
                 isInEvent = true
                 currentEvent = [:]
+                currentKey = ""
+                currentValue = ""
             } else if trimmedLine == "END:VEVENT" {
                 if !currentKey.isEmpty {
                     currentEvent[currentKey] = currentValue
@@ -205,19 +244,16 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
                 currentKey = ""
                 currentValue = ""
             } else if isInEvent {
-                if trimmedLine.first == " " || trimmedLine.first == "\t" {
-                    currentValue += trimmedLine.trimmingCharacters(in: .whitespaces)
-                } else {
-                    if !currentKey.isEmpty {
-                        currentEvent[currentKey] = currentValue
-                    }
-                    
-                    if let colonIndex = trimmedLine.firstIndex(of: ":") {
-                        let key = String(trimmedLine[..<colonIndex])
-                        let value = String(trimmedLine[trimmedLine.index(after: colonIndex)...])
-                        currentKey = key.components(separatedBy: ";").first ?? key
-                        currentValue = value
-                    }
+                if !currentKey.isEmpty {
+                    currentEvent[currentKey] = currentValue
+                }
+
+                // Parse the untrimmed line so whitespace at a fold boundary is preserved.
+                if let colonIndex = line.firstIndex(of: ":") {
+                    let key = String(line[..<colonIndex])
+                    let value = String(line[line.index(after: colonIndex)...])
+                    currentKey = key.components(separatedBy: ";").first ?? key
+                    currentValue = value
                 }
             }
         }
@@ -228,45 +264,13 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
     
     private func createCalendarEvent(from eventData: [String: String]) -> CalendarEvent? {
         guard let uid = eventData["UID"],
-              let summary = eventData["SUMMARY"],
-              let dtstart = eventData["DTSTART"] else {
+              let summary = eventData["SUMMARY"].map(Self.unescapeICSText),
+              let dtstart = eventData["DTSTART"],
+              let startDate = Self.parseICSDate(dtstart) else {
             return nil
         }
         
-        let dateFormatter = DateFormatter()
-        
-        let startDate: Date
-        if dtstart.count == 8 {
-            dateFormatter.dateFormat = "yyyyMMdd"
-            guard let date = dateFormatter.date(from: dtstart) else { return nil }
-            startDate = date
-        } else {
-            if dtstart.hasSuffix("Z") {
-                dateFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-                dateFormatter.timeZone = TimeZone(identifier: "UTC")
-            } else {
-                dateFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
-            }
-            guard let date = dateFormatter.date(from: dtstart) else { return nil }
-            startDate = date
-        }
-        
-        var endDate: Date?
-        if let dtend = eventData["DTEND"] {
-            if dtend.count == 8 {
-                dateFormatter.dateFormat = "yyyyMMdd"
-                endDate = dateFormatter.date(from: dtend)
-            } else {
-                if dtend.hasSuffix("Z") {
-                    dateFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-                    dateFormatter.timeZone = TimeZone(identifier: "UTC")
-                } else {
-                    dateFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
-                }
-                endDate = dateFormatter.date(from: dtend)
-            }
-        }
-        
+        let endDate = eventData["DTEND"].flatMap(Self.parseICSDate)
         let category = determineEventCategory(from: summary)
         
         return CalendarEvent(
@@ -275,8 +279,60 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
             startDate: startDate,
             endDate: endDate,
             category: category,
-            description: eventData["DESCRIPTION"]
+            description: eventData["DESCRIPTION"].map(Self.unescapeICSText)
         )
+    }
+
+    // MARK: ICS helpers
+
+    private static let taipeiTimeZone = TimeZone(identifier: "Asia/Taipei") ?? .current
+
+    private static func makeICSFormatter(_ format: String, timeZone: TimeZone) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    /// All-day values (DATE) and floating DATE-TIME values are interpreted in Taipei time;
+    /// values with a trailing `Z` are UTC.
+    private static let icsDateFormatter = makeICSFormatter("yyyyMMdd", timeZone: taipeiTimeZone)
+    private static let icsFloatingDateTimeFormatter = makeICSFormatter("yyyyMMdd'T'HHmmss", timeZone: taipeiTimeZone)
+    private static let icsUTCDateTimeFormatter = makeICSFormatter("yyyyMMdd'T'HHmmss'Z'", timeZone: TimeZone(identifier: "UTC")!)
+
+    private static func parseICSDate(_ value: String) -> Date? {
+        let value = value.trimmingCharacters(in: .whitespaces)
+        if value.count == 8 {
+            return icsDateFormatter.date(from: value)
+        }
+        if value.hasSuffix("Z") {
+            return icsUTCDateTimeFormatter.date(from: value)
+        }
+        return icsFloatingDateTimeFormatter.date(from: value)
+    }
+
+    /// Unescapes RFC 5545 TEXT values: `\\`, `\;`, `\,`, `\n` / `\N`.
+    private static func unescapeICSText(_ text: String) -> String {
+        guard text.contains("\\") else { return text }
+        var result = ""
+        result.reserveCapacity(text.count)
+        var iterator = text.makeIterator()
+        while let character = iterator.next() {
+            guard character == "\\", let next = iterator.next() else {
+                result.append(character)
+                continue
+            }
+            switch next {
+            case "n", "N": result.append("\n")
+            case "\\", ";", ",": result.append(next)
+            default:
+                result.append(character)
+                result.append(next)
+            }
+        }
+        return result
     }
     
     private func determineEventCategory(from summary: String) -> CalendarEvent.EventCategory {
@@ -319,23 +375,6 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
         throw SISError.notFound
     }
     
-    // MARK: - Check-in
-    
-    func performCheckIn(courseId: String, location: String?) async throws -> CheckInResult {
-        logger.info("📍 Performing check-in for course: \(courseId)")
-        
-        let now = Date()
-        return CheckInResult(
-            id: UUID().uuidString,
-            courseId: courseId,
-            courseName: "課程名稱",
-            timestamp: now,
-            location: location,
-            status: .success,
-            message: "簽到成功"
-        )
-    }
-    
     // MARK: - User Profile
     
     func fetchUserProfile() async throws -> StudentProfile {
@@ -354,18 +393,10 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
         ]
     }
 
+    /// Not backed by a real API — no UI path calls this (EnrollmentCertificateView uses
+    /// SISService directly). Throw instead of returning a fake "pending" application.
     func applyCertificate(type: CertificateType, purpose: String, copies: Int, language: String) async throws -> CertificateApplication {
-        return CertificateApplication(
-            id: UUID().uuidString,
-            certificateType: type,
-            purpose: purpose,
-            copies: copies,
-            language: language,
-            status: .pending,
-            appliedDate: Date(),
-            estimatedCompletionDate: nil,
-            downloadURL: nil
-        )
+        throw RealFJUServiceError.notSupported
     }
 
     func fetchCertificateApplications() async throws -> [CertificateApplication] {
@@ -410,4 +441,14 @@ final class RealFJUService: FJUServiceProtocol, @unchecked Sendable {
     }
     
 
+}
+
+private nonisolated enum RealFJUServiceError: LocalizedError {
+    case notSupported
+
+    var errorDescription: String? {
+        switch self {
+        case .notSupported: return "此功能目前不支援"
+        }
+    }
 }

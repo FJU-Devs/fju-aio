@@ -109,6 +109,50 @@ final class AppCache {
         disk.save(data, key: Keys.calendar(semester), schemaVersion: schemaVersion)
     }
 
+    // MARK: - Freshness
+
+    enum Entry {
+        case courses(semester: String)
+        case semesters
+        case grades(semester: String)
+        case gpa(semester: String)
+        case assignments
+        case attendance(semester: String)
+        case calendar(semester: String)
+    }
+
+    /// When the cached value for `entry` was stored, or nil if nothing is cached.
+    func cachedAt(_ entry: Entry) -> Date? {
+        switch entry {
+        case .courses(let semester):
+            _ = getCourses(semester: semester)
+            return courses[semester]?.cachedAt
+        case .semesters:
+            return semesters?.cachedAt
+        case .grades(let semester):
+            _ = getGrades(semester: semester)
+            return grades[semester]?.cachedAt
+        case .gpa(let semester):
+            _ = getGPASummary(semester: semester)
+            return gpaSummaries[semester]?.cachedAt
+        case .assignments:
+            _ = getAssignments()
+            return assignments?.cachedAt
+        case .attendance(let semester):
+            _ = getAttendance(semester: semester)
+            return attendance[semester]?.cachedAt
+        case .calendar(let semester):
+            _ = getCalendarEvents(semester: semester)
+            return calendarEvents[semester]?.cachedAt
+        }
+    }
+
+    /// True when nothing is cached for `entry` or it is older than `maxAge` seconds.
+    func isStale(_ entry: Entry, maxAge: TimeInterval) -> Bool {
+        guard let cachedAt = cachedAt(entry) else { return true }
+        return Date().timeIntervalSince(cachedAt) > maxAge
+    }
+
     // MARK: - Search Helpers
 
     /// Returns all courses across all cached semesters (deduplicated by course id).

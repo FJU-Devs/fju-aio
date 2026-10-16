@@ -4,7 +4,7 @@ import os.log
 actor EstuCourseService {
     nonisolated static let shared = EstuCourseService()
     
-    private let baseURL = "http://estu.fju.edu.tw"
+    private let baseURL = "https://estu.fju.edu.tw"
     private let coursePath = "/CheckSelList/HisListNew.aspx"
     private let authService = EstuAuthService.shared
     private let htmlParser = HTMLParser.shared
@@ -21,10 +21,8 @@ actor EstuCourseService {
         
         let session = try await authService.getValidSession()
         
-        let semesterCode = convertToSemesterCode(semester)
-        
         do {
-            let estuCourses = try await fetchCoursesWithSession(session, semesterCode: semesterCode)
+            let estuCourses = try await fetchCoursesWithSession(session, semester: semester)
             let enrichedCourses = await enrichWithOutlineData(estuCourses)
             let courses = enrichedCourses.flatMap { $0.toCourses() }
             logger.info("✅ Fetched \(courses.count, privacy: .public) courses")
@@ -33,7 +31,7 @@ actor EstuCourseService {
             // Session cookie is gone (e.g. app restart), or other ESTU error — force re-login and retry
             logger.warning("⚠️ ESTU error caught (\(estuError.localizedDescription, privacy: .public)), forcing re-login...")
             let freshSession = try await authService.forceRelogin()
-            let estuCourses = try await fetchCoursesWithSession(freshSession, semesterCode: semesterCode)
+            let estuCourses = try await fetchCoursesWithSession(freshSession, semester: semester)
             let enrichedCourses = await enrichWithOutlineData(estuCourses)
             let courses = enrichedCourses.flatMap { $0.toCourses() }
             logger.info("✅ Fetched \(courses.count, privacy: .public) courses after re-login")
@@ -48,29 +46,33 @@ actor EstuCourseService {
         logger.info("📅 Fetching available semesters")
         
         let session = try await authService.getValidSession()
-        
-        guard let html = session.loginResponseHTML else {
-            logger.warning("⚠️ No login response HTML, forcing re-login for semesters")
-            let freshSession = try await authService.forceRelogin()
-            guard let freshHTML = freshSession.loginResponseHTML else {
-                throw EstuError.sessionExpired
-            }
-            let rawSemesters = extractSemesterOptions(from: freshHTML)
-            let semesters = try await filterSemestersWithCourses(rawSemesters, session: freshSession, startingHTML: freshHTML)
+
+        do {
+            let semesters = try await fetchAvailableSemesters(session: session)
             logger.info("✅ Found \(semesters.count, privacy: .public) semesters")
             return semesters
+        } catch EstuError.sessionExpired {
+            // Persisted HTML / cookies were stale — log in again and retry once.
+            logger.warning("⚠️ ESTU session expired while fetching semesters, forcing re-login...")
+            let freshSession = try await authService.forceRelogin()
+            let semesters = try await fetchAvailableSemesters(session: freshSession)
+            logger.info("✅ Found \(semesters.count, privacy: .public) semesters after re-login")
+            return semesters
         }
-        
+    }
+
+    private func fetchAvailableSemesters(session: EstuSession) async throws -> [String] {
+        guard let html = session.loginResponseHTML, isAuthenticatedPage(html) else {
+            throw EstuError.sessionExpired
+        }
         let rawSemesters = extractSemesterOptions(from: html)
-        let semesters = try await filterSemestersWithCourses(rawSemesters, session: session, startingHTML: html)
-        
-        logger.info("✅ Found \(semesters.count, privacy: .public) semesters")
-        return semesters
+        return try await filterSemestersWithCourses(rawSemesters, session: session, startingHTML: html)
     }
     
     // MARK: - Private Methods
     
-    private func fetchCoursesWithSession(_ session: EstuSession, semesterCode: String?) async throws -> [EstuCourse] {
+    private func fetchCoursesWithSession(_ session: EstuSession, semester: String) async throws -> [EstuCourse] {
+        let semesterCode = convertToSemesterCode(semester)
         logger.info("🔄 fetchCoursesWithSession: semesterCode=\(semesterCode ?? "nil", privacy: .public)")
         
         // Use the authenticated HTML from the login response directly.
@@ -90,8 +92,12 @@ actor EstuCourseService {
             logger.info("📄 Got switched semester HTML, length=\(html.count, privacy: .public)")
         }
         
-        guard let currentSemester = extractCurrentSemester(from: html) ?? semesterCode else {
+        // Fall back to the requested "114-1"-style identifier (not the "1141" form code).
+        guard let currentSemester = extractCurrentSemester(from: html) ?? (semesterCode != nil ? semester : nil) else {
             throw EstuError.invalidResponse
+        }
+        if semesterCode != nil, currentSemester != semester {
+            logger.warning("⚠️ ESTU returned semester \(currentSemester, privacy: .public) but \(semester, privacy: .public) was requested")
         }
         logger.info("📅 Current semester: \(currentSemester, privacy: .public)")
         
@@ -99,7 +105,7 @@ actor EstuCourseService {
         logger.info("📚 extractCourses returned \(courses.count, privacy: .public) courses")
         for course in courses {
             let slots = course.schedules.map { "\($0.dayOfWeek) \($0.periods) @\($0.classroom)" }.joined(separator: " | ")
-            logger.info("  📖 \(course.name, privacy: .public) [\(slots, privacy: .public)]")
+            logger.debug("  📖 \(course.name, privacy: .private) [\(slots, privacy: .private)]")
         }
         return courses
     }
@@ -112,7 +118,7 @@ actor EstuCourseService {
             return courses.map { course in
                 let outline = outline(for: course, in: outlinesByCourseCode)
                 if outline == nil {
-                    logger.debug("No outline match for \(course.name, privacy: .public), code=\(course.code, privacy: .public)")
+                    logger.debug("No outline match for \(course.name, privacy: .private), code=\(course.code, privacy: .private)")
                 }
                 return course.withOutline(outline)
             }
@@ -180,6 +186,14 @@ actor EstuCourseService {
         
         guard let html = String(data: data, encoding: .utf8) else {
             throw EstuError.invalidResponse
+        }
+
+        // An expired ASP.NET session answers the postback with the login form; treat
+        // that as an expired session so callers re-login instead of parsing (and
+        // caching) an empty course list.
+        guard isAuthenticatedPage(html) else {
+            logger.warning("⚠️ Semester switch returned an unauthenticated page — session expired")
+            throw EstuError.sessionExpired
         }
         
         return html

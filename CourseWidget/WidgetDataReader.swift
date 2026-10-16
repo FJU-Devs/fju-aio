@@ -6,6 +6,14 @@ import Foundation
 
 enum WidgetDataReader {
 
+    /// FJU class times are Asia/Taipei wall-clock times; use this for all widget date math.
+    static let taipeiCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Taipei") ?? .current
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        return calendar
+    }()
+
     // MARK: - Load Payloads
 
     static func loadCoursePayload() -> WidgetCoursePayload? {
@@ -103,21 +111,19 @@ enum WidgetDataReader {
 
     // MARK: - Helpers
 
-    private static func todayDayNumber(at date: Date) -> Int? {
-        let weekday = Calendar.current.component(.weekday, from: date)
+    /// Course day number for `date`: 1=Mon … 6=Sat, 7=Sun (matches `Course.dayOfWeekNumber`).
+    static func todayDayNumber(at date: Date) -> Int? {
+        let weekday = taipeiCalendar.component(.weekday, from: date)
         // Calendar.weekday: 1=Sun, 2=Mon, …, 7=Sat
         switch weekday {
-        case 2: return 1  // Mon
-        case 3: return 2  // Tue
-        case 4: return 3  // Wed
-        case 5: return 4  // Thu
-        case 6: return 5  // Fri
-        default: return nil  // weekend
+        case 1: return 7      // Sun
+        case 2...7: return weekday - 1
+        default: return nil
         }
     }
 
     private static func currentMinutes(from date: Date) -> Int {
-        let cal = Calendar.current
+        let cal = taipeiCalendar
         let h = cal.component(.hour, from: date)
         let m = cal.component(.minute, from: date)
         return h * 60 + m
@@ -141,7 +147,7 @@ enum WidgetDataReader {
     ) -> (course: WidgetCourse, isActive: Bool)? {
         let normalizedToday = todayDayNumber ?? 0
         return courses
-            .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 5 }
+            .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 7 }
             .sorted {
                 let lhsOffset = daysUntilNextCourseDay($0.dayOfWeekNumber, from: normalizedToday)
                 let rhsOffset = daysUntilNextCourseDay($1.dayOfWeekNumber, from: normalizedToday)
@@ -155,7 +161,7 @@ enum WidgetDataReader {
     }
 
     private static func daysUntilNextCourseDay(_ courseDay: Int, from today: Int) -> Int {
-        guard today >= 1 && today <= 5 else { return courseDay }
+        guard today >= 1 && today <= 7 else { return courseDay }
         let offset = courseDay - today
         return offset > 0 ? offset : offset + 7
     }
@@ -173,7 +179,7 @@ extension WidgetDataReader {
     ]
 
     static func currentClassroomWeekday(at date: Date) -> String? {
-        let weekday = Calendar.current.component(.weekday, from: date)
+        let weekday = taipeiCalendar.component(.weekday, from: date)
         let index = weekday - 2
         guard classroomWeekdays.indices.contains(index) else { return nil }
         return classroomWeekdays[index]

@@ -4,7 +4,7 @@ import os.log
 actor EstuAuthService {
     nonisolated static let shared = EstuAuthService()
     
-    private let baseURL = "http://estu.fju.edu.tw"
+    private let baseURL = "https://estu.fju.edu.tw"
     private let loginPath = "/CheckSelList/HisListNew.aspx"
     private let sessionKey = "com.fju.estu.session"
     private let credentialStore = CredentialStore.shared
@@ -29,14 +29,28 @@ actor EstuAuthService {
     
     private var currentSession: EstuSession?
     private var refreshTask: Task<EstuSession, Error>?
+    /// The persisted session is loaded lazily on first use so the first
+    /// `getValidSession()` never races an async load kicked off from `init`.
+    private var hasLoadedSession = false
+    /// Bumped on logout so a re-login that finishes afterwards never re-stores a session.
+    private var sessionGeneration = 0
 
-    private init() {
-        Task { await loadSession() }
-    }
+    private init() {}
     
     // MARK: - Public API
     
     func login(username: String, password: String) async throws -> EstuSession {
+        loadSessionIfNeeded()
+        let generation = sessionGeneration
+        let session = try await authenticate(username: username, password: password)
+        if generation == sessionGeneration {
+            currentSession = session
+            saveSession(session)
+        }
+        return session
+    }
+
+    private func authenticate(username: String, password: String) async throws -> EstuSession {
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
         logger.info("🔐 Starting Estu login for user: \(username, privacy: .private)")
         
@@ -49,9 +63,6 @@ actor EstuAuthService {
             let session = try await performLogin(username: username, password: password, viewState: viewState)
             logger.info("✅ Login successful")
             
-            currentSession = session
-            saveSession(session)
-            
             return session
         } catch {
             logger.error("❌ Login failed: \(error.localizedDescription, privacy: .public)")
@@ -62,6 +73,7 @@ actor EstuAuthService {
     func getValidSession() async throws -> EstuSession {
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
         logger.info("🔍 Checking for valid Estu session...")
+        loadSessionIfNeeded()
         
         if let session = currentSession, !session.isExpired, session.loginResponseHTML != nil {
             logger.info("✅ Using cached session")
@@ -77,8 +89,13 @@ actor EstuAuthService {
         // Concurrent callers (getValidSession plus retry call sites in EstuCourseService)
         // must not clear cookies and re-login independently — that would stomp on each
         // other's in-progress session and look like a bad password. Share one attempt.
+        loadSessionIfNeeded()
+        let generation = sessionGeneration
+
         if let refreshTask {
-            return try await refreshTask.value
+            let session = try await refreshTask.value
+            guard generation == sessionGeneration else { throw EstuError.sessionExpired }
+            return session
         }
 
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
@@ -97,16 +114,29 @@ actor EstuAuthService {
             throw EstuError.sessionExpired
         }
 
+        // Background re-login never re-saves credentials (avoids racing `updatePassword`).
         let task = Task<EstuSession, Error> {
-            try await login(username: credentials.username, password: credentials.password)
+            try await self.authenticate(username: credentials.username, password: credentials.password)
         }
         refreshTask = task
-        defer { refreshTask = nil }
+        defer {
+            if refreshTask == task { refreshTask = nil }
+        }
 
         do {
-            return try await task.value
+            let session = try await task.value
+            guard generation == sessionGeneration else {
+                logger.warning("⚠️ Discarding ESTU session — logged out during re-login")
+                throw EstuError.sessionExpired
+            }
+            currentSession = session
+            saveSession(session)
+            return session
         } catch EstuError.invalidCredentials {
-            await CredentialErrorMonitor.shared.markPasswordInvalid()
+            if generation == sessionGeneration,
+               (try? credentialStore.retrieveLDAPCredentials())?.password == credentials.password {
+                await CredentialErrorMonitor.shared.markPasswordInvalid()
+            }
             throw EstuError.invalidCredentials
         }
     }
@@ -114,6 +144,10 @@ actor EstuAuthService {
     func logout() throws {
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
         logger.info("👋 Logging out from Estu...")
+        hasLoadedSession = true
+        sessionGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
         currentSession = nil
         // Clear ESTU cookies from cookie storage
         if let url = URL(string: "\(baseURL)\(loginPath)") {
@@ -235,6 +269,12 @@ actor EstuAuthService {
         }
     }
     
+    private func loadSessionIfNeeded() {
+        guard !hasLoadedSession else { return }
+        hasLoadedSession = true
+        loadSession()
+    }
+
     private func loadSession() {
         let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "EstuAuth")
 

@@ -26,7 +26,7 @@ struct ClassroomScheduleProvider: TimelineProvider {
         let payload = WidgetDataReader.loadClassroomPayload()
         var entries = [ClassroomScheduleEntry(date: Date(), payload: payload)]
 
-        let calendar = Calendar.current
+        let calendar = WidgetDataReader.taipeiCalendar
         let dayComponents = calendar.dateComponents([.year, .month, .day], from: Date())
         let updateTimes = [
             (8, 10), (9, 10), (10, 10), (11, 10), (12, 40),

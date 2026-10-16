@@ -51,23 +51,22 @@ private struct FriendListContent: View {
     @State private var isLoadingSession = false
     @State private var sessionError: String?
     @State private var isRefreshingFriends = false
-    @State private var lastAutomaticRefreshAt = Date.distantPast
-    @AppStorage("friendList.shareCredentialQRCode") private var shareCredentialQRCode = false
+
+    /// Shared across view instances so re-entering the tab doesn't bypass the throttle.
+    @MainActor private static var lastAutomaticRefreshAt = Date.distantPast
+    private static let automaticRefreshInterval: TimeInterval = 5 * 60
 
     private enum ProfileRefreshResult: Sendable {
         case updated(PublicProfile, id: String)
-        case missing(id: String)
+        case missing
         case failed
     }
 
     var body: some View {
         List {
             // MARK: 你的朋友
-            let regularFriends = friendStore.friends.filter { !$0.isManuallyAdded }
-            let manualFriends = friendStore.friends.filter { $0.isManuallyAdded }
-
             Section("你的朋友") {
-                if regularFriends.isEmpty {
+                if friendStore.friends.isEmpty {
                     HStack {
                         Spacer()
                         VStack(spacing: 8) {
@@ -84,7 +83,7 @@ private struct FriendListContent: View {
                     }
                     .listRowBackground(Color.clear)
                 } else {
-                    ForEach(regularFriends) { friend in
+                    ForEach(friendStore.friends) { friend in
                         NavigationLink {
                             FriendDetailView(friend: friend)
                         } label: {
@@ -92,30 +91,9 @@ private struct FriendListContent: View {
                         }
                     }
                     .onDelete { offsets in
-                        let ids = offsets.map { regularFriends[$0].id }
+                        let ids = offsets.map { friendStore.friends[$0].id }
                         ids.forEach { friendStore.removeFriend(id: $0) }
                     }
-                }
-            }
-
-            // MARK: 手動新增（簽到用）
-            if !manualFriends.isEmpty {
-                Section {
-                    ForEach(manualFriends) { friend in
-                        NavigationLink {
-                            FriendDetailView(friend: friend)
-                        } label: {
-                            FriendRow(friend: friend)
-                        }
-                    }
-                    .onDelete { offsets in
-                        let ids = offsets.map { manualFriends[$0].id }
-                        ids.forEach { friendStore.removeFriend(id: $0) }
-                    }
-                } header: {
-                    Text("手動新增（僅用於簽到）")
-                } footer: {
-                    Text("這些帳號是手動輸入的，不透過 CloudKit 同步，僅儲存在此裝置。")
                 }
             }
         }
@@ -134,6 +112,7 @@ private struct FriendListContent: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("新增好友")
             }
         }
         .alert("掃描結果", isPresented: Binding(
@@ -147,7 +126,6 @@ private struct FriendListContent: View {
         .sheet(isPresented: $showAddFriend) {
             AddFriendSheet(
                 session: sisSession,
-                sharesCredentials: $shareCredentialQRCode,
                 isLoadingSession: isLoadingSession,
                 sessionError: sessionError,
                 onRetrySession: { Task { await loadSession(force: true) } },
@@ -164,45 +142,45 @@ private struct FriendListContent: View {
             )
         }
         .task {
-            await refreshAll(forceSession: false)
-        }
-        .onAppear {
-            Task { await refreshAllIfNeeded() }
+            // Session is cheap and needed for own-QR detection; the CloudKit refresh is throttled.
+            await loadSession()
+            await refreshAllIfNeeded()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await refreshAllIfNeeded() }
         }
-        .refreshable { await refreshAll() }
+        .refreshable { await refreshAll(forceSession: true, forceIdentityRefresh: true) }
     }
 
+    /// - Parameter forceIdentityRefresh: Only manual pull-to-refresh should bypass the identity cache.
     @MainActor
-    private func refreshAll(forceSession: Bool = true) async {
+    private func refreshAll(forceSession: Bool, forceIdentityRefresh: Bool) async {
         guard !isRefreshingFriends else { return }
         isRefreshingFriends = true
         defer {
             isRefreshingFriends = false
-            lastAutomaticRefreshAt = Date()
+            Self.lastAutomaticRefreshAt = Date()
         }
 
         await loadSession(force: forceSession)
-        await importCloudFriends()
+        await importCloudFriends(forceIdentityRefresh: forceIdentityRefresh)
         await refreshFriendProfiles()
     }
 
     @MainActor
     private func refreshAllIfNeeded() async {
-        guard Date().timeIntervalSince(lastAutomaticRefreshAt) > 5 else { return }
-        await refreshAll(forceSession: false)
+        guard Date().timeIntervalSince(Self.lastAutomaticRefreshAt) > Self.automaticRefreshInterval else { return }
+        await refreshAll(forceSession: false, forceIdentityRefresh: false)
     }
 
     @MainActor
-    private func importCloudFriends() async {
+    private func importCloudFriends(forceIdentityRefresh: Bool) async {
         guard let session = sisSession else { return }
         do {
             _ = try await CloudKitProfileIdentityService.shared.ensureIdentity(
                 for: session,
-                forceRefresh: true
+                forceRefresh: forceIdentityRefresh
             )
         } catch {
             _ = await authManager.handleProfileIdentityError(error)
@@ -217,13 +195,12 @@ private struct FriendListContent: View {
     @MainActor
     private func refreshFriendProfiles() async {
         // Re-fetch CloudKit profiles for all friends to get latest avatars/profile data.
-        // Skip manually-added friends — they have no CloudKit record and would be deleted.
         await withTaskGroup(of: ProfileRefreshResult.self) { group in
-            for friend in friendStore.friends where !friend.isManuallyAdded {
+            for friend in friendStore.friends {
                 group.addTask {
                     do {
                         guard let profile = try await Self.loadProfileWithFriendSchedule(friend: friend) else {
-                            return .missing(id: friend.id)
+                            return .missing
                         }
                         return .updated(profile, id: friend.id)
                     } catch {
@@ -236,14 +213,11 @@ private struct FriendListContent: View {
                 switch result {
                 case .updated(let profile, let id):
                     friendStore.updateCachedProfile(profile, for: id)
-                case .missing(let id):
-                    // A missing profile normally means the friend deleted it or turned off
-                    // public visibility. But Xcode debug builds always hit CloudKit's empty
-                    // Development environment (TestFlight/App Store use Production), so every
-                    // friend looks "missing" there — that signal isn't trustworthy in DEBUG.
-                    #if !DEBUG
-                    friendStore.removeFriend(id: id)
-                    #endif
+                case .missing:
+                    // Never auto-remove: a nil profile can also mean it failed signature
+                    // verification (e.g. no production signing key) or the Development
+                    // environment is empty. Keep the cached data; the user can remove manually.
+                    break
                 case .failed:
                     break
                 }
@@ -298,31 +272,6 @@ private struct FriendListContent: View {
             fetchAndCacheProfile(recordName: payload.cloudKitRecordName)
             startNearbyIfPossible()
             nearbyService.sendAddRequest(to: payload)
-        case .combined(let payload):
-            if isOwnProfile(userId: payload.userId, recordName: payload.cloudKitRecordName) {
-                scanError = "這是你自己的 QR Code，無法加自己為好友。"
-                return
-            }
-            let wasAlreadyFriend = friendStore.isFriend(recordName: payload.cloudKitRecordName)
-            let profilePayload = ProfileQRPayload(
-                version: payload.version,
-                type: "profile",
-                cloudKitRecordName: payload.cloudKitRecordName,
-                empNo: payload.empNo,
-                displayName: payload.displayName,
-                userId: payload.userId,
-                scheduleShareToken: payload.scheduleShareToken
-            )
-            friendStore.addFriend(from: profilePayload)
-            if let friendId = friendStore.friends.first(where: { $0.id == payload.cloudKitRecordName })?.id {
-                friendStore.saveCredentials(for: friendId, username: payload.username, password: payload.password)
-            }
-            lastScannedInfo = wasAlreadyFriend
-                ? "已更新 \(payload.displayName) 的點名授權"
-                : "已新增好友：\(payload.displayName)（\(payload.empNo)）並儲存點名授權"
-            fetchAndCacheProfile(recordName: payload.cloudKitRecordName)
-        case .groupRollcall:
-            scanError = "這是點名 QR Code，請在簽到頁面使用。"
         case .unknown:
             scanError = "無法識別此 QR Code。"
         }
@@ -341,14 +290,7 @@ private struct FriendListContent: View {
             }) else { return }
             do {
                 guard let profile = try await Self.loadProfileWithFriendSchedule(friend: friend) else {
-                    // See refreshFriendProfiles() — this signal is unreliable on DEBUG builds
-                    // because they hit CloudKit's Development environment, not Production.
-                    #if !DEBUG
-                    await MainActor.run {
-                        friendStore.removeFriend(id: recordName)
-                        scanError = "此公開資料已不存在，已從好友列表移除。"
-                    }
-                    #endif
+                    // See refreshFriendProfiles() — a nil profile is not a reliable signal; never auto-remove.
                     return
                 }
                 await MainActor.run {
@@ -402,7 +344,6 @@ private struct FriendListContent: View {
 
 private struct AddFriendSheet: View {
     let session: SISSession?
-    @Binding var sharesCredentials: Bool
     let isLoadingSession: Bool
     let sessionError: String?
     let onRetrySession: () -> Void
@@ -419,8 +360,8 @@ private struct AddFriendSheet: View {
     @State private var acceptedInvitationPeers: [NearbyPeerProfile] = []
     @State private var nearbyStartNonce = UUID()
     @State private var bluetoothAlertIssue: NearbyBluetoothIssue?
-    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = true
-    @AppStorage(ModuleRegistry.checkInFeatureEnabledKey) private var checkInEnabled = false
+    // Off by default: auto-accepting lets any nearby device add itself without confirmation.
+    @AppStorage("friendList.autoAddBackFriends") private var autoAddBackFriends = false
 
     var body: some View {
         NavigationStack {
@@ -440,24 +381,6 @@ private struct AddFriendSheet: View {
 
                 Section {
                     myQRCodeView
-
-                    if checkInEnabled {
-                        Toggle(isOn: $sharesCredentials) {
-                            Label("包含點名授權", systemImage: "person.badge.key.fill")
-                        }
-                        .foregroundStyle(sharesCredentials ? .orange : .primary)
-
-                        if sharesCredentials {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                                Text("這個 QR Code 含有帳號密碼。分享後對方可以替你點名，請勿任意外流。")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
                 } header: {
                     HStack {
                         Text("我的 QR Code")
@@ -555,11 +478,6 @@ private struct AddFriendSheet: View {
         }
         .onChange(of: autoAddBackFriends) {
             autoAcceptIncomingRequestsIfNeeded()
-        }
-        .onChange(of: checkInEnabled) {
-            if !checkInEnabled {
-                sharesCredentials = false
-            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -811,21 +729,7 @@ private struct AddFriendSheet: View {
     }
 
     private func makeQRImage(session: SISSession) -> UIImage? {
-        if checkInEnabled && sharesCredentials {
-            guard let credentials = try? CredentialStore.shared.retrieveLDAPCredentials() else { return nil }
-            return ProfileQRService.generateQRImage(
-                for: ProfileQRService.makeCombinedPayload(
-                    userId: session.userId,
-                    empNo: session.empNo,
-                    displayName: session.userName,
-                    username: credentials.username,
-                    password: credentials.password
-                ),
-                size: 600
-            )
-        }
-
-        return ProfileQRService.generateQRImage(
+        ProfileQRService.generateQRImage(
             for: ProfileQRService.makeMutualPayload(
                 userId: session.userId,
                 empNo: session.empNo,
@@ -837,9 +741,6 @@ private struct AddFriendSheet: View {
 
     private var qrUnavailableMessage: String {
         if let sessionError { return sessionError }
-        if checkInEnabled && sharesCredentials && !CredentialStore.shared.hasLDAPCredentials() {
-            return "尚未儲存 LDAP 帳號密碼，無法產生點名授權 QR Code。"
-        }
         return "缺少學校帳號資料。"
     }
 
@@ -1011,17 +912,7 @@ struct FriendRow: View {
                 size: 44
             )
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(friend.cachedProfile?.displayName ?? friend.displayName).font(.body)
-                    if friend.isManuallyAdded {
-                        Text("手動")
-                            .font(.caption2.weight(.medium))
-                            .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.15))
-                            .foregroundStyle(.orange)
-                            .clipShape(Capsule())
-                    }
-                }
+                Text(friend.cachedProfile?.displayName ?? friend.displayName).font(.body)
                 Text(friend.empNo).font(.caption).foregroundStyle(.secondary)
             }
         }

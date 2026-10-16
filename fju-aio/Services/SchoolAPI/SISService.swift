@@ -9,22 +9,37 @@ actor SISService {
     private let networkService = NetworkService.shared
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.nelsongx.apps.fju-aio", category: "SIS")
     
+    /// Short-lived cache so GradesView's fetchGrades + fetchGPASummary (and the
+    /// cumulative GPA) share one download of the full grade inquiry.
+    private var gradesInquiryCache: (response: GradesInquiryResponse, cachedAt: Date)?
+    private var gradesInquiryTask: Task<GradesInquiryResponse, Error>?
+    private let gradesInquiryCacheTTL: TimeInterval = 30
+    /// Bumped by `clearInMemoryCaches()` so fetches finishing after logout aren't cached.
+    private var cacheGeneration = 0
+
     private init() {}
+
+    func clearInMemoryCaches() {
+        cacheGeneration += 1
+        gradesInquiryCache = nil
+        gradesInquiryTask?.cancel()
+        gradesInquiryTask = nil
+    }
     
     // MARK: - User Info
     
     func getUserInfo() async throws -> SISUserInfo {
         logger.info("📋 Fetching user info...")
-        let session = try await authService.getValidSession()
         
-        let url = URL(string: "\(baseURL)/FjuBase/api/Account/GetUserInfo")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            let url = URL(string: "\(self.baseURL)/FjuBase/api/Account/GetUserInfo")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
         
         return try JSONDecoder().decode(SISUserInfo.self, from: data)
@@ -32,16 +47,16 @@ actor SISService {
     
     func getStudentProfile() async throws -> StudentProfile {
         logger.info("📋 Fetching student profile...")
-        let session = try await authService.getValidSession()
         
-        let url = URL(string: "\(baseURL)/Score/api/GradesInquiry/StuBaseInfo?lcId=1028")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            let url = URL(string: "\(self.baseURL)/Score/api/GradesInquiry/StuBaseInfo?lcId=1028")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
         
         let response = try JSONDecoder().decode(StuBaseInfoResponse.self, from: data)
@@ -112,7 +127,7 @@ actor SISService {
             }
             return sum + course.credits
         }
-        let semesterGPA = calculateGPA(courses)
+        let semesterGPA = calculateGPA(courses.map { (credits: $0.credits, score: $0.score) })
         
         return ScoreQueryResponse(
             academicYear: academicYear,
@@ -124,39 +139,79 @@ actor SISService {
         )
     }
 
+    /// Credit-weighted GPA over every graded course up to and including the given semester.
+    func cumulativeGPA(throughAcademicYear academicYear: String, semester: Int) async throws -> Double {
+        let response = try await fetchGradesInquiry()
+        guard let year = Int(academicYear) else { throw SISError.badRequest("Invalid academic year") }
+
+        let records = response.result.filter { record in
+            record.hy < year || (record.hy == year && record.htPeriod <= semester)
+        }
+        return calculateGPA(records.map { (credits: $0.credit, score: parseScore($0.scoreDisplay)) })
+    }
+
     private func fetchGradesInquiry() async throws -> GradesInquiryResponse {
-        let session = try await authService.getValidSession()
-
-        var components = URLComponents(string: "\(baseURL)/Score/api/GradesInquiry/Grades")!
-        components.queryItems = [
-            URLQueryItem(name: "SortBy", value: ""),
-            URLQueryItem(name: "Descending", value: "true"),
-            URLQueryItem(name: "LcId", value: "1028")
-        ]
-
-        guard let url = components.url else {
-            throw SISError.invalidResponse
+        if let cached = gradesInquiryCache,
+           Date().timeIntervalSince(cached.cachedAt) < gradesInquiryCacheTTL {
+            return cached.response
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
-        request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+        if let gradesInquiryTask {
+            return try await gradesInquiryTask.value
+        }
 
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let generation = cacheGeneration
+        let task = Task<GradesInquiryResponse, Error> {
+            try await self.downloadGradesInquiry()
+        }
+        gradesInquiryTask = task
+        defer {
+            if gradesInquiryTask == task { gradesInquiryTask = nil }
+        }
+
+        let response = try await task.value
+        if generation == cacheGeneration {
+            gradesInquiryCache = (response, Date())
+        }
+        return response
+    }
+
+    private func downloadGradesInquiry() async throws -> GradesInquiryResponse {
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var components = URLComponents(string: "\(self.baseURL)/Score/api/GradesInquiry/Grades")!
+            components.queryItems = [
+                URLQueryItem(name: "SortBy", value: ""),
+                URLQueryItem(name: "Descending", value: "true"),
+                URLQueryItem(name: "LcId", value: "1028")
+            ]
+
+            guard let url = components.url else {
+                throw SISError.invalidResponse
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+            request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         return try JSONDecoder().decode(GradesInquiryResponse.self, from: data)
     }
 
+    /// Numeric score, or nil for non-numeric results (pass/fail, withdrawn, credit
+    /// transfer, not yet graded) which must not count towards GPA.
     private func parseScore(_ scoreDisplay: String) -> Double? {
         Double(scoreDisplay.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func calculateGPA(_ courses: [ScoreCourse]) -> Double {
-        let validCourses = courses.filter { ($0.score ?? 0) > 0 && $0.credits > 0 }
+    /// Credit-weighted GPA. A score of 0 is a real (failing) grade and is included;
+    /// only courses without a numeric score or with no credits are excluded.
+    private func calculateGPA(_ courses: [(credits: Int, score: Double?)]) -> Double {
+        let validCourses = courses.filter { $0.score != nil && $0.credits > 0 }
         guard !validCourses.isEmpty else { return 0.0 }
         
         let totalPoints = validCourses.reduce(0.0) { sum, course in
@@ -187,22 +242,22 @@ actor SISService {
     /// GET /Education/api/OnlineStuStatusCertApply/GetStuInfo?stuNo={stuNo}&lcId=1028
     func getStuStatusCertInfo() async throws -> StuStatusCertInfo {
         logger.info("📜 Fetching StuStatusCertInfo...")
-        let session = try await authService.getValidSession()
 
-        var components = URLComponents(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/GetStuInfo")!
-        components.queryItems = [
-            URLQueryItem(name: "stuNo", value: session.empNo),
-            URLQueryItem(name: "lcId", value: "1028")
-        ]
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var components = URLComponents(string: "\(self.baseURL)/Education/api/OnlineStuStatusCertApply/GetStuInfo")!
+            components.queryItems = [
+                URLQueryItem(name: "stuNo", value: session.empNo),
+                URLQueryItem(name: "lcId", value: "1028")
+            ]
 
-        guard let url = components.url else { throw SISError.invalidResponse }
+            guard let url = components.url else { throw SISError.invalidResponse }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-
-        let (data, httpResponse) = try await networkService.performRequest(request)
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         let response = try JSONDecoder().decode(StuStatusCertInfoResponse.self, from: data)
@@ -218,8 +273,6 @@ actor SISService {
     func downloadEnrollmentCertificate(record: StuStatusRecord, version: Int) async throws -> Data {
         let label = record.semesterLabel
         logger.info("⬇️ Downloading enrollment certificate for \(label, privacy: .public) version=\(version, privacy: .public)...")
-        let session = try await authService.getValidSession()
-
         var components = URLComponents(string: "\(baseURL)/Education/api/OnlineStuStatusCertApply/Download")!
         components.queryItems = [
             URLQueryItem(name: "stuNO", value: record.stuNo),
@@ -230,12 +283,13 @@ actor SISService {
 
         guard let url = components.url else { throw SISError.invalidResponse }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         logger.info("✅ Certificate PDF downloaded (\(data.count, privacy: .public) bytes)")
@@ -248,23 +302,23 @@ actor SISService {
     /// GET /Score/api/ServiceDeskDigitalDocProvider/GetAllRecordList?stuNo={stuNo}&lcId=1028
     func getDigitalTranscriptRecords() async throws -> [DigitalTranscriptRecord] {
         logger.info("📜 Fetching digital transcript record list...")
-        let session = try await authService.getValidSession()
 
-        var components = URLComponents(string: "\(baseURL)/Score/api/ServiceDeskDigitalDocProvider/GetAllRecordList")!
-        components.queryItems = [
-            URLQueryItem(name: "stuNo", value: session.empNo),
-            URLQueryItem(name: "lcId", value: "1028")
-        ]
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var components = URLComponents(string: "\(self.baseURL)/Score/api/ServiceDeskDigitalDocProvider/GetAllRecordList")!
+            components.queryItems = [
+                URLQueryItem(name: "stuNo", value: session.empNo),
+                URLQueryItem(name: "lcId", value: "1028")
+            ]
 
-        guard let url = components.url else { throw SISError.invalidResponse }
+            guard let url = components.url else { throw SISError.invalidResponse }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-
-        let (data, httpResponse) = try await networkService.performRequest(request)
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         let response = try JSONDecoder().decode(DigitalTranscriptListResponse.self, from: data)
@@ -276,8 +330,6 @@ actor SISService {
     /// GET /Score/api/ServiceDeskDigitalDocProvider/ExportSemeTranscriptFile?hy=...&ht=...&stuNo=...&lcid=1028&isRanking=...
     func downloadDigitalTranscript(record: DigitalTranscriptRecord, includeRanking: Bool) async throws -> Data {
         logger.info("⬇️ Downloading digital transcript for \(record.hyHtDesc, privacy: .public) ranking=\(includeRanking, privacy: .public)...")
-        let session = try await authService.getValidSession()
-
         var components = URLComponents(string: "\(baseURL)/Score/api/ServiceDeskDigitalDocProvider/ExportSemeTranscriptFile")!
         components.queryItems = [
             URLQueryItem(name: "hy", value: "\(record.hy)"),
@@ -289,13 +341,14 @@ actor SISService {
 
         guard let url = components.url else { throw SISError.invalidResponse }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-        request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("https://sis.fju.edu.tw/", forHTTPHeaderField: "Referer")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
 
         logger.info("✅ Transcript PDF downloaded (\(data.count, privacy: .public) bytes)")
@@ -322,7 +375,6 @@ actor SISService {
     
     func getAnnouncements(announceType: String? = nil, pageNumber: Int = 1, pageSize: Int = 25, sortBy: String? = nil, descending: Bool = false) async throws -> AnnouncementResponse {
         logger.info("📢 Fetching announcements...")
-        let session = try await authService.getValidSession()
         
         var components = URLComponents(string: "\(baseURL)/FjuBase/api/Announcement/InEffectPagedList")!
         var queryItems: [URLQueryItem] = [
@@ -350,18 +402,38 @@ actor SISService {
             throw SISError.invalidResponse
         }
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
-        request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, httpResponse) = try await networkService.performRequest(request)
+        let (data, httpResponse) = try await performAuthorizedRead { session in
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("zh-TW", forHTTPHeaderField: "Accept-Language")
+            request.setValue("Bearer \(session.token)", forHTTPHeaderField: "Authorization")
+            return request
+        }
         try handleHTTPError(httpResponse, data: data)
         
         return try JSONDecoder().decode(AnnouncementResponse.self, from: data)
     }
     
+    // MARK: - Authorized Requests
+
+    /// Performs a read-only SIS request built from the current session. If the server
+    /// rejects the token (401/403) the session is invalidated and the request is replayed
+    /// exactly once with a fresh token; concurrent callers share one refresh (the auth
+    /// actor coalesces it). Never use this for mutations.
+    private func performAuthorizedRead(
+        _ makeRequest: (SISSession) throws -> URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
+        let session = try await authService.getValidSession()
+        let result = try await networkService.performRequest(try makeRequest(session))
+        guard result.1.statusCode == 401 || result.1.statusCode == 403 else { return result }
+
+        logger.warning("🔁 SIS token rejected (\(result.1.statusCode, privacy: .public)), refreshing and retrying once")
+        await authService.invalidateSession(token: session.token)
+        let freshSession = try await authService.getValidSession()
+        return try await networkService.performRequest(try makeRequest(freshSession))
+    }
+
     // MARK: - Error Handling
     
     private func handleHTTPError(_ response: HTTPURLResponse, data: Data) throws {

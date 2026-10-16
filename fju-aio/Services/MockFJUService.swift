@@ -164,34 +164,6 @@ final class MockFJUService: FJUServiceProtocol, @unchecked Sendable {
         throw SISError.notFound
     }
     
-    // MARK: - Check-in
-    
-    func performCheckIn(courseId: String, location: String?) async throws -> CheckInResult {
-        try await Task.sleep(for: .milliseconds(800))
-        
-        let courses = try await fetchCourses(semester: "113-2")
-        guard let course = courses.first(where: { $0.id == courseId }) else {
-            throw NSError(domain: "MockFJUService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Course not found"])
-        }
-        
-        let now = Date()
-        let calendar = Calendar.current
-        let currentMinute = calendar.component(.minute, from: now)
-        let isLate = currentMinute > 10
-        let status: CheckInResult.CheckInStatus = isLate ? .late : .success
-        let message = isLate ? "簽到成功，但已遲到" : "簽到成功"
-        
-        return CheckInResult(
-            id: UUID().uuidString,
-            courseId: courseId,
-            courseName: course.name,
-            timestamp: now,
-            location: location,
-            status: status,
-            message: message
-        )
-    }
-    
     // MARK: - User Profile
     
     func fetchUserProfile() async throws -> StudentProfile {

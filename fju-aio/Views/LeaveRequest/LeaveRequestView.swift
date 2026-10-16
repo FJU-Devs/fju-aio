@@ -46,16 +46,59 @@ struct LeaveRequestView: View {
     }
 }
 
+// MARK: - Semester defaults
+
+private enum LeaveSemesterDefaults {
+    /// Current (ROC year, term), preferring the school's semester list when cached.
+    static func current() -> (year: Int, term: Int) {
+        CurrentSemester.parse(CurrentSemester.code()) ?? CurrentSemester.estimated()
+    }
+
+    /// The academic year matching the current semester, or the newest one available.
+    static func defaultYear(in years: [HyRecord]) -> HyRecord? {
+        let year = current().year
+        return years.first { $0.hy == year } ?? years.first
+    }
+}
+
+// MARK: - Shared load-error row
+
+private struct LeaveLoadErrorRow: View {
+    let message: String
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("載入失敗", systemImage: "exclamationmark.triangle")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("重試", action: onRetry)
+                .buttonStyle(.bordered)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 // MARK: - History Tab
 
 private struct LeaveHistoryView: View {
     private let leaveService = LeaveService.shared
     @State private var academicYears: [HyRecord] = []
     @State private var selectedHy: HyRecord?
-    @State private var selectedHt: Int = 2
+    @State private var selectedHt: Int = CurrentSemester.estimated().term
     @State private var records: [LeaveRecord] = []
-    @State private var isLoading = true
+    @State private var isLoadingYears = true
+    @State private var yearsError: String?
+    @State private var isLoadingRecords = false
     @State private var errorMessage: String?
+    @State private var hasLoaded = false
+    /// "hy-ht" of the most recent records request; used to skip duplicate loads.
+    @State private var requestedKey: String?
+    /// Bumped on every request so stale responses are dropped.
+    @State private var loadGeneration = 0
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -64,22 +107,36 @@ private struct LeaveHistoryView: View {
         return f
     }()
 
+    private var selectionKey: String? {
+        selectedHy.map { "\($0.hy)-\(selectedHt)" }
+    }
+
     var body: some View {
         content
-            .task { await loadInitial() }
+            .task {
+                // Re-appearing (e.g. back from a detail page): refresh quietly, keep the selection.
+                if hasLoaded {
+                    await loadRecords()
+                } else {
+                    await loadInitial()
+                }
+            }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        if academicYears.isEmpty && isLoadingYears {
             ProgressView("載入中…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = errorMessage {
-            ContentUnavailableView(
-                "載入失敗",
-                systemImage: "exclamationmark.triangle",
-                description: Text(error)
-            )
+        } else if academicYears.isEmpty {
+            ContentUnavailableView {
+                Label("載入失敗", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(yearsError ?? "無法取得學年度資料")
+            } actions: {
+                Button("重試") { Task { await loadInitial() } }
+                    .buttonStyle(.bordered)
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
@@ -94,61 +151,89 @@ private struct LeaveHistoryView: View {
                         Text("第 2 學期").tag(2)
                     }
                 }
-                .onChange(of: selectedHy) { _, _ in records = []; Task { await loadRecords() } }
-                .onChange(of: selectedHt) { _, _ in records = []; Task { await loadRecords() } }
 
-                Section(records.isEmpty ? "尚無記錄" : "\(records.count) 筆記錄") {
-                    if records.isEmpty {
-                        Text("尚無請假紀錄").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(records, id: \.id) { record in
-                            LeaveRecordRow(
-                                record: record,
-                                dateFormatter: dateFormatter,
-                                onRevoked: {
-                                    // After a successful revoke, reload the list
-                                    Task { await loadRecords() }
-                                }
-                            )
+                if let error = errorMessage {
+                    Section {
+                        LeaveLoadErrorRow(message: error) {
+                            Task { await loadRecords() }
+                        }
+                    }
+                } else if isLoadingRecords && records.isEmpty {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("載入中…").foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Section(records.isEmpty ? "尚無記錄" : "\(records.count) 筆記錄") {
+                        if records.isEmpty {
+                            Text("尚無請假紀錄").foregroundStyle(.secondary)
+                        } else {
+                            ForEach(records, id: \.id) { record in
+                                LeaveRecordRow(
+                                    record: record,
+                                    dateFormatter: dateFormatter,
+                                    onRevoked: {
+                                        // After a successful revoke, reload the list
+                                        Task { await loadRecords() }
+                                    }
+                                )
+                            }
                         }
                     }
                 }
             }
             .listStyle(.insetGrouped)
             .refreshable { await loadRecords() }
+            .onChange(of: selectionKey) { _, newKey in
+                guard hasLoaded, newKey != requestedKey else { return }
+                records = []
+                Task { await loadRecords() }
+            }
         }
     }
 
     private func loadInitial() async {
-        isLoading = true
-        errorMessage = nil
+        isLoadingYears = true
+        yearsError = nil
         do {
-            academicYears = try await leaveService.fetchAcademicYears()
-            selectedHy = academicYears.first
+            let years = try await leaveService.fetchAcademicYears()
+            academicYears = years
+            selectedHy = LeaveSemesterDefaults.defaultYear(in: years)
+            selectedHt = LeaveSemesterDefaults.current().term
         } catch is CancellationError {
-            isLoading = false
+            isLoadingYears = false
             return
         } catch {
-            errorMessage = error.localizedDescription
-            isLoading = false
+            yearsError = error.localizedDescription
+            isLoadingYears = false
             return
         }
+        isLoadingYears = false
+        hasLoaded = true
         await loadRecords()
     }
 
     private func loadRecords() async {
         guard let hy = selectedHy else { return }
-        isLoading = records.isEmpty   // only show spinner on first load, not on refresh
+        let ht = selectedHt
+        requestedKey = "\(hy.hy)-\(ht)"
+        loadGeneration += 1
+        let generation = loadGeneration
+        isLoadingRecords = true
         errorMessage = nil
         do {
-            let fetched = try await leaveService.fetchLeaveRecords(academicYear: hy.hy, semester: selectedHt)
+            let fetched = try await leaveService.fetchLeaveRecords(academicYear: hy.hy, semester: ht)
+            guard generation == loadGeneration else { return }
             records = fetched
         } catch is CancellationError {
             // Silently ignore task cancellation (e.g. pull-to-refresh interrupted).
         } catch {
+            guard generation == loadGeneration else { return }
             errorMessage = error.localizedDescription
         }
-        isLoading = false
+        if generation == loadGeneration { isLoadingRecords = false }
     }
 }
 
@@ -237,6 +322,13 @@ private struct LeaveDetailView: View {
     @State private var showPDFPreview = false
     @State private var pdfError: String?
     @State private var showRevokeSheet = false
+    /// Set after a successful revoke so the page stops offering the action before it pops.
+    @State private var didRevoke = false
+    @Environment(\.dismiss) private var dismiss
+
+    private var displayedStatus: String {
+        didRevoke ? "已撤銷" : record.applyStatusNa
+    }
 
     private let isoFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -254,15 +346,15 @@ private struct LeaveDetailView: View {
     }
 
     private var statusColor: Color {
-        let name = record.applyStatusNa
+        let name = displayedStatus
         if name.contains("通過") || name.contains("核准") { return .green }
         if name.contains("撤銷") || name.contains("駁回") || name.contains("拒絕") { return .secondary }
         return .orange
     }
 
     private var canRevoke: Bool {
-        let name = record.applyStatusNa
-        return !name.contains("撤銷") && !name.contains("通過") && !name.contains("核准")
+        let name = displayedStatus
+        return !didRevoke && !name.contains("撤銷") && !name.contains("通過") && !name.contains("核准")
     }
 
     var body: some View {
@@ -279,7 +371,7 @@ private struct LeaveDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text(record.applyStatusNa)
+                        Text(displayedStatus)
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -348,6 +440,7 @@ private struct LeaveDetailView: View {
                         }
                     }
                     .disabled(isPDFLoading)
+                    .accessibilityLabel(isPDFLoading ? "列印假單，下載中" : "列印假單")
 
                     // 撤銷假單
                     if canRevoke {
@@ -357,6 +450,7 @@ private struct LeaveDetailView: View {
                             Image(systemName: "xmark.circle")
                         }
                         .tint(.red)
+                        .accessibilityLabel("撤銷假單")
                     }
                 }
             }
@@ -366,8 +460,14 @@ private struct LeaveDetailView: View {
                 PDFPageView(pdfData: data, title: "假單 \(record.applyNo)")
             }
         }
-        .sheet(isPresented: $showRevokeSheet) {
-            RevokeLeaveSheet(record: record, onRevoked: onRevoked)
+        .sheet(isPresented: $showRevokeSheet, onDismiss: {
+            // The record is immutable here; pop back so the refreshed list shows the new status.
+            if didRevoke { dismiss() }
+        }) {
+            RevokeLeaveSheet(record: record) {
+                didRevoke = true
+                onRevoked()
+            }
         }
         .alert("下載失敗", isPresented: Binding(
             get: { pdfError != nil },
@@ -508,6 +608,7 @@ private struct PDFPageView: View {
                     ShareLink(item: pdfFileURL(pdfData, name: title)) {
                         Image(systemName: "square.and.arrow.up")
                     }
+                    .accessibilityLabel("分享")
                 }
             }
     }
@@ -632,6 +733,7 @@ private struct RevokeLeaveSheet: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
+            .interactiveDismissDisabled(isRevoking)
             // Second-level confirmation alert
             .alert("確定要撤銷嗎？", isPresented: $showConfirmAlert) {
                 Button("確定", role: .destructive) {
@@ -654,8 +756,8 @@ private struct RevokeLeaveSheet: View {
         errorMessage = nil
         do {
             try await LeaveService.shared.revokeLeave(leaveApplySn: record.leaveApplySn, cancelMemo: cancelMemo)
-            dismiss()
             onRevoked()
+            dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -680,6 +782,8 @@ private struct LeaveApplyWizard: View {
     @State private var sections: [CourseSection] = []
     @State private var famTypes: [FamTypeItem] = []
     @State private var famLevels: [FamLevelItem] = []
+    @State private var contact: StudentContact?
+    @State private var hasLoadedRef = false
 
     // Wizard draft shared across steps
     @State private var draft = LeaveWizardDraft()
@@ -695,6 +799,21 @@ private struct LeaveApplyWizard: View {
     // After wizard completes
     @State private var didSubmit = false
     @State private var submittedApplyNo = ""
+
+    // Leaving the wizard
+    @State private var showDiscardConfirm = false
+    @State private var isDiscarding = false
+    @State private var discardError: String?
+    @Environment(\.dismiss) private var dismiss
+
+    /// Whether leaving now would throw away user input or a server-side draft.
+    private var hasUnsavedInput: Bool {
+        guard !didSubmit else { return false }
+        return draft.leaveApplySn > 0 ||
+            step >= 2 ||
+            !draft.leaveReason.isEmpty ||
+            draft.proofFileData != nil
+    }
 
     var body: some View {
         Group {
@@ -712,10 +831,12 @@ private struct LeaveApplyWizard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if didSubmit {
                 SubmitSuccessView(applyNo: submittedApplyNo) {
-                    // Reset wizard to start a new application
+                    // Reset wizard to start a new application, keeping reference-data defaults
                     draft = LeaveWizardDraft()
+                    applyDefaults()
                     selCouCourses = []
                     selectedEntries = []
+                    processError = nil
                     didSubmit = false
                     step = 1
                     showRulesModal = false
@@ -724,11 +845,95 @@ private struct LeaveApplyWizard: View {
                 wizardContent
             }
         }
-        .task { await loadRef() }
-        .sheet(isPresented: $showRulesModal) {
-            LeaveRulesModal {
-                showRulesModal = false
-                step = 1
+        .disabled(isDiscarding)
+        .overlay {
+            if isDiscarding {
+                ProgressView("正在刪除草稿…")
+                    .padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .task {
+            guard !hasLoadedRef else { return }
+            await loadRef()
+        }
+        .navigationBarBackButtonHidden(true)
+        // Make sure swipe-back can't bypass the discard flow (incl. the iOS 26 full-width swipe).
+        .interactivePopGestureDisabled(hasUnsavedInput || isProcessing || isDiscarding)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    requestExit()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.backward")
+                            .fontWeight(.semibold)
+                        Text("返回")
+                    }
+                }
+                .disabled(isProcessing || isDiscarding)
+                .accessibilityLabel("返回")
+            }
+        }
+        .confirmationDialog("要放棄這份假單嗎？", isPresented: $showDiscardConfirm, titleVisibility: .visible) {
+            Button("放棄並離開", role: .destructive) { discardAndExit() }
+            Button("繼續填寫", role: .cancel) {}
+        } message: {
+            Text(draft.leaveApplySn > 0
+                 ? "已填寫的內容將不會保留，暫存的假單草稿也會一併刪除。"
+                 : "已填寫的內容將不會保留。")
+        }
+        .alert("刪除假單草稿失敗", isPresented: Binding(
+            get: { discardError != nil },
+            set: { if !$0 { discardError = nil } }
+        )) {
+            Button("重試") { discardAndExit() }
+            Button("仍要離開", role: .destructive) { dismiss() }
+        } message: {
+            Text("\(discardError ?? "")\n若仍要離開，暫存的草稿可能會留在學校系統中。")
+        }
+        .sheet(isPresented: $showRulesModal, onDismiss: {
+            // Rules were not acknowledged — there is no step to show, so leave the wizard.
+            if step == 0 { dismiss() }
+        }) {
+            LeaveRulesModal(
+                onAcknowledge: {
+                    step = 1
+                    showRulesModal = false
+                },
+                onCancel: {
+                    showRulesModal = false
+                }
+            )
+            .interactiveDismissDisabled()
+        }
+    }
+
+    private func requestExit() {
+        if hasUnsavedInput {
+            showDiscardConfirm = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func discardAndExit() {
+        let sn = draft.leaveApplySn
+        guard sn > 0 && !didSubmit else {
+            dismiss()
+            return
+        }
+        // Delete the unsubmitted server draft before leaving; on failure let the user retry or leave anyway.
+        isDiscarding = true
+        Task {
+            do {
+                try await leaveService.deleteLeave(leaveApplySn: sn)
+                isDiscarding = false
+                draft.leaveApplySn = 0
+                dismiss()
+            } catch {
+                isDiscarding = false
+                discardError = error.localizedDescription
             }
         }
     }
@@ -759,6 +964,8 @@ private struct LeaveApplyWizard: View {
                         famLevels: famLevels
                     )
                     .padding()
+                    // Freeze inputs while the draft POST is in flight so the server copy matches what's shown.
+                    .disabled(isProcessing)
                 case 3:
                     Step3CoursesView(
                         courses: selCouCourses,
@@ -766,6 +973,7 @@ private struct LeaveApplyWizard: View {
                         sections: sections
                     )
                     .padding()
+                    .disabled(isProcessing)
                 case 4:
                     Step4ConfirmView(
                         draft: draft,
@@ -795,15 +1003,13 @@ private struct LeaveApplyWizard: View {
             HStack(spacing: 16) {
                 if step > 1 {
                     Button("上一步") {
-                        // Going back to Step 1 means the category may change → discard draft
-                        if step == 2 {
-                            draft.leaveApplySn = 0
-                            draft.applyNo = ""
-                        }
+                        // Keep leaveApplySn: if the user edits anything, the next forward pass
+                        // updates the existing server draft instead of creating a duplicate.
                         withAnimation { step -= 1 }
                         processError = nil
                     }
                     .buttonStyle(.bordered)
+                    .disabled(isProcessing)
                 }
 
                 Spacer()
@@ -872,12 +1078,14 @@ private struct LeaveApplyWizard: View {
             isProcessing = true
             do {
                 let sn: Int
-                if draft.leaveApplySn > 0 {
-                    // Already created on a previous forward pass — reuse it, don't create another
+                let fields = draft.serverFields
+                if draft.leaveApplySn > 0 && draft.lastSubmittedFields == fields {
+                    // Already sent on a previous forward pass and unchanged — reuse it
                     sn = draft.leaveApplySn
                 } else {
-                    // POST /StuLeave to create the draft record
+                    // POST /StuLeave: creates the draft (sn 0) or updates the existing one
                     sn = try await leaveService.submitLeave(
+                        leaveApplySn: draft.leaveApplySn,
                         academicYear: draft.hy,
                         semester: draft.ht,
                         leaveKind: draft.leaveKind,
@@ -890,10 +1098,13 @@ private struct LeaveApplyWizard: View {
                         reason: draft.leaveReason,
                         phoneNumber: draft.phoneNumber,
                         emailAccount: draft.emailAccount,
+                        famTypeNo: draft.famTypeNo ?? 0,
+                        famLevelNo: draft.famLevelNo ?? 0,
                         proofFileData: draft.proofFileData,
                         proofFileExt: draft.proofFileExt
                     )
                     draft.leaveApplySn = sn
+                    draft.lastSubmittedFields = fields
                 }
                 // Fetch (or re-fetch) matched courses
                 selCouCourses = try await leaveService.fetchSelCouCourses(leaveApplySn: sn)
@@ -998,38 +1209,42 @@ private struct LeaveApplyWizard: View {
             sections       = try await sectTask
             famTypes = (try? await famTypeTask) ?? []
             famLevels = (try? await famLevelTask) ?? []
+            contact = (try? await contactTask) ?? nil
 
-            // Set defaults from fetched data
-            if let firstHy = academicYears.first {
-                draft.hy = firstHy.hy
-                draft.ht = 2
-            }
-            if let firstSubtype = leaveSubtypes.first {
-                draft.refLeaveSn = firstSubtype.value
-            }
-            if sections.count >= 2 {
-                draft.beginSectNo = sections.first?.sectNo ?? 1
-                draft.endSectNo   = sections.last?.sectNo ?? 9
-            }
-
-            // Default dates to today so the button is enabled without requiring picker interaction
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd"
-            df.locale = Locale(identifier: "en_US_POSIX")
-            let today = df.string(from: Date())
-            if draft.beginDate.isEmpty { draft.beginDate = today }
-            if draft.endDate.isEmpty   { draft.endDate   = today }
-
-            // Pre-fill contact info
-            if let contact = try? await contactTask {
-                if draft.phoneNumber.isEmpty { draft.phoneNumber = contact.phoneNumber ?? "" }
-                if draft.emailAccount.isEmpty { draft.emailAccount = contact.emailAccount ?? "" }
-            }
-
+            applyDefaults()
+            hasLoadedRef = true
         } catch {
             loadRefError = error.localizedDescription
         }
         isLoadingRef = false
+    }
+
+    /// Fills a fresh draft with defaults derived from the loaded reference data.
+    private func applyDefaults() {
+        let current = LeaveSemesterDefaults.current()
+        draft.hy = LeaveSemesterDefaults.defaultYear(in: academicYears)?.hy ?? current.year
+        draft.ht = current.term
+        if let firstSubtype = leaveSubtypes.first {
+            draft.refLeaveSn = firstSubtype.value
+        }
+        if sections.count >= 2 {
+            draft.beginSectNo = sections.first?.sectNo ?? 1
+            draft.endSectNo   = sections.last?.sectNo ?? 9
+        }
+
+        // Default dates to today so the button is enabled without requiring picker interaction
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.locale = Locale(identifier: "en_US_POSIX")
+        let today = df.string(from: Date())
+        if draft.beginDate.isEmpty { draft.beginDate = today }
+        if draft.endDate.isEmpty   { draft.endDate   = today }
+
+        // Pre-fill contact info
+        if let contact {
+            if draft.phoneNumber.isEmpty { draft.phoneNumber = contact.phoneNumber ?? "" }
+            if draft.emailAccount.isEmpty { draft.emailAccount = contact.emailAccount ?? "" }
+        }
     }
 }
 
@@ -1037,6 +1252,7 @@ private struct LeaveApplyWizard: View {
 
 private struct LeaveRulesModal: View {
     let onAcknowledge: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -1058,6 +1274,11 @@ private struct LeaveRulesModal: View {
             }
             .navigationTitle("學生請假規則")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消", action: onCancel)
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 Button {
                     onAcknowledge()
@@ -1225,6 +1446,7 @@ private struct Step2FormView: View {
                    if let end = df.date(from: draft.endDate), end < $0 {
                        draft.endDate = df.string(from: $0)
                    }
+                   normalizeSections()
             }
         )
     }
@@ -1232,8 +1454,23 @@ private struct Step2FormView: View {
     private var endDateBinding: Binding<Date> {
         Binding(
             get: { df.date(from: draft.endDate) ?? Date() },
-            set: { draft.endDate = df.string(from: $0) }
+            set: { draft.endDate = df.string(from: $0)
+                   normalizeSections()
+            }
         )
+    }
+
+    /// The end period only has to follow the begin period when both are on the same day.
+    private var isSameDay: Bool { draft.beginDate == draft.endDate }
+
+    private var endSectionOptions: [CourseSection] {
+        isSameDay ? sections.filter { $0.sectNo >= draft.beginSectNo } : sections
+    }
+
+    private func normalizeSections() {
+        if isSameDay && draft.endSectNo < draft.beginSectNo {
+            draft.endSectNo = draft.beginSectNo
+        }
     }
 
     private var beginDateLower: Date { df.date(from: draft.beginDate) ?? Date() }
@@ -1339,8 +1576,8 @@ private struct Step2FormView: View {
                     }
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity)
-                    .onChange(of: draft.beginSectNo) { _, v in
-                        if draft.endSectNo < v { draft.endSectNo = v }
+                    .onChange(of: draft.beginSectNo) { _, _ in
+                        normalizeSections()
                     }
                 }
             }
@@ -1355,7 +1592,7 @@ private struct Step2FormView: View {
                         .frame(maxWidth: .infinity)
 
                     Picker("結束節次", selection: $draft.endSectNo) {
-                        ForEach(sections.filter { $0.sectNo >= draft.beginSectNo }) { s in
+                        ForEach(endSectionOptions) { s in
                             Text(s.displayLabel).tag(s.sectNo)
                         }
                     }
@@ -1435,6 +1672,7 @@ private struct Step2FormView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.borderless)
+                        .accessibilityLabel("移除佐證文件")
                     }
                     .padding(10)
                     .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -1986,27 +2224,41 @@ private struct LeaveStatsView: View {
 
     @State private var academicYears: [HyRecord] = []
     @State private var selectedHy: HyRecord?
-    @State private var selectedHt: Int = 2
+    @State private var selectedHt: Int = CurrentSemester.estimated().term
     @State private var statSummary: LeaveStatSummary?
-    @State private var isLoading = true
+    @State private var isLoadingYears = true
+    @State private var yearsError: String?
+    @State private var isLoadingStats = false
     @State private var errorMessage: String?
     @State private var deadline: String?
+    @State private var hasLoaded = false
+    /// "hy-ht" of the most recent stats request; used to skip duplicate loads.
+    @State private var requestedKey: String?
+    /// Bumped on every request so stale responses are dropped.
+    @State private var loadGeneration = 0
 
     private var stats: [LeaveStatRecord] {
         statSummary?.statLeaveCouList ?? []
     }
 
+    private var selectionKey: String? {
+        selectedHy.map { "\($0.hy)-\(selectedHt)" }
+    }
+
     var body: some View {
         Group {
-            if isLoading {
+            if academicYears.isEmpty && isLoadingYears {
                 ProgressView("載入中…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = errorMessage {
-                ContentUnavailableView(
-                    "載入失敗",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(error)
-                )
+            } else if academicYears.isEmpty {
+                ContentUnavailableView {
+                    Label("載入失敗", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(yearsError ?? "無法取得學年度資料")
+                } actions: {
+                    Button("重試") { Task { await loadInitial() } }
+                        .buttonStyle(.bordered)
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
@@ -2021,8 +2273,21 @@ private struct LeaveStatsView: View {
                             Text("第 2 學期").tag(2)
                         }
                     }
-                    .onChange(of: selectedHy) { _, _ in statSummary = nil; Task { await loadStats() } }
-                    .onChange(of: selectedHt) { _, _ in statSummary = nil; Task { await loadStats() } }
+
+                    if let error = errorMessage {
+                        Section {
+                            LeaveLoadErrorRow(message: error) {
+                                Task { await loadStats() }
+                            }
+                        }
+                    } else if isLoadingStats && statSummary == nil {
+                        Section {
+                            HStack(spacing: 10) {
+                                ProgressView().controlSize(.small)
+                                Text("載入中…").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
 
                     if let deadline {
                         Section("請假申請截止日") {
@@ -2115,43 +2380,66 @@ private struct LeaveStatsView: View {
                 }
                 .listStyle(.insetGrouped)
                 .refreshable { await loadStats() }
+                .onChange(of: selectionKey) { _, newKey in
+                    guard newKey != requestedKey else { return }
+                    statSummary = nil
+                    Task { await loadStats() }
+                }
             }
         }
-        .task { await loadInitial() }
+        .task {
+            // Re-appearing: refresh quietly and keep the user's selection.
+            if hasLoaded {
+                await loadStats()
+            } else {
+                await loadInitial()
+            }
+        }
     }
 
     private func loadInitial() async {
-        isLoading = true
-        errorMessage = nil
+        isLoadingYears = true
+        yearsError = nil
         async let hyTask      = leaveService.fetchAcademicYears()
         async let deadlineTask = leaveService.fetchApplyDeadline()
         do {
-            academicYears = try await hyTask
-            selectedHy = academicYears.first
+            let years = try await hyTask
+            academicYears = years
+            selectedHy = LeaveSemesterDefaults.defaultYear(in: years)
+            selectedHt = LeaveSemesterDefaults.current().term
         } catch is CancellationError {
-            isLoading = false
+            isLoadingYears = false
             return
         } catch {
-            errorMessage = error.localizedDescription
-            isLoading = false
+            yearsError = error.localizedDescription
+            isLoadingYears = false
             return
         }
-        deadline = try? await deadlineTask
+        isLoadingStats = true
+        isLoadingYears = false
+        deadline = (try? await deadlineTask) ?? nil
+        hasLoaded = true
         await loadStats()
     }
 
     private func loadStats() async {
         guard let hy = selectedHy else { return }
-        isLoading = statSummary == nil   // only show spinner on first load, not on refresh
+        let ht = selectedHt
+        requestedKey = "\(hy.hy)-\(ht)"
+        loadGeneration += 1
+        let generation = loadGeneration
+        isLoadingStats = true
         errorMessage = nil
         do {
-            let fetched = try await leaveService.fetchLeaveStat(academicYear: hy.hy, semester: selectedHt)
+            let fetched = try await leaveService.fetchLeaveStat(academicYear: hy.hy, semester: ht)
+            guard generation == loadGeneration else { return }
             statSummary = fetched
         } catch is CancellationError {
             // Silently ignore task cancellation (e.g. pull-to-refresh interrupted).
         } catch {
+            guard generation == loadGeneration else { return }
             errorMessage = error.localizedDescription
         }
-        isLoading = false
+        if generation == loadGeneration { isLoadingStats = false }
     }
 }
