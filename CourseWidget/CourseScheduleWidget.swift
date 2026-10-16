@@ -403,9 +403,17 @@ struct CourseLargeView: View {
 
     private let timeColWidth: CGFloat = 20
     private let headerHeight: CGFloat = 16
-    private let periodHeight: CGFloat = 27
+    private let maxPeriodHeight: CGFloat = 27
     private let allDays = ["一", "二", "三", "四", "五", "六", "日"]
-    private let periodCount = 11
+
+    /// D1–E1 rows, widened to D0 / E2–E4 when a shown course needs them.
+    private var displayPeriods: [Int] {
+        var periods = validCourses(entry.courses).flatMap { [$0.startPeriod, $0.endPeriod] }
+        if entry.showFriendCourses {
+            periods += validFriendCourses.flatMap { [$0.startPeriod, $0.endPeriod] }
+        }
+        return WidgetDataReader.displayPeriods(covering: periods)
+    }
 
     /// Mon–Fri, extended to Sat/Sun when any shown course falls on them.
     private var dayCount: Int {
@@ -430,6 +438,8 @@ struct CourseLargeView: View {
         GeometryReader { geo in
             let availWidth = geo.size.width - 8  // account for horizontal padding
             let dayColWidth = (availWidth - timeColWidth) / CGFloat(dayCount)
+            let periods = displayPeriods
+            let periodHeight = min(maxPeriodHeight, (geo.size.height - 12 - headerHeight) / CGFloat(periods.count))
 
             VStack(spacing: 0) {
                 // Day header row
@@ -437,17 +447,17 @@ struct CourseLargeView: View {
 
                 // Timetable body
                 ZStack(alignment: .topLeading) {
-                    gridBackground(dayColWidth: dayColWidth)
+                    gridBackground(dayColWidth: dayColWidth, periods: periods, periodHeight: periodHeight)
 
                     if entry.showFriendCourses {
-                        friendCourseBlocks(dayColWidth: dayColWidth)
+                        friendCourseBlocks(dayColWidth: dayColWidth, periods: periods, periodHeight: periodHeight)
                     }
 
-                    selfCourseBlocks(dayColWidth: dayColWidth)
+                    selfCourseBlocks(dayColWidth: dayColWidth, periods: periods, periodHeight: periodHeight)
                 }
                 .frame(
                     width: timeColWidth + CGFloat(dayCount) * dayColWidth,
-                    height: CGFloat(periodCount) * periodHeight
+                    height: CGFloat(periods.count) * periodHeight
                 )
             }
             .padding(.horizontal, 4)
@@ -473,14 +483,15 @@ struct CourseLargeView: View {
     // MARK: Grid Background
 
     @ViewBuilder
-    private func gridBackground(dayColWidth: CGFloat) -> some View {
+    private func gridBackground(dayColWidth: CGFloat, periods: [Int], periodHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
-            ForEach(1...periodCount, id: \.self) { period in
+            ForEach(periods, id: \.self) { period in
                 HStack(spacing: 0) {
                     // Period label
-                    Text(periodLabel(period))
+                    Text(WidgetDataReader.periodLabel(for: period))
                         .font(.system(size: 7, weight: .medium, design: .rounded))
-                        .foregroundStyle(period == 5 ? Color.orange.opacity(0.7) : Color.primary.opacity(0.3))
+                        .minimumScaleFactor(0.7)
+                        .foregroundStyle(period == WidgetDataReader.noonPeriod ? Color.orange.opacity(0.7) : Color.primary.opacity(0.3))
                         .frame(width: timeColWidth, height: periodHeight)
 
                     ForEach(0..<dayCount, id: \.self) { dayIdx in
@@ -502,12 +513,12 @@ struct CourseLargeView: View {
     // MARK: Self Course Blocks
 
     @ViewBuilder
-    private func selfCourseBlocks(dayColWidth: CGFloat) -> some View {
+    private func selfCourseBlocks(dayColWidth: CGFloat, periods: [Int], periodHeight: CGFloat) -> some View {
         ForEach(validCourses(entry.courses)) { course in
             let dayIdx = course.dayOfWeekNumber - 1
             let x = timeColWidth + CGFloat(dayIdx) * dayColWidth + 1
-            let y = CGFloat(course.startPeriod - 1) * periodHeight + 1
-            let h = CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
+            let y = CGFloat(periods.firstIndex(of: course.startPeriod) ?? 0) * periodHeight + 1
+            let h = CGFloat(WidgetDataReader.periodSpan(from: course.startPeriod, to: course.endPeriod)) * periodHeight - 2
 
             TimetableCellView(
                 name: course.name,
@@ -523,14 +534,14 @@ struct CourseLargeView: View {
     // MARK: Friend Course Blocks
 
     @ViewBuilder
-    private func friendCourseBlocks(dayColWidth: CGFloat) -> some View {
+    private func friendCourseBlocks(dayColWidth: CGFloat, periods: [Int], periodHeight: CGFloat) -> some View {
         let allFriendCourses = validFriendCourses
 
         ForEach(Array(allFriendCourses.enumerated()), id: \.offset) { _, course in
             let dayIdx = course.dayOfWeekNumber - 1
             let x = timeColWidth + CGFloat(dayIdx) * dayColWidth + 1
-            let y = CGFloat(course.startPeriod - 1) * periodHeight + 1
-            let h = CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
+            let y = CGFloat(periods.firstIndex(of: course.startPeriod) ?? 0) * periodHeight + 1
+            let h = CGFloat(WidgetDataReader.periodSpan(from: course.startPeriod, to: course.endPeriod)) * periodHeight - 2
 
             RoundedRectangle(cornerRadius: 3)
                 .fill(Color(hex: course.colorHex).opacity(0.22))
@@ -563,22 +574,18 @@ struct CourseLargeView: View {
     private var validFriendCourses: [WidgetFriendCourse] {
         entry.friendOverlays.flatMap(\.courses)
             .filter { $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 7
-                && $0.startPeriod >= 1 && $0.startPeriod <= periodCount
+                && WidgetDataReader.isValidPeriod($0.startPeriod)
+                && WidgetDataReader.isValidPeriod($0.endPeriod)
                 && $0.endPeriod >= $0.startPeriod }
     }
 
     private func validCourses(_ courses: [WidgetCourse]) -> [WidgetCourse] {
         courses.filter {
             $0.dayOfWeekNumber >= 1 && $0.dayOfWeekNumber <= 7
-            && $0.startPeriod >= 1 && $0.startPeriod <= periodCount
+            && WidgetDataReader.isValidPeriod($0.startPeriod)
+            && WidgetDataReader.isValidPeriod($0.endPeriod)
             && $0.endPeriod >= $0.startPeriod
         }
-    }
-
-    private func periodLabel(_ period: Int) -> String {
-        if period == 5 { return "N" }
-        if period <= 4 { return "\(period)" }
-        return "\(period - 1)"
     }
 }
 

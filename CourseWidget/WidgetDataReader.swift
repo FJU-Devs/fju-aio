@@ -31,42 +31,59 @@ enum WidgetDataReader {
         return try? JSONDecoder().decode(WidgetClassroomPayload.self, from: data)
     }
 
-    // MARK: - Period Time Tables (mirrors FJUPeriod.periodTimes)
+    // MARK: - Period Time Tables (mirrors FJUPeriod.slots)
 
-    // Index 0 = period 1, index 4 = noon (N), index 10 = period 11
-    private static let periodStartMinutes: [Int] = [
-        8 * 60 + 10,   // period 1:  08:10
-        9 * 60 + 10,   // period 2:  09:10
-        10 * 60 + 10,  // period 3:  10:10
-        11 * 60 + 10,  // period 4:  11:10
-        12 * 60 + 40,  // period 5 (noon): 12:40
-        13 * 60 + 40,  // period 6:  13:40
-        14 * 60 + 40,  // period 7:  14:40
-        15 * 60 + 40,  // period 8:  15:40
-        16 * 60 + 40,  // period 9:  16:40
-        17 * 60 + 40,  // period 10: 17:40
-        18 * 60 + 40,  // period 11: 18:40
+    /// (period number, label, start minute, end minute). D0 is -1; 0 means unscheduled.
+    static let periodSlots: [(period: Int, label: String, start: Int, end: Int)] = [
+        (-1, "0",  7 * 60 + 10,  8 * 60 + 0),
+        (1,  "1",  8 * 60 + 10,  9 * 60 + 0),
+        (2,  "2",  9 * 60 + 10,  10 * 60 + 0),
+        (3,  "3",  10 * 60 + 10, 11 * 60 + 0),
+        (4,  "4",  11 * 60 + 10, 12 * 60 + 0),
+        (5,  "N",  12 * 60 + 40, 13 * 60 + 30),
+        (6,  "5",  13 * 60 + 40, 14 * 60 + 30),
+        (7,  "6",  14 * 60 + 40, 15 * 60 + 30),
+        (8,  "7",  15 * 60 + 40, 16 * 60 + 30),
+        (9,  "8",  16 * 60 + 40, 17 * 60 + 30),
+        (10, "E0", 17 * 60 + 40, 18 * 60 + 30),
+        (11, "E1", 18 * 60 + 40, 19 * 60 + 30),
+        (12, "E2", 19 * 60 + 35, 20 * 60 + 20),
+        (13, "E3", 20 * 60 + 30, 21 * 60 + 20),
+        (14, "E4", 21 * 60 + 25, 22 * 60 + 10),
     ]
 
-    private static let periodEndMinutes: [Int] = [
-        9 * 60 + 0,    // period 1:  09:00
-        10 * 60 + 0,   // period 2:  10:00
-        11 * 60 + 0,   // period 3:  11:00
-        12 * 60 + 0,   // period 4:  12:00
-        13 * 60 + 30,  // period 5 (noon): 13:30
-        14 * 60 + 30,  // period 6:  14:30
-        15 * 60 + 30,  // period 7:  15:30
-        16 * 60 + 30,  // period 8:  16:30
-        17 * 60 + 30,  // period 9:  17:30
-        18 * 60 + 30,  // period 10: 18:30
-        19 * 60 + 30,  // period 11: 19:30
-    ]
+    static let noonPeriod = 5
 
     // All period start times for timeline generation
-    static let allPeriodStartTimes: [(hour: Int, minute: Int)] = [
-        (8, 10), (9, 10), (10, 10), (11, 10), (12, 40),
-        (13, 40), (14, 40), (15, 40), (16, 40), (17, 40), (18, 40),
-    ]
+    static let allPeriodStartTimes: [(hour: Int, minute: Int)] = periodSlots.map { ($0.start / 60, $0.start % 60) }
+
+    static func periodSlotIndex(for period: Int) -> Int? {
+        periodSlots.firstIndex { $0.period == period }
+    }
+
+    static func isValidPeriod(_ period: Int) -> Bool {
+        periodSlotIndex(for: period) != nil
+    }
+
+    static func periodLabel(for period: Int) -> String {
+        periodSlots.first { $0.period == period }?.label ?? ""
+    }
+
+    /// Number of period rows spanned by `start...end`.
+    static func periodSpan(from start: Int, to end: Int) -> Int {
+        guard let s = periodSlotIndex(for: start), let e = periodSlotIndex(for: end), e >= s else { return 1 }
+        return e - s + 1
+    }
+
+    /// Periods to show as rows: D1–E1, widened to D0 / E2–E4 when a course needs them.
+    static func displayPeriods(covering periods: [Int]) -> [Int] {
+        let indices = periods.compactMap(periodSlotIndex(for:))
+        let defaultLower = periodSlotIndex(for: 1) ?? 0
+        let defaultUpper = periodSlotIndex(for: 11) ?? periodSlots.count - 1
+        let lower = min(defaultLower, indices.min() ?? defaultLower)
+        let upper = max(defaultUpper, indices.max() ?? defaultUpper)
+        return periodSlots[lower...upper].map(\.period)
+    }
 
     // MARK: - Current / Next Course
 
@@ -130,15 +147,11 @@ enum WidgetDataReader {
     }
 
     private static func periodStartMinute(for period: Int) -> Int? {
-        let index = period - 1
-        guard periodStartMinutes.indices.contains(index) else { return nil }
-        return periodStartMinutes[index]
+        periodSlots.first { $0.period == period }?.start
     }
 
     private static func periodEndMinute(for period: Int) -> Int? {
-        let index = period - 1
-        guard periodEndMinutes.indices.contains(index) else { return nil }
-        return periodEndMinutes[index]
+        periodSlots.first { $0.period == period }?.end
     }
 
     private static func nextCourseAfterToday(
@@ -236,9 +249,9 @@ extension WidgetDataReader {
         "D8": ("16:40", "17:30"),
         "E0": ("17:40", "18:30"),
         "E1": ("18:40", "19:30"),
-        "E2": ("19:40", "20:30"),
-        "E3": ("20:40", "21:30"),
-        "E4": ("21:35", "22:25")
+        "E2": ("19:35", "20:20"),
+        "E3": ("20:30", "21:20"),
+        "E4": ("21:25", "22:10")
     ]
 
     private static func minutes(from time: String) -> Int? {

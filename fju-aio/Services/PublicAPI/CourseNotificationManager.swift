@@ -880,8 +880,8 @@ final class CourseNotificationManager {
 
     private func courseDate(for course: Course, on referenceDate: Date, calendar: Calendar, useEndTime: Bool) -> Date? {
         let period = useEndTime ? course.endPeriod : course.startPeriod
-        guard period >= 1, period <= FJUPeriod.periodTimes.count else { return nil }
-        let timeString = useEndTime ? FJUPeriod.periodTimes[period - 1].end : FJUPeriod.periodTimes[period - 1].start
+        guard let slot = FJUPeriod.slot(for: period) else { return nil }
+        let timeString = useEndTime ? slot.end : slot.start
         let parts = timeString.split(separator: ":").compactMap { Int($0) }
         guard parts.count == 2 else { return nil }
         var comps = calendar.dateComponents([.year, .month, .day], from: referenceDate)

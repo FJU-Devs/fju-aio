@@ -294,9 +294,9 @@ struct CampusMapView: View {
 
         return courses.first { course in
             guard course.dayOfWeek == todayString else { return false }
-            guard course.startPeriod >= 1, course.endPeriod <= FJUPeriod.periodTimes.count else { return false }
-            guard let start = minutesSinceMidnight(FJUPeriod.periodTimes[course.startPeriod - 1].start),
-                  let end = minutesSinceMidnight(FJUPeriod.periodTimes[course.endPeriod - 1].end) else { return false }
+            guard course.hasScheduledTime,
+                  let start = minutesSinceMidnight(course.startTimeString),
+                  let end = minutesSinceMidnight(course.endTimeString) else { return false }
             return currentMinutes >= start && currentMinutes <= end
         }
     }

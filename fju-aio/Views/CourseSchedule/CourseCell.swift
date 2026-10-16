@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CourseCell: View {
     let course: Course
+    let cellHeight: CGFloat
     let periodHeight: CGFloat
     var contentAlignment: HorizontalAlignment = .leading
     var contentYOffset: CGFloat = 0
@@ -10,16 +11,13 @@ struct CourseCell: View {
     var contentFrameAlignment: Alignment = .center
     var ownerBadgeText: String?
     var ownerBadgeColor: Color = .white
+    var onLabelHeightChange: ((CGFloat) -> Void)?
 
     // Scale with Dynamic Type, capped so text stays inside the fixed-height grid cells.
     @ScaledMetric(relativeTo: .caption2) private var badgeFontSize: CGFloat = 8
     @ScaledMetric(relativeTo: .caption2) private var nameFontSize: CGFloat = 11
     @ScaledMetric(relativeTo: .caption2) private var locationFontSize: CGFloat = 9
     private let maxFontGrowth: CGFloat = 1.35
-
-    private var cellHeight: CGFloat {
-        CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
-    }
 
     private var baseColor: Color {
         Color(hex: course.color)
@@ -55,6 +53,7 @@ struct CourseCell: View {
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 4)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onLabelHeightChange?($0) }
         .frame(maxWidth: .infinity, alignment: contentAlignment == .trailing ? .trailing : .leading)
         .offset(y: contentYOffset)
         .frame(height: cellHeight, alignment: contentFrameAlignment)
@@ -76,5 +75,6 @@ struct CourseCell: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(.white.opacity(0.35), lineWidth: 1)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

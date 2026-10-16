@@ -238,9 +238,21 @@ struct PublicScheduleTimetable: View {
 
     private let periodHeight: CGFloat = 56
     private let timeColumnWidth: CGFloat = 38
-    private let displayPeriods = 1...11
     private let weekdays = Array(FJUPeriod.dayNames.prefix(5))
     private let scheduleBackground = Color(.secondarySystemGroupedBackground)
+
+    private var gridCourses: [PublicCourseInfo] {
+        courses.filter { course in
+            (1...5).contains(publicCourseDayNumber(course.dayOfWeek))
+                && FJUPeriod.isValid(course.startPeriod)
+                && FJUPeriod.isValid(course.endPeriod)
+                && course.endPeriod >= course.startPeriod
+        }
+    }
+
+    private var displayPeriods: [Int] {
+        FJUPeriod.displayPeriods(covering: gridCourses.flatMap { [$0.startPeriod, $0.endPeriod] })
+    }
 
     private var todayWeekdayIndex: Int? {
         let weekday = Calendar.current.component(.weekday, from: Date())
@@ -303,12 +315,12 @@ struct PublicScheduleTimetable: View {
 
     private func gridBackground(colWidth: CGFloat) -> some View {
         VStack(spacing: 0) {
-            ForEach(Array(displayPeriods), id: \.self) { period in
+            ForEach(displayPeriods, id: \.self) { period in
                 HStack(spacing: 0) {
                     VStack(spacing: 1) {
                         Text(FJUPeriod.periodLabel(for: period))
                             .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(period == 5 ? Color.orange.opacity(0.8) : .secondary)
+                            .foregroundStyle(period == FJUPeriod.noonPeriod ? Color.orange.opacity(0.8) : .secondary)
                         Text(FJUPeriod.startTime(for: period))
                             .font(.system(size: 7, weight: .regular, design: .monospaced))
                             .foregroundStyle(.tertiary)
@@ -334,14 +346,13 @@ struct PublicScheduleTimetable: View {
 
     @ViewBuilder
     private func courseBlocks(colWidth: CGFloat) -> some View {
-        ForEach(courses.filter { course in
-            let dayNumber = publicCourseDayNumber(course.dayOfWeek)
-            return dayNumber >= 1 && dayNumber <= 5 && displayPeriods.contains(course.startPeriod)
-        }) { course in
+        let periods = displayPeriods
+
+        ForEach(gridCourses) { course in
             let dayIndex = publicCourseDayNumber(course.dayOfWeek) - 1
             let x = timeColumnWidth + CGFloat(dayIndex) * colWidth + 1.5
-            let y = CGFloat(course.startPeriod - displayPeriods.lowerBound) * periodHeight + 1
-            let height = CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
+            let y = CGFloat(periods.firstIndex(of: course.startPeriod) ?? 0) * periodHeight + 1
+            let height = CGFloat(FJUPeriod.span(from: course.startPeriod, to: course.endPeriod)) * periodHeight - 2
 
             Button {
                 selectedCourse = course
@@ -378,7 +389,7 @@ private struct PublicScheduleCourseBlock: View {
     let periodHeight: CGFloat
 
     private var cellHeight: CGFloat {
-        CGFloat(course.endPeriod - course.startPeriod + 1) * periodHeight - 2
+        CGFloat(FJUPeriod.span(from: course.startPeriod, to: course.endPeriod)) * periodHeight - 2
     }
 
     var body: some View {

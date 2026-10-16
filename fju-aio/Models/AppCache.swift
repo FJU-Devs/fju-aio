@@ -7,6 +7,9 @@ final class AppCache {
     static let shared = AppCache()
     private let disk = PersistentDiskCache.shared
     private let schemaVersion = 1
+    /// Bumped when `Course` period parsing changes, so courses cached with the old
+    /// numbering (e.g. "D8-E0" stored as D8 only) are refetched instead of reused.
+    private let courseSchemaVersion = 2
 
     private init() {
         semesters = disk.load([String].self, key: Keys.semesters, schemaVersion: schemaVersion).map {
@@ -20,14 +23,14 @@ final class AppCache {
 
     func getCourses(semester: String) -> [Course]? {
         if let entry = courses[semester] { return entry.data }
-        guard let entry = disk.load([Course].self, key: Keys.courses(semester), schemaVersion: schemaVersion) else { return nil }
+        guard let entry = disk.load([Course].self, key: Keys.courses(semester), schemaVersion: courseSchemaVersion) else { return nil }
         courses[semester] = (entry.value, entry.cachedAt)
         return entry.value
     }
 
     func setCourses(_ data: [Course], semester: String) {
         courses[semester] = (data, Date())
-        disk.save(data, key: Keys.courses(semester), schemaVersion: schemaVersion)
+        disk.save(data, key: Keys.courses(semester), schemaVersion: courseSchemaVersion)
     }
 
     func getSemesters() -> [String]? { semesters?.data }

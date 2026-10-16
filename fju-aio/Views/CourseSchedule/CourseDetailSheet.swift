@@ -8,7 +8,6 @@ struct CourseDetailSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthenticationManager.self) private var authManager
-    @AppStorage("preferredMapsApp") private var preferredMapsApp = "apple"
     @AppStorage("myProfile.isPublished") private var isMyProfilePublished = false
 
     @State private var enrollments: [Enrollment] = []
@@ -41,7 +40,6 @@ struct CourseDetailSheet: View {
                         LocationMapSection(
                             building: building,
                             roomLabel: course.location,
-                            onNavigate: { openNavApp(building: building) },
                             onOpenInAppMap: {
                                 dismiss()
                                 onOpenMap?()
@@ -329,30 +327,6 @@ struct CourseDetailSheet: View {
                 publicProfilesByEmpNo = [:]
             }
         }
-    }
-
-    private func openNavApp(building: CampusBuilding) {
-        if preferredMapsApp == "google", let url = googleMapsURL(building: building),
-           UIApplication.shared.canOpenURL(url) {
-            UIApplication.shared.open(url)
-        } else {
-            openAppleMaps(building: building)
-        }
-    }
-
-    private func openAppleMaps(building: CampusBuilding) {
-        let placemark = MKPlacemark(coordinate: building.coordinate)
-        let mapItem = MKMapItem(placemark: placemark)
-        mapItem.name = "\(building.name) – \(course.location)"
-        mapItem.openInMaps(launchOptions: [
-            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking
-        ])
-    }
-
-    private func googleMapsURL(building: CampusBuilding) -> URL? {
-        let lat = building.coordinate.latitude
-        let lng = building.coordinate.longitude
-        return URL(string: "comgooglemaps://?daddr=\(lat),\(lng)&directionsmode=walking&zoom=17")
     }
 }
 
@@ -787,15 +761,13 @@ private struct DetailTextRow: View {
 private struct LocationMapSection: View {
     let building: CampusBuilding
     let roomLabel: String
-    let onNavigate: () -> Void
     let onOpenInAppMap: () -> Void
 
     @State private var position: MapCameraPosition
 
-    init(building: CampusBuilding, roomLabel: String, onNavigate: @escaping () -> Void, onOpenInAppMap: @escaping () -> Void) {
+    init(building: CampusBuilding, roomLabel: String, onOpenInAppMap: @escaping () -> Void) {
         self.building = building
         self.roomLabel = roomLabel
-        self.onNavigate = onNavigate
         self.onOpenInAppMap = onOpenInAppMap
         _position = State(initialValue: .region(MKCoordinateRegion(
             center: building.coordinate,
@@ -804,118 +776,64 @@ private struct LocationMapSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Map(position: $position) {
-                Annotation(building.name, coordinate: building.coordinate, anchor: .bottom) {
-                    VStack(spacing: 0) {
-                        ZStack {
-                            Circle()
+        Button(action: onOpenInAppMap) {
+            VStack(alignment: .leading, spacing: 0) {
+                Map(position: $position) {
+                    Annotation(building.name, coordinate: building.coordinate, anchor: .bottom) {
+                        VStack(spacing: 0) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 36, height: 36)
+                                    .shadow(radius: 3)
+                                Image(systemName: "building.2.fill")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                            Triangle()
                                 .fill(Color.blue)
-                                .frame(width: 36, height: 36)
-                                .shadow(radius: 3)
-                            Image(systemName: "building.2.fill")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(.white)
+                                .frame(width: 10, height: 6)
                         }
-                        Triangle()
-                            .fill(Color.blue)
-                            .frame(width: 10, height: 6)
                     }
                 }
-            }
-            .mapStyle(.standard)
-            .mapControls { }
-            .frame(height: 180)
-            .allowsHitTesting(false)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .mapStyle(.standard)
+                .mapControls { }
+                .frame(height: 180)
+                .allowsHitTesting(false)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(building.name)
-                        .font(.subheadline.weight(.semibold))
-                    Text(roomLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.top, 8)
-            .padding(.horizontal, 8)
-
-            if #available(iOS 26.0, *) {
-                HStack(spacing: 10) {
-                    Button(action: onOpenInAppMap) {
-                        Label("在校園地圖中查看", systemImage: "map.fill")
-                            .font(.subheadline.weight(.medium))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(building.name)
+                            .font(.subheadline.weight(.semibold))
+                        Text(roomLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.glass)
-
-                    Button(action: onNavigate) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                            Text("導航")
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.caption)
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .frame(width: 90)
-                        .padding(.vertical, 11)
-                    }
-                    .buttonStyle(.glassProminent)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
-                .padding(.horizontal, 8)
                 .padding(.top, 8)
-                .padding(.bottom, 10)
-            } else {
-                HStack(spacing: 10) {
-                    Button(action: onOpenInAppMap) {
-                        Label("在校園地圖中查看", systemImage: "map.fill")
-                            .font(.subheadline.weight(.medium))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
-                    }
-                    .buttonStyle(OutlineButtonStyle())
-
-                    Button(action: onNavigate) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                            Text("導航")
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.caption)
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .frame(width: 90)
-                        .padding(.vertical, 11)
-                    }
-                    .buttonStyle(FilledButtonStyle())
-                }
                 .padding(.horizontal, 8)
-                .padding(.top, 8)
                 .padding(.bottom, 10)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(MapPreviewButtonStyle())
+        .accessibilityLabel("\(building.name) \(roomLabel)")
+        .accessibilityHint("在校園地圖中查看")
     }
 }
 
-// MARK: - Button Styles
-
-private struct OutlineButtonStyle: ButtonStyle {
+/// Scales the map preview up while pressed, springing back on release.
+private struct MapPreviewButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.primary)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .opacity(configuration.isPressed ? 0.7 : 1)
-    }
-}
-
-private struct FilledButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(.white)
-            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 12))
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .scaleEffect(configuration.isPressed ? 1.03 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
 
@@ -925,9 +843,9 @@ private struct AttendanceSummaryRow: View {
     let rollcalls: [AttendanceRollcall]
     let isLoading: Bool
 
-    private var total: Int { rollcalls.filter { $0.scored }.count }
-    private var present: Int { rollcalls.filter { $0.scored && $0.attendanceStatus == .present }.count }
-    private var absent: Int { rollcalls.filter { $0.scored && $0.attendanceStatus == .absent }.count }
+    private var total: Int { rollcalls.count }
+    private var present: Int { rollcalls.filter { $0.attendanceStatus == .present }.count }
+    private var absent: Int { rollcalls.filter { $0.attendanceStatus == .absent }.count }
     private var rate: Double { total > 0 ? Double(present) / Double(total) : 0 }
 
     var body: some View {
@@ -953,7 +871,7 @@ private struct AttendanceSummaryRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(Int(rate * 100))% 出席率")
                         .font(.subheadline.weight(.medium))
-                    Text("出席 \(present) / 計分 \(total) 次")
+                    Text("出席 \(present) / 點名 \(total) 次")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -973,9 +891,9 @@ struct MyAttendanceDetailView: View {
     private var sorted: [AttendanceRollcall] {
         rollcalls.sorted { ($0.rollcallDate ?? .distantPast) > ($1.rollcallDate ?? .distantPast) }
     }
-    private var total: Int { rollcalls.filter { $0.scored }.count }
-    private var present: Int { rollcalls.filter { $0.scored && $0.attendanceStatus == .present }.count }
-    private var absent: Int { rollcalls.filter { $0.scored && $0.attendanceStatus == .absent }.count }
+    private var total: Int { rollcalls.count }
+    private var present: Int { rollcalls.filter { $0.attendanceStatus == .present }.count }
+    private var absent: Int { rollcalls.filter { $0.attendanceStatus == .absent }.count }
     private var rate: Double { total > 0 ? Double(present) / Double(total) : 0 }
 
     var body: some View {
@@ -1014,7 +932,7 @@ struct MyAttendanceDetailView: View {
                     Spacer()
                     attendanceStat(label: "缺席", count: absent, color: .red)
                     Spacer()
-                    attendanceStat(label: "計分次數", count: total, color: .secondary)
+                    attendanceStat(label: "點名次數", count: total, color: .secondary)
                 }
                 .padding(.vertical, 4)
             }
@@ -1158,9 +1076,9 @@ struct StudentAttendanceView: View {
         return rollcall.attendanceStatus
     }
 
-    private var total: Int { visibleRollcalls.filter { $0.scored }.count }
-    private var present: Int { visibleRollcalls.filter { $0.scored && effectiveStatus(for: $0) == .present }.count }
-    private var absent: Int { visibleRollcalls.filter { $0.scored && effectiveStatus(for: $0) == .absent }.count }
+    private var total: Int { visibleRollcalls.count }
+    private var present: Int { visibleRollcalls.filter { effectiveStatus(for: $0) == .present }.count }
+    private var absent: Int { visibleRollcalls.filter { effectiveStatus(for: $0) == .absent }.count }
     private var rate: Double { total > 0 ? Double(present) / Double(total) : 0 }
 
     var body: some View {
@@ -1209,7 +1127,7 @@ struct StudentAttendanceView: View {
                         Spacer()
                         attendanceStat(label: "缺席", count: absent, color: .red)
                         Spacer()
-                        attendanceStat(label: "計分次數", count: total, color: .secondary)
+                        attendanceStat(label: "點名次數", count: total, color: .secondary)
                     }
                     .padding(.vertical, 4)
                 }

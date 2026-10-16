@@ -30,36 +30,29 @@ nonisolated struct EstuScheduleSlot: Hashable, Sendable {
         }
     }
     
-    /// Parse period strings like "D3-D4", "DN-DE", "D5-D6"
+    /// Parse period strings like "D3-D4", "DN-D5", "E1-E2". Unknown codes yield 0 (unscheduled).
     static func parsePeriods(_ periods: String) -> (start: Int, end: Int) {
         let components = periods.components(separatedBy: "-")
         let startStr = components.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let endStr = components.count > 1 ? components[1].trimmingCharacters(in: .whitespacesAndNewlines) : startStr
-        
+
         let start = periodToNumber(startStr)
         let end = periodToNumber(endStr)
+        guard start != 0 else { return (0, 0) }
         return (start, end == 0 ? start : end)
     }
-    
-    /// Convert period code to a 1-based row index.
-    /// Schedule: D1(1) D2(2) D3(3) D4(4) DN(5,noon) D5(6) D6(7) D7(8) D8(9) D9(10) D10(11)
+
+    /// Convert a period code (D0…D8, DN, E0…E4) to its `FJUPeriod` number, or 0 if unknown.
     static func periodToNumber(_ code: String) -> Int {
-        switch code.uppercased() {
-        case "D1":  return 1
-        case "D2":  return 2
-        case "D3":  return 3
-        case "D4":  return 4
-        case "DN":  return 5   // noon break
-        case "D5":  return 6
-        case "D6":  return 7
-        case "D7":  return 8
-        case "D8":  return 9
+        let normalized = code.uppercased()
+        if let slot = FJUPeriod.slots.first(where: { $0.code == normalized }) {
+            return slot.period
+        }
+        switch normalized {
+        // Legacy aliases some endpoints use for the evening periods.
         case "D9":  return 10
         case "D10": return 11
-        default:
-            // Fallback: strip leading "D" and parse integer
-            let cleaned = code.uppercased().replacingOccurrences(of: "D", with: "")
-            return Int(cleaned) ?? 0
+        default:    return 0
         }
     }
 }
