@@ -2,30 +2,84 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// CampusAmenity is defined in CampusBuilding.swift
+// CampusBuilding / CampusAmenity are defined in CampusBuilding.swift
 
-private extension CampusAmenity.Category {
-    var color: Color {
+// MARK: - Palette
+
+/// Three roles only: neutral (everything by default), the app accent (your
+/// buildings, primary actions), and orange reserved for "in class right now".
+/// Amenity types are told apart by icon, not colour.
+private enum MarkerTone {
+    case neutral, accent, now
+
+    var fill: Color {
         switch self {
-        case .foodCourt: return Color(hex: "#C2410C")
-        case .convenienceStore: return Color(hex: "#0F766E")
+        case .neutral: return Color(.systemBackground)
+        case .accent: return .accentColor
+        case .now: return .orange
+        }
+    }
+
+    var foreground: Color {
+        self == .neutral ? .primary : .white
+    }
+
+    /// Badge fill inside glass panels, where a solid white/black disc looks heavy.
+    var badgeFill: Color {
+        self == .neutral ? Color.primary.opacity(0.1) : fill
+    }
+
+    /// The colour actions and highlights take on in this state.
+    var tint: Color {
+        self == .now ? .orange : .accentColor
+    }
+}
+
+// MARK: - Selection & Filters
+
+/// `nonisolated` so the Hashable conformance isn't main-actor-isolated: MapKit
+/// hashes/compares selection tags off the main thread, which traps otherwise.
+nonisolated private enum MapItem: Hashable, Sendable {
+    case building(String)   // building code
+    case amenity(String)    // amenity id
+}
+
+nonisolated private enum MapFilter: CaseIterable, Identifiable, Sendable {
+    case all, myCourses, food, stores
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .myCourses: return "我的課程"
+        case .food: return "學餐"
+        case .stores: return "便利商店"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .all: return "map"
+        case .myCourses: return "book.closed.fill"
+        case .food: return "fork.knife"
+        case .stores: return "bag.fill"
         }
     }
 }
 
-/// Shared marker palette so pins, search results, and detail cards read as one design.
-private enum MapPalette {
-    static let buildingDefault = Color(hex: "#4F46E5")
-    static let buildingSelected = Color(hex: "#2563EB")
-    static let currentClass = Color(hex: "#EA580C")
+/// How much detail markers show, driven by camera distance so the campus
+/// overview stays readable and detail appears as you zoom in.
+private enum MarkerDetail: Comparable {
+    case overview   // only your buildings get a code; others are dots
+    case codes      // every building shows its code
+    case names      // codes + names under markers
 }
 
-private extension Color {
-    /// Subtle top-to-bottom gradient that gives flat marker colors a bit of depth.
-    var markerGradient: LinearGradient {
-        LinearGradient(colors: [self.opacity(0.82), self], startPoint: .top, endPoint: .bottom)
-    }
-}
+private let campusRegion = MKCoordinateRegion(
+    center: CLLocationCoordinate2D(latitude: 25.0357, longitude: 121.4322),
+    span: MKCoordinateSpan(latitudeDelta: 0.0068, longitudeDelta: 0.0068)
+)
 
 // MARK: - Campus Map View
 
@@ -39,33 +93,39 @@ struct CampusMapView: View {
     private let buildings = CampusBuildingRegistry.all
     private let amenities = CampusAmenity.all
 
+    @State private var cameraPosition: MapCameraPosition = .region(campusRegion)
+    /// Visible latitude span, used to decide how much detail markers show.
+    @State private var visibleSpan: Double = campusRegion.span.latitudeDelta
+    @State private var selection: MapItem?
+    @State private var filter: MapFilter = .all
     @State private var searchText = ""
-    @State private var selectedBuilding: CampusBuilding?
-    @State private var selectedAmenity: CampusAmenity?
-    @State private var cameraPosition: MapCameraPosition = .region(
-        MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 25.0360, longitude: 121.4320),
-            span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
-        )
-    )
+    @FocusState private var isSearchFocused: Bool
     @State private var locationManager = CLLocationManager()
+
     @State private var courses: [Course] = []
+    @State private var coursesByBuilding: [String: [Course]] = [:]
     @State private var currentCourse: Course?
 
-    private var filteredBuildings: [CampusBuilding] {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return buildings }
-        return buildings.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.code.localizedCaseInsensitiveContains(searchText)
-        }
+    // MARK: Derived state
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var filteredAmenities: [CampusAmenity] {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return amenities }
-        return amenities.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.category.title.localizedCaseInsensitiveContains(searchText)
-        }
+    private var markerDetail: MarkerDetail {
+        if visibleSpan < 0.0028 { return .names }
+        if visibleSpan < 0.0055 { return .codes }
+        return .overview
+    }
+
+    private var selectedBuilding: CampusBuilding? {
+        guard case .building(let code) = selection else { return nil }
+        return buildings.first { $0.code == code }
+    }
+
+    private var selectedAmenity: CampusAmenity? {
+        guard case .amenity(let id) = selection else { return nil }
+        return amenities.first { $0.id == id }
     }
 
     private var currentCourseBuilding: CampusBuilding? {
@@ -73,171 +133,86 @@ struct CampusMapView: View {
         return CampusBuildingRegistry.building(for: course.location)
     }
 
-    var body: some View {
-        ZStack(alignment: .top) {
-            Map(position: $cameraPosition) {
-                UserAnnotation()
-                ForEach(filteredBuildings) { building in
-                    Annotation(building.name, coordinate: building.coordinate, anchor: .bottom) {
-                        Button {
-                            withAnimation(.spring(response: 0.4)) {
-                                selectedBuilding = building
-                                selectedAmenity = nil
-                                searchText = ""
-                                fly(to: building.coordinate)
-                            }
-                        } label: {
-                            BuildingPin(
-                                building: building,
-                                courseCount: distinctCourseCount(for: building),
-                                isSelected: selectedBuilding?.id == building.id,
-                                isCurrentClass: currentCourseBuilding?.id == building.id
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(building.name)
-                        .accessibilityAddTraits(selectedBuilding?.id == building.id ? .isSelected : [])
-                    }
-                }
+    private func hasCourses(_ building: CampusBuilding) -> Bool {
+        !(coursesByBuilding[building.code]?.isEmpty ?? true)
+    }
 
-                ForEach(filteredAmenities) { amenity in
-                    Annotation(amenity.name, coordinate: amenity.coordinate, anchor: .bottom) {
-                        Button {
-                            withAnimation(.spring(response: 0.4)) {
-                                selectedAmenity = amenity
-                                selectedBuilding = nil
-                                searchText = ""
-                                fly(to: amenity.coordinate)
-                            }
-                        } label: {
-                            AmenityPin(
-                                amenity: amenity,
-                                isSelected: selectedAmenity?.id == amenity.id
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(amenity.name)
-                        .accessibilityAddTraits(selectedAmenity?.id == amenity.id ? .isSelected : [])
-                    }
-                }
-            }
-            .mapStyle(.standard(elevation: .realistic))
-            .mapControlVisibility(.hidden)
-            .ignoresSafeArea(edges: .bottom)
-
-            // Search bar + results overlay, with the location button stacked directly below
-            // so it follows the overlay's actual height (results list, Dynamic Type, etc.).
-            VStack(alignment: .trailing, spacing: 10) {
-                SearchOverlay(
-                    searchText: $searchText,
-                    filteredBuildings: filteredBuildings,
-                    filteredAmenities: filteredAmenities,
-                    onSelect: { building in
-                        withAnimation(.spring(response: 0.4)) {
-                            selectedBuilding = building
-                            selectedAmenity = nil
-                            searchText = ""
-                            fly(to: building.coordinate)
-                        }
-                    },
-                    onSelectAmenity: { amenity in
-                        withAnimation(.spring(response: 0.4)) {
-                            selectedAmenity = amenity
-                            selectedBuilding = nil
-                            searchText = ""
-                            fly(to: amenity.coordinate)
-                        }
-                    }
-                )
-
-                // User location button
-                Button {
-                    locationManager.requestWhenInUseAuthorization()
-                    cameraPosition = .userLocation(
-                        followsHeading: false,
-                        fallback: .region(MKCoordinateRegion(
-                            center: CLLocationCoordinate2D(latitude: 25.0360, longitude: 121.4320),
-                            span: MKCoordinateSpan(latitudeDelta: 0.008, longitudeDelta: 0.008)
-                        ))
-                    )
-                } label: {
-                    Image(systemName: "location.fill")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                }
-                .foregroundStyle(.blue)
-                .modifier(GlassOrMaterialBackground(cornerRadius: 14))
-                .accessibilityLabel("定位目前位置")
-                .padding(.horizontal, 16)
-            }
-            .animation(.spring(response: 0.3), value: searchText.isEmpty)
-
-            if let building = selectedBuilding {
-                VStack {
-                    Spacer()
-                    BuildingDetailCard(
-                        building: building,
-                        courses: coursesForBuilding(building),
-                        isCurrentClassBuilding: currentCourseBuilding?.id == building.id,
-                        onNavigate: { openNavApp(building: building) },
-                        onClose: {
-                            withAnimation(.spring(response: 0.3)) {
-                                selectedBuilding = nil
-                            }
-                        }
-                    )
-                    .frame(maxWidth: 520)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
-                }
-            } else if let amenity = selectedAmenity {
-                VStack {
-                    Spacer()
-                    AmenityDetailCard(
-                        amenity: amenity,
-                        onNavigate: { openNavApp(name: amenity.name, coordinate: amenity.coordinate) },
-                        onClose: {
-                            withAnimation(.spring(response: 0.3)) {
-                                selectedAmenity = nil
-                            }
-                        }
-                    )
-                    .frame(maxWidth: 520)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
-                }
-            } else if let course = currentCourse {
-                VStack {
-                    Spacer()
-                    CurrentClassCard(course: course, buildingName: currentCourseBuilding?.name) {
-                        if let b = currentCourseBuilding {
-                            withAnimation(.spring(response: 0.4)) {
-                                selectedBuilding = b
-                                fly(to: b.coordinate)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: 520)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
-                }
+    private var visibleBuildings: [CampusBuilding] {
+        buildings.filter { building in
+            if selection == .building(building.code) { return true }
+            switch filter {
+            case .all: return true
+            case .myCourses: return hasCourses(building)
+            case .food, .stores: return false
             }
         }
+    }
+
+    private var visibleAmenities: [CampusAmenity] {
+        amenities.filter { amenity in
+            if selection == .amenity(amenity.id) { return true }
+            switch filter {
+            case .all: return true
+            case .myCourses: return false
+            case .food: return amenity.category == .foodCourt
+            case .stores: return amenity.category == .convenienceStore
+            }
+        }
+    }
+
+    private var buildingResults: [CampusBuilding] {
+        buildings.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.code.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private var amenityResults: [CampusAmenity] {
+        amenities.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.category.title.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    // MARK: Body
+
+    var body: some View {
+        Map(position: $cameraPosition, selection: $selection) {
+            UserAnnotation()
+
+            ForEach(visibleBuildings) { building in
+                buildingAnnotation(building)
+            }
+
+            ForEach(visibleAmenities) { amenity in
+                amenityAnnotation(amenity)
+            }
+        }
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
+        .mapControls {
+            MapCompass()
+        }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            visibleSpan = context.region.span.latitudeDelta
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            topBar
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomBar
+        }
+        .animation(.snappy(duration: 0.3), value: selection)
+        .animation(.snappy(duration: 0.25), value: isSearching)
+        .animation(.snappy(duration: 0.25), value: markerDetail)
         .navigationTitle("校園地圖")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if currentCourse != nil, let b = currentCourseBuilding {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation(.spring(response: 0.4)) {
-                            selectedBuilding = b
-                            fly(to: b.coordinate)
-                        }
-                    } label: {
-                        Label("現在課程", systemImage: "location.fill")
-                            .font(.subheadline.weight(.medium))
-                    }
-                }
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .onChange(of: selection) { _, newValue in
+            guard let newValue else { return }
+            isSearchFocused = false
+            searchText = ""
+            if let coordinate = coordinate(for: newValue) {
+                withAnimation(.smooth(duration: 0.6)) { fly(to: coordinate) }
             }
         }
         .onAppear {
@@ -245,8 +220,7 @@ struct CampusMapView: View {
             loadCoursesFromCache()
             if let location = highlightLocation,
                let building = CampusBuildingRegistry.building(for: location) {
-                selectedBuilding = building
-                fly(to: building.coordinate)
+                selection = .building(building.code)
             }
         }
         .task {
@@ -254,11 +228,197 @@ struct CampusMapView: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: Annotations
 
-    private func coursesForBuilding(_ building: CampusBuilding) -> [Course] {
-        courses.filter { CampusBuildingRegistry.building(for: $0.location)?.id == building.id }
-            .sorted { lhs, rhs in
+    @MapContentBuilder
+    private func buildingAnnotation(_ building: CampusBuilding) -> some MapContent {
+        let isSelected = selection == .building(building.code)
+        let isCurrent = currentCourseBuilding?.code == building.code
+        let isMine = hasCourses(building)
+        let style: BuildingMarker.Style = isCurrent ? .current : (isMine ? .mine : .plain)
+        let showsCode = isSelected || isCurrent || isMine || markerDetail >= .codes
+        let showsName = isSelected || markerDetail == .names
+
+        Annotation(showsName ? building.name : "", coordinate: building.coordinate, anchor: .center) {
+            BuildingMarker(code: building.code, style: style, showsCode: showsCode, isSelected: isSelected)
+                .onTapGesture { selection = .building(building.code) }
+                .accessibilityElement()
+                .accessibilityLabel(building.name)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        }
+        .tag(MapItem.building(building.code))
+    }
+
+    @MapContentBuilder
+    private func amenityAnnotation(_ amenity: CampusAmenity) -> some MapContent {
+        let isSelected = selection == .amenity(amenity.id)
+        let showsName = isSelected || markerDetail == .names
+
+        Annotation(showsName ? amenity.name : "", coordinate: amenity.coordinate, anchor: .center) {
+            AmenityMarker(category: amenity.category, isSelected: isSelected)
+                .onTapGesture { selection = .amenity(amenity.id) }
+                .accessibilityElement()
+                .accessibilityLabel(amenity.name)
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        }
+        .tag(MapItem.amenity(amenity.id))
+    }
+
+    // MARK: Top bar
+
+    private var topBar: some View {
+        VStack(spacing: 8) {
+            searchField
+            if isSearching {
+                SearchResultsList(
+                    buildings: buildingResults,
+                    amenities: amenityResults,
+                    courseCount: { coursesByBuilding[$0.code]?.count ?? 0 },
+                    onSelect: { selection = $0 }
+                )
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                filterChips
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: 640)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            TextField("搜尋建築或地點", text: $searchText)
+                .font(.subheadline)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+                .focused($isSearchFocused)
+                .onSubmit { isSearchFocused = false }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜尋")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        .modifier(GlassOrMaterialBackground(shape: Capsule()))
+        .padding(.horizontal, 16)
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(MapFilter.allCases) { item in
+                    FilterChip(
+                        title: item.title,
+                        icon: item.icon,
+                        isSelected: filter == item
+                    ) {
+                        withAnimation(.snappy) { filter = item }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+        }
+    }
+
+    // MARK: Bottom bar
+
+    private var bottomBar: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            locateButton
+
+            Group {
+                if let building = selectedBuilding {
+                    BuildingPanel(
+                        building: building,
+                        courses: coursesByBuilding[building.code] ?? [],
+                        currentCourse: currentCourseBuilding?.code == building.code ? currentCourse : nil,
+                        onNavigate: { openNavApp(name: building.name, coordinate: building.coordinate) },
+                        onClose: { selection = nil }
+                    )
+                    .id(building.code)
+                } else if let amenity = selectedAmenity {
+                    AmenityPanel(
+                        amenity: amenity,
+                        onNavigate: { openNavApp(name: amenity.name, coordinate: amenity.coordinate) },
+                        onClose: { selection = nil }
+                    )
+                    .id(amenity.id)
+                } else if let course = currentCourse, !isSearching {
+                    CurrentClassBanner(course: course, hasBuilding: currentCourseBuilding != nil) {
+                        if let building = currentCourseBuilding {
+                            selection = .building(building.code)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    private var locateButton: some View {
+        Button {
+            locationManager.requestWhenInUseAuthorization()
+            withAnimation(.smooth) {
+                cameraPosition = .userLocation(followsHeading: false, fallback: .region(campusRegion))
+            }
+        } label: {
+            Image(systemName: cameraPosition.followsUserLocation ? "location.fill" : "location")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.blue)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .modifier(GlassOrMaterialBackground(shape: Circle()))
+        .accessibilityLabel("定位目前位置")
+        .padding(.trailing, 4)
+    }
+
+    // MARK: Helpers
+
+    private func coordinate(for item: MapItem) -> CLLocationCoordinate2D? {
+        switch item {
+        case .building(let code): return buildings.first { $0.code == code }?.coordinate
+        case .amenity(let id): return amenities.first { $0.id == id }?.coordinate
+        }
+    }
+
+    private func fly(to coordinate: CLLocationCoordinate2D) {
+        cameraPosition = .region(MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.0035, longitudeDelta: 0.0035)
+        ))
+    }
+
+    private func setCourses(_ newCourses: [Course]) {
+        courses = newCourses
+        currentCourse = currentClassNow(from: newCourses)
+        var grouped: [String: [Course]] = [:]
+        for course in newCourses {
+            guard let building = CampusBuildingRegistry.building(for: course.location) else { continue }
+            grouped[building.code, default: []].append(course)
+        }
+        coursesByBuilding = grouped.mapValues { list in
+            list.sorted { lhs, rhs in
                 if lhs.dayOfWeekNumber != rhs.dayOfWeekNumber {
                     return lhs.dayOfWeekNumber < rhs.dayOfWeekNumber
                 }
@@ -267,18 +427,7 @@ struct CampusMapView: View {
                 }
                 return lhs.name < rhs.name
             }
-    }
-
-    /// Multi-slot courses appear once per time slot; count each course once.
-    private func distinctCourseCount(for building: CampusBuilding) -> Int {
-        Set(coursesForBuilding(building).map { $0.code.isEmpty ? $0.name : $0.code }).count
-    }
-
-    private func fly(to coordinate: CLLocationCoordinate2D) {
-        cameraPosition = .region(MKCoordinateRegion(
-            center: coordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
-        ))
+        }
     }
 
     private func currentClassNow(from courses: [Course]) -> Course? {
@@ -310,10 +459,8 @@ struct CampusMapView: View {
 
     @MainActor
     private func loadCoursesFromCache() {
-        let cache = AppCache.shared
-        guard let cached = cache.getCourses(semester: CurrentSemester.code()) else { return }
-        courses = cached
-        currentCourse = currentClassNow(from: cached)
+        guard let cached = AppCache.shared.getCourses(semester: CurrentSemester.code()) else { return }
+        setCourses(cached)
     }
 
     private func refreshCoursesIfNeeded() async {
@@ -323,627 +470,526 @@ struct CampusMapView: View {
             if !semesters.isEmpty {
                 let semester = CurrentSemester.resolve(available: semesters)
                 let fetched = try await service.fetchCourses(semester: semester)
-                await MainActor.run {
-                    courses = fetched
-                    currentCourse = currentClassNow(from: fetched)
-                }
+                await MainActor.run { setCourses(fetched) }
             }
         } catch {
             // Map is still usable without course data
         }
     }
 
-    private func openNavApp(building: CampusBuilding) {
-        openNavApp(name: building.name, coordinate: building.coordinate)
-    }
-
     private func openNavApp(name: String, coordinate: CLLocationCoordinate2D) {
-        if preferredMapsApp == "google", let url = googleMapsURL(coordinate: coordinate),
+        if preferredMapsApp == "google",
+           let url = URL(string: "comgooglemaps://?daddr=\(coordinate.latitude),\(coordinate.longitude)&directionsmode=walking&zoom=17"),
            UIApplication.shared.canOpenURL(url) {
             UIApplication.shared.open(url)
         } else {
-            openAppleMaps(name: name, coordinate: coordinate)
+            let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
+            mapItem.name = name
+            mapItem.openInMaps(launchOptions: [
+                MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking
+            ])
         }
-    }
-
-    private func openAppleMaps(name: String, coordinate: CLLocationCoordinate2D) {
-        let placemark = MKPlacemark(coordinate: coordinate)
-        let mapItem = MKMapItem(placemark: placemark)
-        mapItem.name = name
-        mapItem.openInMaps(launchOptions: [
-            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking
-        ])
-    }
-
-    private func googleMapsURL(coordinate: CLLocationCoordinate2D) -> URL? {
-        let lat = coordinate.latitude
-        let lng = coordinate.longitude
-        return URL(string: "comgooglemaps://?daddr=\(lat),\(lng)&directionsmode=walking&zoom=17")
     }
 }
 
-// MARK: - Search Overlay
+// MARK: - Map Markers
 
-private struct SearchOverlay: View {
-    @Binding var searchText: String
-    let filteredBuildings: [CampusBuilding]
-    let filteredAmenities: [CampusAmenity]
-    let onSelect: (CampusBuilding) -> Void
-    let onSelectAmenity: (CampusAmenity) -> Void
+private struct BuildingMarker: View {
+    enum Style { case plain, mine, current }
 
-    @FocusState private var isSearchFocused: Bool
+    let code: String
+    let style: Style
+    let showsCode: Bool
+    let isSelected: Bool
+
+    @State private var pulse = false
+
+    private var tone: MarkerTone {
+        switch style {
+        case .plain: return .neutral
+        case .mine: return .accent
+        case .current: return .now
+        }
+    }
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 8) {
-                searchContent
+        ZStack {
+            if style == .current {
+                Circle()
+                    .fill(Color.orange.opacity(0.3))
+                    .frame(width: 44, height: 44)
+                    .scaleEffect(pulse ? 1.3 : 0.5)
+                    .opacity(pulse ? 0 : 1)
+                    .animation(.easeOut(duration: 1.6).repeatForever(autoreverses: false), value: pulse)
+                    .onAppear { pulse = true }
             }
-            .frame(maxWidth: 640)
-            .frame(maxWidth: .infinity, alignment: .center)
+
+            if showsCode {
+                Text(code)
+                    .font(.system(size: isSelected ? 13 : 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(tone.foreground)
+                    .padding(.horizontal, isSelected ? 8 : 6)
+                    .frame(minWidth: isSelected ? 32 : 24, minHeight: isSelected ? 28 : 20)
+                    .background(tone.fill, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(
+                            isSelected ? Color.accentColor : Color.primary.opacity(tone == .neutral ? 0.12 : 0),
+                            lineWidth: isSelected ? 2 : 0.5
+                        )
+                    }
+            } else {
+                Circle()
+                    .fill(Color(.systemGray))
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 1.5))
+            }
+        }
+        .shadow(color: .black.opacity(0.2), radius: isSelected ? 4 : 2, y: 1)
+        .frame(minWidth: 30, minHeight: 30) // comfortable hit target for dots
+        .contentShape(Rectangle())
+    }
+}
+
+private struct AmenityMarker: View {
+    let category: CampusAmenity.Category
+    let isSelected: Bool
+
+    var body: some View {
+        Image(systemName: category.iconName)
+            .font(.system(size: isSelected ? 13 : 10, weight: .bold))
+            .foregroundStyle(.primary)
+            .frame(width: isSelected ? 30 : 22, height: isSelected ? 30 : 22)
+            .background(Color(.systemBackground), in: Circle())
+            .overlay {
+                Circle().strokeBorder(
+                    isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                    lineWidth: isSelected ? 2 : 0.5
+                )
+            }
+            .shadow(color: .black.opacity(0.2), radius: isSelected ? 4 : 2, y: 1)
+            .frame(minWidth: 30, minHeight: 30)
+            .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Filter Chip
+
+private struct FilterChip: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                Text(title)
+                    .font(.footnote.weight(.semibold))
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background {
+                if isSelected {
+                    Capsule().fill(Color.accentColor)
+                }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .modifier(GlassOrMaterialBackground(shape: Capsule(), isEnabled: !isSelected))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Search Results
+
+private struct SearchResultsList: View {
+    let buildings: [CampusBuilding]
+    let amenities: [CampusAmenity]
+    let courseCount: (CampusBuilding) -> Int
+    let onSelect: (MapItem) -> Void
+
+    var body: some View {
+        Group {
+            if buildings.isEmpty && amenities.isEmpty {
+                Text("找不到符合的地點")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !buildings.isEmpty {
+                            sectionHeader("建築")
+                            ForEach(buildings) { building in
+                                let count = courseCount(building)
+                                ResultRow(
+                                    title: building.name,
+                                    subtitle: count > 0 ? "\(building.code) · \(count) 堂課" : building.code,
+                                    tone: count > 0 ? .accent : .neutral
+                                ) {
+                                    Text(building.code)
+                                        .font(.system(size: building.code.count > 2 ? 10 : 12, weight: .bold, design: .rounded))
+                                } action: {
+                                    onSelect(.building(building.code))
+                                }
+                            }
+                        }
+                        if !amenities.isEmpty {
+                            sectionHeader("餐飲與商店")
+                            ForEach(amenities) { amenity in
+                                ResultRow(
+                                    title: amenity.name,
+                                    subtitle: amenity.category.title,
+                                    tone: .neutral
+                                ) {
+                                    Image(systemName: amenity.category.iconName)
+                                        .font(.system(size: 13, weight: .semibold))
+                                } action: {
+                                    onSelect(.amenity(amenity.id))
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .scrollDismissesKeyboard(.immediately)
+                .frame(maxHeight: 320)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .modifier(GlassOrMaterialBackground(shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
+        .padding(.horizontal, 16)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 16)
             .padding(.top, 8)
-        } else {
-            searchContent
-                .frame(maxWidth: 640)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-        }
-    }
-
-    @ViewBuilder
-    private var searchContent: some View {
-        VStack(spacing: 8) {
-            searchBar
-            if !searchText.isEmpty {
-                resultsDropdown
-            }
-        }
-    }
-
-    private var searchBar: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("搜尋建築、餐廳、商店...", text: $searchText)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .submitLabel(.search)
-                .focused($isSearchFocused)
-                .onSubmit { isSearchFocused = false }
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityLabel("清除搜尋")
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .modifier(GlassOrMaterialBackground(cornerRadius: 14))
-    }
-
-    private var resultsDropdown: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(filteredBuildings) { building in
-                    Button {
-                        isSearchFocused = false
-                        onSelect(building)
-                    } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(MapPalette.buildingDefault.markerGradient)
-                                    .frame(width: 36, height: 36)
-                                    .shadow(color: MapPalette.buildingDefault.opacity(0.35), radius: 3, y: 1)
-                                Text(building.code)
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.white)
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(building.name)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                Text(building.code)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    }
-                    if building.id != filteredBuildings.last?.id {
-                        Divider().padding(.leading, 64)
-                    }
-                }
-
-                if !filteredBuildings.isEmpty && !filteredAmenities.isEmpty {
-                    Divider()
-                }
-
-                ForEach(filteredAmenities) { amenity in
-                    Button {
-                        isSearchFocused = false
-                        onSelectAmenity(amenity)
-                    } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(amenity.category.color.markerGradient)
-                                    .frame(width: 36, height: 36)
-                                    .shadow(color: amenity.category.color.opacity(0.35), radius: 3, y: 1)
-                                Image(systemName: amenity.category.iconName)
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(.white)
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(amenity.name)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                Text(amenity.category.title)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(amenity.note)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    }
-                    if amenity.id != filteredAmenities.last?.id {
-                        Divider().padding(.leading, 64)
-                    }
-                }
-            }
-            .modifier(GlassOrMaterialBackground(cornerRadius: 14))
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .frame(maxHeight: 280)
+            .padding(.bottom, 2)
     }
 }
 
-// MARK: - Shared Card Components
-
-/// A small centered handle that gives the bottom-anchored cards a "sheet" affordance.
-private struct CardGrabber: View {
-    var body: some View {
-        Capsule()
-            .fill(Color.secondary.opacity(0.35))
-            .frame(width: 36, height: 5)
-            .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-/// A compact colored chip used to surface a status at a glance. Reserved for
-/// genuinely notable state (e.g. "in class now") so it doesn't compete with
-/// the card's own accent color.
-private struct StatusPill: View {
-    let text: String
-    let icon: String
-    let color: Color
+private struct ResultRow<Glyph: View>: View {
+    let title: String
+    let subtitle: String
+    let tone: MarkerTone
+    @ViewBuilder let glyph: () -> Glyph
+    let action: () -> Void
 
     var body: some View {
-        Label(text, systemImage: icon)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .foregroundStyle(color)
-            .background(color.opacity(0.15), in: Capsule())
-    }
-}
-
-// MARK: - Current Class Card
-
-private struct CurrentClassCard: View {
-    let course: Course
-    let buildingName: String?
-    let onLocate: () -> Void
-
-    private let accentColor = MapPalette.currentClass
-
-    var body: some View {
-        VStack(spacing: 10) {
-            CardGrabber()
-
+        Button(action: action) {
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(accentColor.markerGradient)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: accentColor.opacity(0.35), radius: 4, y: 2)
-                    Image(systemName: "clock.fill")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    StatusPill(text: "現在上課", icon: "clock.fill", color: accentColor)
-                    Text(course.name)
-                        .font(.body.weight(.semibold))
+                MarkerBadge(tone: tone, size: 30, content: glyph)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.primary)
-                    Text(course.location)
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                Spacer()
-
-                if buildingName != nil {
-                    if #available(iOS 26.0, *) {
-                        Button(action: onLocate) {
-                            Label("定位", systemImage: "location.fill")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.glass)
-                        .tint(accentColor)
-                    } else {
-                        Button(action: onLocate) {
-                            Label("定位", systemImage: "location.fill")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(accentColor, in: Capsule())
-                                .foregroundStyle(.white)
-                        }
-                    }
-                } else {
-                    Image(systemName: "mappin.slash")
-                        .foregroundStyle(.secondary)
-                }
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
-        .padding(14)
-        .modifier(GlassOrMaterialBackground(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+        .buttonStyle(.plain)
     }
 }
 
-// MARK: - Building Detail Card
+// MARK: - Shared panel pieces
 
-private struct BuildingDetailCard: View {
-    let building: CampusBuilding
-    let courses: [Course]
-    let isCurrentClassBuilding: Bool
+/// A filled circle with a glyph, matching the map markers' tone.
+private struct MarkerBadge<Content: View>: View {
+    let tone: MarkerTone
+    let size: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Circle()
+            .fill(tone.badgeFill)
+            .frame(width: size, height: size)
+            .overlay { content().foregroundStyle(tone.foreground) }
+    }
+}
+
+private struct PanelCloseButton: View {
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background(Color.secondary.opacity(0.15), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct NavigateButton: View {
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        let label = Label("導航", systemImage: "figure.walk")
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 4)
+
+        if #available(iOS 26.0, *) {
+            Button(action: action) { label }
+                .buttonStyle(.glassProminent)
+                .controlSize(.regular)
+                .tint(tint)
+        } else {
+            Button(action: action) { label }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .tint(tint)
+        }
+    }
+}
+
+/// Shared header: badge, title/subtitle, navigate, close.
+private struct PanelHeader<Badge: View>: View {
+    let title: String
+    let subtitle: String
+    let tint: Color
+    let closeLabel: String
+    @ViewBuilder let badge: () -> Badge
     let onNavigate: () -> Void
     let onClose: () -> Void
 
-    /// One accent per card state — everything (icon, status pill, nav button) uses this,
-    /// rather than mixing unrelated hues in the same header.
-    private var accentColor: Color {
-        isCurrentClassBuilding ? MapPalette.currentClass : MapPalette.buildingSelected
+    var body: some View {
+        HStack(spacing: 12) {
+            badge()
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 4)
+            NavigateButton(tint: tint, action: onNavigate)
+            PanelCloseButton(label: closeLabel, action: onClose)
+        }
+    }
+}
+
+private struct PanelContainer<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .modifier(GlassOrMaterialBackground(shape: RoundedRectangle(cornerRadius: 26, style: .continuous)))
+        .shadow(color: .black.opacity(0.12), radius: 14, y: 4)
+    }
+}
+
+// MARK: - Building Panel
+
+private struct BuildingPanel: View {
+    let building: CampusBuilding
+    let courses: [Course]
+    let currentCourse: Course?
+    let onNavigate: () -> Void
+    let onClose: () -> Void
+
+    private var tone: MarkerTone {
+        if currentCourse != nil { return .now }
+        return courses.isEmpty ? .neutral : .accent
+    }
+
+    /// Multi-slot courses appear once per time slot; count each course once.
+    private var distinctCourseCount: Int {
+        Set(courses.map { $0.code.isEmpty ? $0.name : $0.code }).count
+    }
+
+    private var subtitle: String {
+        if let course = currentCourse { return "現在上課 · \(course.name)" }
+        return distinctCourseCount > 0 ? "\(building.code) · 你有 \(distinctCourseCount) 門課在這裡" : building.code
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            CardGrabber()
-
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(accentColor.markerGradient)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: accentColor.opacity(0.35), radius: 4, y: 2)
-                    Text(building.code)
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(building.name)
-                        .font(.headline)
-                    if isCurrentClassBuilding {
-                        StatusPill(text: "現在上課", icon: "clock.fill", color: accentColor)
+        PanelContainer {
+            PanelHeader(
+                title: building.name,
+                subtitle: subtitle,
+                tint: tone.tint,
+                closeLabel: "關閉建築詳細資訊",
+                badge: {
+                    MarkerBadge(tone: tone, size: 40) {
+                        Text(building.code)
+                            .font(.system(size: building.code.count > 2 ? 12 : 14, weight: .bold, design: .rounded))
                     }
-                    Text(courses.isEmpty ? "尚無你的課程" : "\(courses.count) 門課在這棟建築")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityLabel("關閉建築詳細資訊")
-            }
-
-            HStack(spacing: 10) {
-                if #available(iOS 26.0, *) {
-                    Button(action: onNavigate) {
-                        Label("導航", systemImage: "figure.walk")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(accentColor)
-                } else {
-                    Button(action: onNavigate) {
-                        Label("導航", systemImage: "figure.walk")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(accentColor, in: RoundedRectangle(cornerRadius: 12))
-                            .foregroundStyle(.white)
-                    }
-                }
-            }
+                },
+                onNavigate: onNavigate,
+                onClose: onClose
+            )
 
             if !courses.isEmpty {
-                Divider()
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(courses) { course in
-                            CourseRow(course: course)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(courses.enumerated()), id: \.offset) { _, course in
+                            CourseChip(course: course, isNow: course.id == currentCourse?.id)
                         }
                     }
                 }
-                .frame(maxHeight: 220)
+                // Scroll edge-to-edge inside the panel, clipped by its rounded corners.
+                .contentMargins(.horizontal, 14, for: .scrollContent)
+                .padding(.horizontal, -14)
             }
         }
-        .padding(16)
-        .modifier(GlassOrMaterialBackground(cornerRadius: 18))
-        .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
     }
 }
 
-private struct CourseRow: View {
+private struct CourseChip: View {
     let course: Course
+    let isNow: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 3)
+        HStack(spacing: 8) {
+            Capsule()
                 .fill(Color(hex: course.color))
-                .frame(width: 4)
-
-            VStack(alignment: .leading, spacing: 4) {
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(course.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(course.scheduleDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 14) {
-                    Label(course.location, systemImage: "mappin.and.ellipse")
-                    if !course.instructor.isEmpty {
-                        Label(course.instructor, systemImage: "person.fill")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                Text(isNow ? "上課中 · \(course.location)" : "\(course.scheduleDescription) · \(course.location)")
+                    .font(.caption2)
+                    .foregroundStyle(isNow ? Color.orange : .secondary)
+                    .lineLimit(1)
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground).opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
-// MARK: - Amenity Detail Card
+// MARK: - Amenity Panel
 
-private struct AmenityDetailCard: View {
+private struct AmenityPanel: View {
     let amenity: CampusAmenity
     let onNavigate: () -> Void
     let onClose: () -> Void
 
+    @State private var showsFullNote = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            CardGrabber()
+        PanelContainer {
+            PanelHeader(
+                title: amenity.name,
+                subtitle: amenity.category.title,
+                tint: .accentColor,
+                closeLabel: "關閉地點詳細資訊",
+                badge: {
+                    MarkerBadge(tone: .neutral, size: 40) {
+                        Image(systemName: amenity.category.iconName)
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                },
+                onNavigate: onNavigate,
+                onClose: onClose
+            )
 
-            HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(amenity.category.color.markerGradient)
-                        .frame(width: 44, height: 44)
-                        .shadow(color: amenity.category.color.opacity(0.35), radius: 4, y: 2)
-                    Image(systemName: amenity.category.iconName)
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(amenity.name)
-                        .font(.headline)
-                    Text(amenity.category.title)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityLabel("關閉地點詳細資訊")
-            }
-
-            Text(amenity.note)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if #available(iOS 26.0, *) {
-                Button(action: onNavigate) {
-                    Label("導航", systemImage: "figure.walk")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                }
-                .buttonStyle(.glassProminent)
-                .tint(amenity.category.color)
-            } else {
-                Button(action: onNavigate) {
-                    Label("導航", systemImage: "figure.walk")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(amenity.category.color, in: RoundedRectangle(cornerRadius: 12))
-                        .foregroundStyle(.white)
-                }
+            if !amenity.note.isEmpty {
+                Text(amenity.note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(showsFullNote ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contentShape(Rectangle())
+                    .onTapGesture { withAnimation(.snappy) { showsFullNote.toggle() } }
             }
         }
-        .padding(16)
-        .modifier(GlassOrMaterialBackground(cornerRadius: 18))
-        .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+    }
+}
+
+// MARK: - Current Class Banner
+
+private struct CurrentClassBanner: View {
+    let course: Course
+    let hasBuilding: Bool
+    let onLocate: () -> Void
+
+    var body: some View {
+        Button(action: onLocate) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 8, height: 8)
+                Text("現在上課")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.orange)
+                Text(course.name)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(course.location)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if hasBuilding {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 44)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasBuilding)
+        .modifier(GlassOrMaterialBackground(shape: Capsule()))
+        .shadow(color: .black.opacity(0.1), radius: 10, y: 3)
     }
 }
 
 // MARK: - Glass/Material Background Modifier
 
 /// Applies Liquid Glass on iOS 26+, falls back to .regularMaterial on older OS.
-private struct GlassOrMaterialBackground: ViewModifier {
-    let cornerRadius: CGFloat
+private struct GlassOrMaterialBackground<S: Shape>: ViewModifier {
+    let shape: S
+    var isEnabled = true
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(in: .rect(cornerRadius: cornerRadius))
+        if !isEnabled {
+            content
+        } else if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: shape)
         } else {
-            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.stroke(Color.primary.opacity(0.06), lineWidth: 0.5))
         }
-    }
-}
-
-// MARK: - Building Pin
-
-private struct BuildingPin: View {
-    let building: CampusBuilding
-    let courseCount: Int
-    let isSelected: Bool
-    let isCurrentClass: Bool
-
-    @State private var pulse = false
-
-    private var pinColor: Color {
-        if isCurrentClass { return MapPalette.currentClass }
-        if isSelected { return MapPalette.buildingSelected }
-        return MapPalette.buildingDefault
-    }
-
-    private var size: CGFloat { (isSelected || isCurrentClass) ? 44 : 36 }
-    /// Distance from the pin's bounding-box center up to the center of its circular head.
-    private var glyphOffset: CGFloat { size * 0.13 }
-
-    var body: some View {
-        ZStack {
-            if isCurrentClass {
-                Circle()
-                    .fill(pinColor.opacity(0.22))
-                    .frame(width: size * 1.8, height: size * 1.8)
-                    .scaleEffect(pulse ? 1 : 0.6)
-                    .opacity(pulse ? 0 : 1)
-                    .offset(y: -glyphOffset)
-                    .animation(.easeOut(duration: 1.5).repeatForever(autoreverses: false), value: pulse)
-            }
-
-            PinShape()
-                .fill(pinColor.markerGradient)
-                .overlay(PinShape().stroke(.white, lineWidth: 2))
-                .frame(width: size, height: size * 1.3)
-                .shadow(color: pinColor.opacity(0.45), radius: (isSelected || isCurrentClass) ? 6 : 3, y: 2)
-
-            Group {
-                if isCurrentClass {
-                    Image(systemName: "clock.fill")
-                        .font(.system(size: size * 0.4, weight: .bold))
-                } else {
-                    Text(building.code)
-                        .font(.system(size: size * 0.3, weight: .bold))
-                }
-            }
-            .foregroundStyle(.white)
-            .offset(y: -glyphOffset)
-
-            if courseCount > 0 {
-                Text("\(courseCount)")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 19, minHeight: 19)
-                    .background(Color.red, in: Circle())
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                    .offset(x: size * 0.38, y: -(glyphOffset + size * 0.38))
-                    .accessibilityLabel("\(courseCount) 門課")
-            }
-        }
-        .animation(.spring(response: 0.3), value: isSelected)
-        .animation(.spring(response: 0.3), value: isCurrentClass)
-        .onAppear { pulse = true }
-    }
-}
-
-// MARK: - Amenity Pin
-
-private struct AmenityPin: View {
-    let amenity: CampusAmenity
-    let isSelected: Bool
-
-    private var size: CGFloat { isSelected ? 42 : 34 }
-    private var glyphOffset: CGFloat { size * 0.13 }
-
-    var body: some View {
-        ZStack {
-            PinShape()
-                .fill(amenity.category.color.markerGradient)
-                .overlay(PinShape().stroke(.white, lineWidth: 2))
-                .frame(width: size, height: size * 1.3)
-                .shadow(color: amenity.category.color.opacity(0.45), radius: isSelected ? 6 : 3, y: 2)
-
-            Image(systemName: amenity.category.iconName)
-                .font(.system(size: isSelected ? 17 : 14, weight: .bold))
-                .foregroundStyle(.white)
-                .offset(y: -glyphOffset)
-        }
-        .animation(.spring(response: 0.3), value: isSelected)
-    }
-}
-
-// MARK: - Pin Shape
-
-/// A rounded map-pin balloon: a circular head that tapers to a point at the bottom.
-private struct PinShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        let w = rect.width
-        let h = rect.height
-        var path = Path()
-        path.move(to: CGPoint(x: w / 2, y: h))
-        path.addCurve(
-            to: CGPoint(x: 0, y: h * 0.4),
-            control1: CGPoint(x: w * 0.15, y: h * 0.85),
-            control2: CGPoint(x: 0, y: h * 0.68)
-        )
-        path.addArc(
-            center: CGPoint(x: w / 2, y: h * 0.4),
-            radius: w / 2,
-            startAngle: .degrees(180),
-            endAngle: .degrees(0),
-            clockwise: false
-        )
-        path.addCurve(
-            to: CGPoint(x: w / 2, y: h),
-            control1: CGPoint(x: w, y: h * 0.68),
-            control2: CGPoint(x: w * 0.85, y: h * 0.85)
-        )
-        path.closeSubpath()
-        return path
     }
 }
 
