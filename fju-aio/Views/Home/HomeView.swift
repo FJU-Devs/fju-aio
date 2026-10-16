@@ -12,6 +12,9 @@ struct HomeView: View {
     /// All courses of the current semester; today's list is derived from the clock so it
     /// follows day changes without reloading.
     @State private var semesterCourses: [Course] = []
+    /// Class period of the current semester; outside it (breaks, before the first class day)
+    /// no courses are shown as today's.
+    @State private var teachingWindow: SemesterNotificationWindow?
     @State private var isLoading = true
     @State private var courseLoadFailed = false
     @State private var hasLoaded = false
@@ -220,6 +223,7 @@ struct HomeView: View {
         let weekday = CurrentSemester.taipeiCalendar.component(.weekday, from: date)
         // Calendar weekday 1=Sun … 7=Sat → Course.dayOfWeekNumber 1=Mon … 7=Sun
         let courseDay = weekday == 1 ? 7 : weekday - 1
+        guard teachingWindow?.isTeaching(on: date) ?? true else { return [] }
         return semesterCourses
             .filter { $0.dayOfWeekNumber == courseDay && $0.hasScheduledTime }
             .sorted { $0.startPeriod < $1.startPeriod }
@@ -674,7 +678,11 @@ struct HomeView: View {
     private func loadTodayCourses(forceRefresh: Bool) async {
         loadError = nil
         let showedCachedData = await loadCachedTodayCoursesIfAvailable()
-        if !forceRefresh, showedCachedData {
+        // A stale semester list must be refetched even when cached courses were shown, or the
+        // old semester stays "current" after a rollover; old course data is refreshed too
+        // (e.g. a schedule previewed before the semester started, then changed in add/drop).
+        if !forceRefresh, showedCachedData, !cache.semestersNeedRefresh(),
+           !cache.isStale(.courses(semester: CurrentSemester.code()), maxAge: AppCache.semesterListMaxAge) {
             courseLoadFailed = false
             return
         }
@@ -689,11 +697,14 @@ struct HomeView: View {
                 cache.setSemesters(semesters)
                 let currentSemester = CurrentSemester.resolve(available: semesters)
                 let all = try await service.fetchCourses(semester: currentSemester)
-                let calendarEvents = (try? await service.fetchCalendarEvents(semester: currentSemester)) ?? []
+                // On a calendar fetch failure keep the cached events rather than caching [].
+                let fetchedEvents = try? await service.fetchCalendarEvents(semester: currentSemester)
+                let calendarEvents = fetchedEvents ?? cache.getCalendarEvents(semester: currentSemester) ?? []
 
                 cache.setCourses(all, semester: currentSemester)
-                cache.setCalendarEvents(calendarEvents, semester: currentSemester)
+                if let fetchedEvents { cache.setCalendarEvents(fetchedEvents, semester: currentSemester) }
                 semesterCourses = all
+                teachingWindow = CurrentSemesterCourseSync.teachingWindow(for: currentSemester, calendarEvents: calendarEvents)
                 courseLoadFailed = false
                 CurrentSemesterCourseSync.apply(courses: all, semester: currentSemester, calendarEvents: calendarEvents)
                 await autoSyncCalendarIfNeeded(calendarEvents)
@@ -717,6 +728,7 @@ struct HomeView: View {
 
         let cachedCalendarEvents = cache.getCalendarEvents(semester: currentSemester) ?? []
         semesterCourses = cachedCourses
+        teachingWindow = CurrentSemesterCourseSync.teachingWindow(for: currentSemester, calendarEvents: cachedCalendarEvents)
         isLoading = false
         CurrentSemesterCourseSync.apply(courses: cachedCourses, semester: currentSemester, calendarEvents: cachedCalendarEvents)
         await autoSyncCalendarIfNeeded(cachedCalendarEvents)

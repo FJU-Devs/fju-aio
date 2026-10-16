@@ -5,6 +5,14 @@ struct SemesterNotificationWindow {
     let startDate: Date?
     let endDate: Date?
     let source: String
+
+    /// False before the first class day and from the semester end on; an unknown bound
+    /// doesn't restrict.
+    func isTeaching(on date: Date, calendar: Calendar = CurrentSemester.taipeiCalendar) -> Bool {
+        if let startDate, date < calendar.startOfDay(for: startDate) { return false }
+        if let endDate, date >= endDate { return false }
+        return true
+    }
 }
 
 enum SemesterCalendarResolver {
@@ -26,7 +34,9 @@ enum SemesterCalendarResolver {
             .map(\.startDate)
             .min()
 
-        let lowerBound = classStart ?? max(now, expectedWindow.start)
+        // Anchor on the window start (not `now`) when the class-start day is unknown, so a
+        // later flexible-week event isn't picked once the first one has begun.
+        let lowerBound = classStart ?? expectedWindow.start
         let flexibleWeekStart = semesterEvents
             .filter { isFlexibleLearningWeek($0) && $0.startDate > lowerBound }
             .map(\.startDate)
@@ -126,6 +136,14 @@ enum CurrentSemesterCourseSync {
     /// failed sync is retried on the next identical load.
     private static var lastScheduledSignature: Int?
 
+    /// The semester's class period. The school calendar feed covers every year, so when this
+    /// semester's events are missing (fetch failed) any cached copy still holds its
+    /// class-start / flexible-week events.
+    static func teachingWindow(for semester: String, calendarEvents: [CalendarEvent]) -> SemesterNotificationWindow {
+        let events = calendarEvents.isEmpty ? AppCache.shared.allCachedCalendarEvents() : calendarEvents
+        return SemesterCalendarResolver.notificationWindow(for: semester, events: events)
+    }
+
     /// Writes widget data and schedules Live Activities in the background.
     /// Returns false (and does nothing) when `semester` isn't the current semester.
     @discardableResult
@@ -161,7 +179,7 @@ enum CurrentSemesterCourseSync {
         semester: String,
         calendarEvents: [CalendarEvent]
     ) -> (SemesterNotificationWindow, Int)? {
-        let window = SemesterCalendarResolver.notificationWindow(for: semester, events: calendarEvents)
+        let window = teachingWindow(for: semester, calendarEvents: calendarEvents)
         var hasher = Hasher()
         hasher.combine(semester)
         hasher.combine(courses)
@@ -171,7 +189,12 @@ enum CurrentSemesterCourseSync {
 
         if signature != lastWidgetSignature {
             lastWidgetSignature = signature
-            WidgetDataWriter.shared.writeCourseData(courses: courses, friends: FriendStore.shared.friends)
+            WidgetDataWriter.shared.writeCourseData(
+                courses: courses,
+                semester: semester,
+                window: window,
+                friends: FriendStore.shared.friends
+            )
         }
         guard signature != lastScheduledSignature else { return nil }
         return (window, signature)

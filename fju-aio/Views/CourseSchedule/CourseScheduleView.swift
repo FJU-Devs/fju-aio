@@ -9,6 +9,10 @@ struct CourseScheduleView: View {
     @State private var isLoading = true
     @State private var availableSemesters: [String] = []
     @State private var selectedSemester: String = ""
+    /// The semester picked automatically as "current"; while the selection still equals it,
+    /// a semester rollover moves the selection along.
+    @State private var autoSelectedSemester: String?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedCourseDetail: CourseDetailSelection?
     @State private var selectedFriendSlotDetail: FriendSlotDetail?
     @State private var mapHighlightLocation: String? = nil
@@ -236,6 +240,23 @@ struct CourseScheduleView: View {
             guard !hasLoaded else { return }
             hasLoaded = true
             await loadSemesters(forceRefresh: false)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Re-check after the app sat in the background, possibly across a semester rollover.
+            guard newPhase == .active, hasLoaded else { return }
+            if cache.semestersNeedRefresh() {
+                Task { await loadSemesters(forceRefresh: false) }
+            } else if let cached = cache.getSemesters(), cached.count <= 6 {
+                // Another screen may already have refreshed the list; still follow the rollover.
+                let previous = selectedSemester
+                availableSemesters = cached
+                applyDefaultSemester(from: cached)
+                if selectedSemester != previous {
+                    restoreVisibleFriendIds()
+                }
+                // Picks up courses another screen refreshed into the cache meanwhile.
+                startCourseLoad(forceRefresh: false)
+            }
         }
         .onChange(of: visibleFriendIds) { _, _ in
             saveVisibleFriendIds()
@@ -710,19 +731,17 @@ struct CourseScheduleView: View {
     // MARK: - Data Loading
 
     private func loadSemesters(forceRefresh: Bool) async {
-        // Use cached semesters if available
+        // Use cached semesters if available; a stale list is shown first, then refetched.
         if !forceRefresh, let cached = cache.getSemesters() {
             logger.info("📅 loadSemesters using cache forceRefresh=\(forceRefresh, privacy: .public), cached=\(cached.description, privacy: .public)")
             if cached.count > 6 {
                 logger.warning("⚠️ Cached semesters contains unusually many entries: \(cached.description, privacy: .public)")
             } else {
                 availableSemesters = cached
-                if selectedSemester.isEmpty, !cached.isEmpty {
-                    selectedSemester = CurrentSemester.resolve(available: cached)
-                }
+                applyDefaultSemester(from: cached)
                 restoreVisibleFriendIds()
                 await runTrackedCourseLoad(forceRefresh: false)
-                return
+                guard cache.semestersNeedRefresh() else { return }
             }
         }
 
@@ -735,14 +754,12 @@ struct CourseScheduleView: View {
             }
             availableSemesters = semesters
             cache.setSemesters(semesters)
-            if selectedSemester.isEmpty, !semesters.isEmpty {
-                selectedSemester = CurrentSemester.resolve(available: semesters)
-            }
+            applyDefaultSemester(from: semesters)
             restoreVisibleFriendIds()
             await runTrackedCourseLoad(forceRefresh: forceRefresh)
         } catch {
             if selectedSemester.isEmpty, let cached = cache.getSemesters(), !cached.isEmpty {
-                selectedSemester = CurrentSemester.resolve(available: cached)
+                applyDefaultSemester(from: cached)
             }
             restoreVisibleFriendIds()
             if selectedSemester.isEmpty {
@@ -757,6 +774,16 @@ struct CourseScheduleView: View {
                 }
             }
         }
+    }
+
+    /// Selects the current semester unless the user picked another one that is still listed.
+    private func applyDefaultSemester(from semesters: [String]) {
+        guard !semesters.isEmpty else { return }
+        let current = CurrentSemester.resolve(available: semesters)
+        if selectedSemester.isEmpty || selectedSemester == autoSelectedSemester || !semesters.contains(selectedSemester) {
+            selectedSemester = current
+        }
+        autoSelectedSemester = current
     }
 
     /// Starts loading the selected semester, cancelling any load for a previous selection.

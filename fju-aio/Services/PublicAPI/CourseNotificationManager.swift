@@ -181,7 +181,9 @@ final class CourseNotificationManager {
             for: courses,
             semester: window.semester,
             semesterStartDate: window.startDate,
-            semesterEndDate: window.endDate
+            // Only a calendar-derived end is authoritative; an estimate must not replace a
+            // stored real end (the manager falls back to the same estimate itself).
+            semesterEndDate: window.source == "calendar" ? window.endDate : nil
         )
     }
 
@@ -200,6 +202,8 @@ final class CourseNotificationManager {
         }
         lastCourseSnapshot = courses
         lastSemester = semester
+        scheduleGeneration += 1
+        let generation = scheduleGeneration
         guard isEnabled else { return true }
 
         guard notifyStart || notifyBefore else {
@@ -225,7 +229,11 @@ final class CourseNotificationManager {
                 semesterEndDate: overrideSemesterEndDate
             )
         }.value
-        await startLiveActivityIfNeeded(for: courses)
+        // A newer snapshot (e.g. fresh courses replacing the cached ones, or another semester)
+        // may have arrived while this one awaited the server; only the latest starts activities.
+        if generation == scheduleGeneration {
+            await startLiveActivityIfNeeded(for: courses, semester: semester)
+        }
         return synced
     }
 
@@ -528,6 +536,8 @@ final class CourseNotificationManager {
     private var activeActivityIDs: [String: String] = [:]
     private var lastCourseSnapshot: [Course] = []
     private var lastSemester: String?
+    /// Bumped by every `scheduleAll`, so a superseded call doesn't start Live Activities.
+    private var scheduleGeneration = 0
     private var lastRemoteScheduleSyncSignature: String?
     private var inFlightRemoteScheduleSyncSignature: String?
     /// One local phase-update task and one token-refresh observer per activity id.
@@ -553,9 +563,12 @@ final class CourseNotificationManager {
         let end: Date?
     }
 
+    /// A nil bound keeps the stored one, so a load without calendar data (fetch failed)
+    /// doesn't erase a known class-start date (which also anchors 單/雙 week parity).
     private func storeSemesterWindow(semester: String, start: Date?, end: Date?) {
         var windows = storedSemesterWindows()
-        windows[semester] = StoredSemesterWindow(start: start, end: end)
+        let existing = windows[semester]
+        windows[semester] = StoredSemesterWindow(start: start ?? existing?.start, end: end ?? existing?.end)
         if let data = try? JSONEncoder().encode(windows) {
             UserDefaults.standard.set(data, forKey: Keys.semesterWindows)
         }
@@ -580,13 +593,21 @@ final class CourseNotificationManager {
     }
 
     @MainActor
-    private func startLiveActivityIfNeeded(for courses: [Course]) async {
+    private func startLiveActivityIfNeeded(for courses: [Course], semester: String) async {
         let now = Date()
         let calendar = Self.calendar
+        // Same bounds as the server schedule: nothing before the first class day or after
+        // the semester ends (e.g. last semester's cached courses during a break).
+        let window = storedSemesterWindow(for: semester)
+        let end = window?.end ?? estimatedSemesterEndDate(for: semester, from: now)
+        if now >= end { return }
+        if let start = window?.start, now < calendar.startOfDay(for: start) { return }
+        let parityAnchor = window?.start
         let todayWeekday = calendar.component(.weekday, from: now)
 
         for course in courses {
-            guard course.dayOfWeekNumber == weekdayToCourseDay(todayWeekday) else { continue }
+            guard course.dayOfWeekNumber == weekdayToCourseDay(todayWeekday),
+                  shouldInclude(course: course, on: now, parityAnchor: parityAnchor, calendar: calendar) else { continue }
             guard let startDate = courseDate(for: course, on: now, calendar: calendar, useEndTime: false),
                   let endDate   = courseDate(for: course, on: now, calendar: calendar, useEndTime: true) else { continue }
             let windowStart = notifyBefore

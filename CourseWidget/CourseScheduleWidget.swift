@@ -85,10 +85,12 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
         configuration: CourseScheduleConfigurationIntent,
         date: Date
     ) -> CourseScheduleEntry {
-        CourseScheduleEntry(
+        // Between semesters the stored courses are last semester's — show none.
+        let isTeaching = payload?.isTeaching(at: date, calendar: WidgetDataReader.taipeiCalendar) ?? false
+        return CourseScheduleEntry(
             date: date,
-            courses: payload?.courses ?? [],
-            friendOverlays: payload?.friendOverlays ?? [],
+            courses: isTeaching ? payload?.courses ?? [] : [],
+            friendOverlays: isTeaching ? payload?.friendOverlays ?? [] : [],
             showFriendCourses: configuration.showFriendCourses
         )
     }
@@ -98,12 +100,7 @@ struct CourseScheduleProvider: AppIntentTimelineProvider {
         configuration: CourseScheduleConfigurationIntent,
         date: Date
     ) -> CourseScheduleEntry {
-        CourseScheduleEntry(
-            date: date,
-            courses: payload.courses,
-            friendOverlays: payload.friendOverlays,
-            showFriendCourses: configuration.showFriendCourses
-        )
+        makeEntry(from: Optional(payload), configuration: configuration, date: date)
     }
 
     private func makeSampleEntry(

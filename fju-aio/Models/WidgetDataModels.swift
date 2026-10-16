@@ -75,6 +75,18 @@ struct WidgetCoursePayload: Codable {
     let courses: [WidgetCourse]
     let friendOverlays: [WidgetFriendOverlay]
     let updatedAt: Date
+    /// Semester the courses belong to, e.g. "115-1". Optional so older payloads still decode.
+    var semester: String? = nil
+    /// First class day and semester end (start of the flexible learning week). Outside this
+    /// range — winter/summer break — the widget shows no courses. Nil bounds don't restrict.
+    var teachingStart: Date? = nil
+    var teachingEnd: Date? = nil
+
+    func isTeaching(at date: Date, calendar: Calendar) -> Bool {
+        if let teachingStart, date < calendar.startOfDay(for: teachingStart) { return false }
+        if let teachingEnd, date >= teachingEnd { return false }
+        return true
+    }
 }
 
 struct WidgetAssignmentPayload: Codable {

@@ -146,8 +146,9 @@ struct FJUApp: App {
         let service = FJUService.shared
         let cache = AppCache.shared
 
-        // Skip if already cached from a previous session (cache is in-memory so this
-        // only applies within the same process lifetime, e.g. returning from background).
+        // Skip when a semester list is cached (AppCache is disk-backed, so this covers
+        // previous launches too). HomeView shows that cache and refetches when it's stale
+        // or predates a semester rollover, so the splash isn't held up here.
         if let cached = cache.getSemesters(), !cached.isEmpty { return }
 
         isPreloading = true
@@ -170,10 +171,12 @@ struct FJUApp: App {
                 let current = CurrentSemester.resolve(available: semesters)
                 preloadStatusText = "同步課程與行事曆..."
                 let c = try await service.fetchCourses(semester: current)
-                let e = (try? await service.fetchCalendarEvents(semester: current)) ?? []
+                // On a calendar fetch failure keep the cached events rather than caching [].
+                let fetchedEvents = try? await service.fetchCalendarEvents(semester: current)
+                let e = fetchedEvents ?? cache.getCalendarEvents(semester: current) ?? []
                 preloadStatusText = "更新小工具資料..."
                 cache.setCourses(c, semester: current)
-                cache.setCalendarEvents(e, semester: current)
+                if let fetchedEvents { cache.setCalendarEvents(fetchedEvents, semester: current) }
                 preloadStatusText = "同步 Live Activity 伺服器..."
                 await CurrentSemesterCourseSync.applyAndWait(courses: c, semester: current, calendarEvents: e)
                 if EventKitSyncService.shared.isAutoCalendarSyncEnabled {

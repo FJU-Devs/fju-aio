@@ -24,10 +24,26 @@ final class WidgetDataWriter {
 
     // MARK: - Course Data
 
-    func writeCourseData(courses: [Course], friends: [FriendRecord]) {
+    /// `semester` / `window` default to what the stored payload already has (e.g. when only
+    /// the friend list changed), so the widget keeps its semester bounds.
+    func writeCourseData(
+        courses: [Course],
+        semester: String? = nil,
+        window: SemesterNotificationWindow? = nil,
+        friends: [FriendRecord]
+    ) {
+        let previous = WidgetDataStore.defaults.data(forKey: WidgetDataStore.courseDataKey)
+            .flatMap { try? JSONDecoder().decode(WidgetCoursePayload.self, from: $0) }
+        let semester = semester ?? courses.first { !$0.semester.isEmpty }?.semester ?? previous?.semester
+        let keepsPreviousWindow = window == nil && previous?.semester == semester
+        let teachingStart = window?.startDate ?? (keepsPreviousWindow ? previous?.teachingStart : nil)
+        let teachingEnd = window?.endDate ?? (keepsPreviousWindow ? previous?.teachingEnd : nil)
+
         let widgetCourses = courses.map { WidgetCourse(from: $0) }
         let overlays = friends.enumerated().compactMap { index, friend -> WidgetFriendOverlay? in
-            guard let snapshot = friend.cachedProfile?.scheduleSnapshot else { return nil }
+            // Only friends who published the same semester — never overlay an old schedule.
+            guard let snapshot = friend.cachedProfile?.scheduleSnapshot,
+                  semester == nil || snapshot.semester == semester else { return nil }
             let colorHex = friendColorHexes[index % friendColorHexes.count]
             let widgetFriendCourses = snapshot.courses.map { WidgetFriendCourse(from: $0, colorHex: colorHex) }
             return WidgetFriendOverlay(
@@ -39,7 +55,10 @@ final class WidgetDataWriter {
         let payload = WidgetCoursePayload(
             courses: widgetCourses,
             friendOverlays: overlays,
-            updatedAt: Date()
+            updatedAt: Date(),
+            semester: semester,
+            teachingStart: teachingStart,
+            teachingEnd: teachingEnd
         )
         if let data = try? JSONEncoder().encode(payload) {
             WidgetDataStore.defaults.set(data, forKey: WidgetDataStore.courseDataKey)

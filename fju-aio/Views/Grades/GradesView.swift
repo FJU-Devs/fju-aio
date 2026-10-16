@@ -7,6 +7,10 @@ struct GradesView: View {
     @State private var gpaSummary: GPASummary?
     @State private var semesters: [String] = []
     @State private var selectedSemester = ""
+    /// The semester picked automatically as "current"; while the selection still equals it,
+    /// a semester rollover moves the selection along.
+    @State private var autoSelectedSemester: String?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isLoading = true
     @State private var loadError: String?
 
@@ -101,6 +105,11 @@ struct GradesView: View {
                 await loadGrades(for: selectedSemester)
             }
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Follow a semester rollover that happened while the app was in the background.
+            guard newPhase == .active, !semesters.isEmpty else { return }
+            Task { await loadSemesters(forceRefresh: false) }
+        }
         .refreshable {
             await loadSemesters(forceRefresh: true)
             if !selectedSemester.isEmpty {
@@ -113,6 +122,12 @@ struct GradesView: View {
     private func loadSemesters(forceRefresh: Bool) async {
         if !forceRefresh, let cached = cache.getSemesters(), !cached.isEmpty {
             applySemesters(cached)
+            // A stale list (e.g. cached before a semester rollover) is shown, then refetched.
+            // Unstructured: applying the cached list changes `selectedSemester`, which cancels
+            // the `.task(id:)` this runs in.
+            if cache.semestersNeedRefresh() {
+                Task { await loadSemesters(forceRefresh: true) }
+            }
             return
         }
 
@@ -139,11 +154,18 @@ struct GradesView: View {
         }
     }
 
+    /// Selects the current semester unless the user picked another one that is still listed.
     private func applySemesters(_ list: [String]) {
         semesters = list
-        if !list.contains(selectedSemester) {
-            selectedSemester = list.first ?? ""
+        guard !list.isEmpty else {
+            selectedSemester = ""
+            return
         }
+        let current = CurrentSemester.resolve(available: list)
+        if selectedSemester.isEmpty || selectedSemester == autoSelectedSemester || !list.contains(selectedSemester) {
+            selectedSemester = current
+        }
+        autoSelectedSemester = current
     }
 
     /// Shows cached grades immediately (if any), then refreshes from the network in the background.

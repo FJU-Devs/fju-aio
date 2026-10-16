@@ -31,6 +31,20 @@ final class AppCache {
     }
 
     func getSemesters() -> [String]? { semesters?.data }
+
+    /// How long a fetched semester list is trusted before callers should refetch it.
+    static let semesterListMaxAge: TimeInterval = 12 * 60 * 60
+
+    /// True when the semester list should be refetched: nothing cached, older than
+    /// `semesterListMaxAge`, or cached before the date-derived semester rolled over
+    /// (e.g. cached in July, now August) — otherwise `CurrentSemester.resolve` would
+    /// keep picking the old semester from the stale list.
+    func semestersNeedRefresh(now: Date = Date()) -> Bool {
+        guard let entry = semesters, !entry.data.isEmpty else { return true }
+        if now.timeIntervalSince(entry.cachedAt) > Self.semesterListMaxAge { return true }
+        return CurrentSemester.estimatedCode(now: entry.cachedAt) != CurrentSemester.estimatedCode(now: now)
+    }
+
     func setSemesters(_ data: [String]) {
         semesters = (data, Date())
         disk.save(data, key: Keys.semesters, schemaVersion: schemaVersion)

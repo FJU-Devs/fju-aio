@@ -97,7 +97,10 @@ actor EstuCourseService {
             throw EstuError.invalidResponse
         }
         if semesterCode != nil, currentSemester != semester {
-            logger.warning("⚠️ ESTU returned semester \(currentSemester, privacy: .public) but \(semester, privacy: .public) was requested")
+            // Never hand back another semester's courses: callers cache them under the
+            // requested semester and may treat them as the current one.
+            logger.error("❌ ESTU returned semester \(currentSemester, privacy: .public) but \(semester, privacy: .public) was requested")
+            throw EstuError.invalidResponse
         }
         logger.info("📅 Current semester: \(currentSemester, privacy: .public)")
         
