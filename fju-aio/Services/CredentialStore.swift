@@ -39,6 +39,28 @@ final class CredentialStore: Sendable {
         }
     }
 
+    nonisolated enum CredentialAvailability: Sendable {
+        case present
+        case missing
+        /// The Keychain couldn't be read (typically `errSecInteractionNotAllowed` because the
+        /// device is locked — the item is `WhenUnlockedThisDeviceOnly`). Says nothing about
+        /// whether the user is signed in.
+        case unavailable
+    }
+
+    /// Like `hasLDAPCredentials()`, but tells "not signed in" apart from "Keychain locked".
+    nonisolated func ldapCredentialAvailability() -> CredentialAvailability {
+        do {
+            _ = try retrieveLDAPCredentials()
+            return .present
+        } catch KeychainManager.KeychainError.unexpectedStatus {
+            return .unavailable
+        } catch {
+            // itemNotFound, or unreadable/corrupt data that will never decode.
+            return .missing
+        }
+    }
+
     // MARK: - Demo Session
 
     private nonisolated static let demoSessionKey = "com.fju.demoSession"

@@ -103,6 +103,7 @@ struct FJUApp: App {
             }
             .onChange(of: scenePhase) { _, newPhase in
                 guard newPhase == .active else { return }
+                authManager.revalidateIfNeeded()
                 Task { await iCloudAvailabilityService.shared.refresh() }
             }
         }

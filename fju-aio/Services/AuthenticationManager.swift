@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import os.log
 
 @Observable
@@ -36,19 +37,77 @@ final class AuthenticationManager {
         // Credentials are saved only after a fully successful login, so they act as the
         // completed-login marker: a session persisted by an interrupted login (app killed
         // after one service succeeded) must not count as signed in.
-        guard CredentialStore.shared.hasLDAPCredentials() else {
+        switch await readCredentialAvailability() {
+        case .missing:
             await tronClassAuthService.invalidateSession()
             await sisAuthService.invalidateSession()
             isAuthenticated = false
             isCheckingAuth = false
             logger.info("Initial auth state: logged out (no stored credentials)")
             return
+        case .unavailable:
+            // Still unreadable with protected data available. Don't wipe anything — the user
+            // may well be signed in; `revalidateIfNeeded()` retries when the app becomes active.
+            isAuthenticated = false
+            isCheckingAuth = false
+            logger.error("Initial auth state: Keychain unreadable, showing login until it recovers")
+            // Keep retrying for a while too, in case the app stays active (no scenePhase change).
+            Task { @MainActor in
+                for _ in 0..<15 where !isAuthenticated {
+                    try? await Task.sleep(for: .seconds(2))
+                    revalidateIfNeeded()
+                }
+            }
+            return
+        case .present:
+            break
         }
         let tronClassLoggedIn = await tronClassAuthService.isLoggedIn()
         let sisLoggedIn = await sisAuthService.isLoggedIn()
-        isAuthenticated = tronClassLoggedIn || sisLoggedIn
+        // Credentials were just readable, so the user completed a login; a Keychain hiccup
+        // inside isLoggedIn() must not bounce them to the login screen.
+        isAuthenticated = tronClassLoggedIn || sisLoggedIn || CredentialStore.shared.ldapCredentialAvailability() != .missing
         isCheckingAuth = false
         logger.info("Initial auth state: \(self.isAuthenticated ? "logged in" : "logged out")")
+    }
+
+    /// Reads the credential marker, waiting while the Keychain is locked.
+    ///
+    /// The credentials are stored `WhenUnlockedThisDeviceOnly`. When the process starts while the
+    /// device is locked (prewarming, or opening the app from a lock-screen Live Activity), the
+    /// read fails with `errSecInteractionNotAllowed`. That used to be treated as "no credentials":
+    /// the user was shown the login page and their sessions were deleted.
+    @MainActor
+    private func readCredentialAvailability() async -> CredentialStore.CredentialAvailability {
+        var transientRetries = 0
+        while true {
+            let availability = CredentialStore.shared.ldapCredentialAvailability()
+            guard availability == .unavailable else { return availability }
+
+            if !UIApplication.shared.isProtectedDataAvailable {
+                logger.info("🔒 Keychain locked; waiting for the device to unlock before checking auth")
+                while !UIApplication.shared.isProtectedDataAvailable {
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                continue
+            }
+
+            transientRetries += 1
+            if transientRetries > 3 { return .unavailable }
+            try? await Task.sleep(for: .milliseconds(500 * transientRetries))
+        }
+    }
+
+    /// Recovers when an earlier auth check couldn't read the Keychain and fell back to signed-out.
+    /// Stored credentials are the completed-login marker (they're deleted on logout), so their
+    /// presence means the user is still signed in.
+    @MainActor
+    func revalidateIfNeeded() {
+        guard !isAuthenticated, !isCheckingAuth, !isLoading,
+              !CredentialStore.shared.isDemoSession,
+              CredentialStore.shared.ldapCredentialAvailability() == .present else { return }
+        logger.info("🔓 Stored credentials readable again; restoring signed-in state")
+        isAuthenticated = true
     }
     
     @MainActor

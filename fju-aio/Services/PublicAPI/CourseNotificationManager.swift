@@ -1254,13 +1254,15 @@ final class CourseNotificationManager {
     /// Resolves the user id the server keys schedules by. Returns nil when no user is known —
     /// never registers schedules under a shared "anonymous" id.
     /// With `allowSessionRefresh: false` (logout) only the cached id is used, so no re-login is triggered.
+    ///
+    /// Only the SIS user id is used. TronClass has its own, different user id; falling back to it
+    /// when SIS was unreachable registered a second copy of the whole semester schedule on the
+    /// server under another id, so every class got duplicate Live Activities.
     private func notificationIdentity(allowSessionRefresh: Bool = true) async -> NotificationIdentity? {
         var userId: String?
         if allowSessionRefresh {
             if let sisSession = try? await SISAuthService.shared.getValidSession() {
                 userId = String(sisSession.userId)
-            } else if let tronClassSession = try? await TronClassAuthService.shared.getValidSession() {
-                userId = String(tronClassSession.userId)
             }
             if let userId {
                 UserDefaults.standard.set(userId, forKey: Keys.lastUserId)

@@ -10,6 +10,7 @@ final class EventKitSyncService {
     nonisolated static let autoSyncTodoKey = "eventKitSync.autoTodo"
     nonisolated static let autoSyncCalendarDisabledByPermissionKey = "eventKitSync.autoCalendarDisabledByPermission"
     nonisolated static let autoSyncTodoDisabledByPermissionKey = "eventKitSync.autoTodoDisabledByPermission"
+    nonisolated static let calendarIdentifierKey = "eventKitSync.calendarIdentifier"
 
     private let eventStore = EKEventStore()
     private let calendarName = "輔大行事曆"
@@ -23,6 +24,8 @@ final class EventKitSyncService {
         let targetName: String
         /// Existing items (matched by source identifier) whose details changed and were updated.
         var updated: Int = 0
+        /// Extra copies of already-synced events that were deleted.
+        var removedDuplicates: Int = 0
     }
 
     /// Stable per-item identifier stored in `EKCalendarItem.url`, so re-syncs update the
@@ -33,6 +36,10 @@ final class EventKitSyncService {
         let parts = [namespace, id].compactMap { $0?.addingPercentEncoding(withAllowedCharacters: pathAllowed) }
         guard parts.count == (namespace == nil ? 1 : 2) else { return nil }
         return URL(string: "fju-aio://sync/\(kind)/" + parts.joined(separator: "/"))
+    }
+
+    private func isSyncURL(_ url: URL) -> Bool {
+        url.scheme == "fju-aio" && url.host == "sync"
     }
 
     private func sourceURL(for event: CalendarEvent) -> URL? {
@@ -102,10 +109,29 @@ final class EventKitSyncService {
         guard granted else { throw SyncError.calendarAccessDenied }
 
         let targetCalendar = try fjuLocalCalendar()
-        let existingEvents = fetchEvents(covering: events, in: targetCalendar)
+        // Also look in any other calendar with our name (e.g. one created before iCloud finished
+        // syncing), so copies there are adopted/moved instead of being added again.
+        // Read-only calendars (e.g. a subscription to the school feed with the same name) are
+        // skipped: their events can't be moved or removed.
+        let searchCalendars = [targetCalendar] + eventStore.calendars(for: .event).filter {
+            $0.title == calendarName
+                && $0.calendarIdentifier != targetCalendar.calendarIdentifier
+                && $0.allowsContentModifications
+        }
+        let existingEvents = fetchEvents(covering: events, in: searchCalendars)
         var existingByURL: [URL: EKEvent] = [:]
+        // Earlier builds re-added events on every sync. Extra copies are removed below — only
+        // events carrying our own sync URL (provably app-created) and the same start time.
+        var duplicates: [EKEvent] = []
         for ekEvent in existingEvents {
-            if let url = ekEvent.url { existingByURL[url] = ekEvent }
+            guard let url = ekEvent.url else { continue }
+            if let kept = existingByURL[url] {
+                if isSyncURL(url), abs(kept.startDate.timeIntervalSince(ekEvent.startDate)) < 60 {
+                    duplicates.append(ekEvent)
+                }
+            } else {
+                existingByURL[url] = ekEvent
+            }
         }
 
         var added = 0
@@ -136,11 +162,29 @@ final class EventKitSyncService {
             }
         }
 
+        // Best-effort: a duplicate that can't be removed must not abort the whole sync.
+        var removedDuplicates = 0
+        for duplicate in duplicates {
+            do {
+                try eventStore.remove(duplicate, span: .thisEvent, commit: false)
+                removedDuplicates += 1
+                hasChanges = true
+            } catch {
+                continue
+            }
+        }
+
         if hasChanges {
             try eventStore.commit()
         }
 
-        return SyncSummary(added: added, skipped: skipped, targetName: targetCalendar.title, updated: updated)
+        return SyncSummary(
+            added: added,
+            skipped: skipped,
+            targetName: targetCalendar.title,
+            updated: updated,
+            removedDuplicates: removedDuplicates
+        )
     }
 
     @discardableResult
@@ -202,7 +246,17 @@ final class EventKitSyncService {
     // MARK: - Calendar
 
     private func fjuLocalCalendar() throws -> EKCalendar {
-        if let existing = eventStore.calendars(for: .event).first(where: { $0.title == calendarName }) {
+        // Prefer the calendar we created/used before, so a second calendar with the same name
+        // (e.g. created while iCloud calendars were still syncing) doesn't split the events.
+        if let identifier = UserDefaults.standard.string(forKey: Self.calendarIdentifierKey),
+           let stored = eventStore.calendar(withIdentifier: identifier),
+           stored.allowsContentModifications {
+            return stored
+        }
+        if let existing = eventStore.calendars(for: .event).first(where: {
+            $0.title == calendarName && $0.allowsContentModifications
+        }) {
+            UserDefaults.standard.set(existing.calendarIdentifier, forKey: Self.calendarIdentifierKey)
             return existing
         }
 
@@ -217,6 +271,7 @@ final class EventKitSyncService {
         calendar.source = source
         calendar.cgColor = UIColor.systemBlue.cgColor
         try eventStore.saveCalendar(calendar, commit: true)
+        UserDefaults.standard.set(calendar.calendarIdentifier, forKey: Self.calendarIdentifierKey)
         return calendar
     }
 
@@ -224,16 +279,30 @@ final class EventKitSyncService {
         event.endDate ?? Calendar.current.date(byAdding: .hour, value: 1, to: event.startDate) ?? event.startDate
     }
 
-    /// Fetches the calendar's events in one query spanning all `events`
-    /// (EventKit limits a predicate to 4 years, so the range is clamped).
-    private func fetchEvents(covering events: [CalendarEvent], in calendar: EKCalendar) -> [EKEvent] {
+    /// Fetches the calendars' events across the whole span of `events`.
+    /// EventKit only searches up to 4 years per predicate, and the school feed spans ~10 years
+    /// (2018–2027). A single clamped query missed every event after the first 4 years, so those
+    /// were re-added as new on every sync. Query in consecutive windows instead.
+    private func fetchEvents(covering events: [CalendarEvent], in calendars: [EKCalendar]) -> [EKEvent] {
         guard let minStart = events.map(\.startDate).min(),
               let maxEnd = events.map(defaultEndDate).max() else { return [] }
-        let start = minStart.addingTimeInterval(-24 * 60 * 60)
-        let latestAllowed = start.addingTimeInterval(4 * 365 * 24 * 60 * 60)
-        let end = min(maxEnd.addingTimeInterval(24 * 60 * 60), latestAllowed)
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: [calendar])
-        return eventStore.events(matching: predicate)
+        let rangeEnd = maxEnd.addingTimeInterval(24 * 60 * 60)
+        var windowStart = minStart.addingTimeInterval(-24 * 60 * 60)
+        let windowLength: TimeInterval = 3 * 365 * 24 * 60 * 60
+
+        var seen = Set<String>()
+        var result: [EKEvent] = []
+        while windowStart < rangeEnd {
+            let windowEnd = min(windowStart.addingTimeInterval(windowLength), rangeEnd)
+            let predicate = eventStore.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: calendars)
+            // An event spanning a window boundary is returned by both windows.
+            for event in eventStore.events(matching: predicate) {
+                let key = "\(event.calendarItemIdentifier)|\(event.startDate.timeIntervalSinceReferenceDate)"
+                if seen.insert(key).inserted { result.append(event) }
+            }
+            windowStart = windowEnd
+        }
+        return result
     }
 
     /// Events synced before identifiers were stored: match by title + start date.
